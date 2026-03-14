@@ -24,6 +24,8 @@ pub type Program = Vec<Spanned<Stmt>>;
 pub enum Stmt {
     /// A bare expression used as a statement.
     Expr(Spanned<Expr>),
+    /// `ret <expr>` — explicit return from the enclosing function.
+    Ret(Spanned<Expr>),
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────

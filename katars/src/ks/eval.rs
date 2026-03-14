@@ -35,21 +35,42 @@ impl std::fmt::Display for Value {
 
 // ── Interpreter ───────────────────────────────────────────────────────────────
 
+/// Outcome of executing a statement or block.
+///
+/// This lets `ret` unwind cleanly without being treated as an error.
+/// The enclosing `call` (once user functions are implemented) catches
+/// `Flow::Return(v)` and uses it as the function's result value.
+#[derive(Debug)]
+pub enum Flow {
+    /// Statement completed normally; continue to the next.
+    Next,
+    /// A `ret` statement was hit; carry the value up to the call site.
+    Return(Value),
+}
+
 /// Execute a fully-parsed program, writing side-effects to `out`.
 pub fn exec_program(program: &Program, out: &mut impl Write) -> Result<(), String> {
     debug!(stmts = program.len(), "exec_program");
     for stmt in program {
-        exec_stmt(stmt, out)?;
+        match exec_stmt(stmt, out)? {
+            Flow::Next => {}
+            Flow::Return(_) => return Err("ret outside of function".to_string()),
+        }
     }
     Ok(())
 }
 
-fn exec_stmt(stmt: &Spanned<Stmt>, out: &mut impl Write) -> Result<(), String> {
+/// Execute one statement and return the control-flow outcome.
+pub fn exec_stmt(stmt: &Spanned<Stmt>, out: &mut impl Write) -> Result<Flow, String> {
     trace!(?stmt.node, "exec_stmt");
     match &stmt.node {
         Stmt::Expr(expr) => {
             eval_expr(expr, out)?;
-            Ok(())
+            Ok(Flow::Next)
+        }
+        Stmt::Ret(expr) => {
+            let val = eval_expr(expr, out)?;
+            Ok(Flow::Return(val))
         }
     }
 }
@@ -75,7 +96,7 @@ fn call(name: &str, args: &[Spanned<Expr>], out: &mut impl Write) -> Result<Valu
                 .iter()
                 .map(|a| eval_expr(a, out).map(|v| v.to_string()))
                 .collect::<Result<_, _>>()?;
-            writeln!(out, "{}", parts.join(", ")).map_err(|e| e.to_string())?;
+            writeln!(out, "{}", parts.join(" ")).map_err(|e| e.to_string())?;
             Ok(Value::Nil)
         }
         other => Err(format!("unknown function '{other}'")),
@@ -192,5 +213,15 @@ mod tests {
     #[test]
     fn eval_empty_program() {
         assert!(exec_program(&program(vec![]), &mut Vec::new()).is_ok());
+    }
+
+    #[test]
+    fn eval_ret_outside_function_is_error() {
+        let prog = program(vec![s(Stmt::Ret(s(Expr::Num(42.0))))]);
+        let err = exec_program(&prog, &mut Vec::new()).unwrap_err();
+        assert!(
+            err.contains("ret outside of function"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -30,16 +30,16 @@ pub enum Token {
     Nil,
     #[token("let")]
     Let,
-    #[token("fn")]
-    Fn,
+    #[token("func")]
+    Func,
     #[token("if")]
     If,
     #[token("else")]
     Else,
     #[token("while")]
     While,
-    #[token("return")]
-    Return,
+    #[token("ret")]
+    Ret,
 
     // ── identifiers ──────────────────────────────────────────────────────
     /// Must come after all keyword tokens so keywords are matched first.
@@ -57,6 +57,8 @@ pub enum Token {
     RBrace,
     #[token(";")]
     Semicolon,
+    #[token(":")]
+    Colon,
     #[token(",")]
     Comma,
     #[token(".")]
@@ -104,16 +106,17 @@ impl fmt::Display for Token {
             Token::False => write!(f, "false"),
             Token::Nil => write!(f, "nil"),
             Token::Let => write!(f, "let"),
-            Token::Fn => write!(f, "fn"),
+            Token::Func => write!(f, "func"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
             Token::While => write!(f, "while"),
-            Token::Return => write!(f, "return"),
+            Token::Ret => write!(f, "ret"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
             Token::Semicolon => write!(f, ";"),
+            Token::Colon => write!(f, ":"),
             Token::Comma => write!(f, ","),
             Token::Dot => write!(f, "."),
             Token::Eq => write!(f, "="),
@@ -218,11 +221,11 @@ mod tests {
         assert_eq!(one("false"), Token::False);
         assert_eq!(one("nil"), Token::Nil);
         assert_eq!(one("let"), Token::Let);
-        assert_eq!(one("fn"), Token::Fn);
+        assert_eq!(one("func"), Token::Func);
         assert_eq!(one("if"), Token::If);
         assert_eq!(one("else"), Token::Else);
         assert_eq!(one("while"), Token::While);
-        assert_eq!(one("return"), Token::Return);
+        assert_eq!(one("ret"), Token::Ret);
     }
 
     #[test]
@@ -238,6 +241,8 @@ mod tests {
     fn lex_keyword_prefix_is_ident() {
         assert_eq!(one("trueish"), Token::Ident("trueish".into()));
         assert_eq!(one("letter"), Token::Ident("letter".into()));
+        // `fn` is no longer a keyword — must lex as an identifier.
+        assert_eq!(one("fn"), Token::Ident("fn".into()));
     }
 
     // ── punctuation ───────────────────────────────────────────────────────────
@@ -246,10 +251,10 @@ mod tests {
     fn lex_punctuation() {
         use Token::*;
         assert_eq!(
-            tokens("( ) { } ; , . = == != < > <= >= + - * / ! && ||"),
+            tokens("( ) { } ; : , . = == != < > <= >= + - * / ! && ||"),
             vec![
-                LParen, RParen, LBrace, RBrace, Semicolon, Comma, Dot, Eq, EqEq, BangEq, Lt, Gt,
-                LtEq, GtEq, Plus, Minus, Star, Slash, Bang, And, Or
+                LParen, RParen, LBrace, RBrace, Semicolon, Colon, Comma, Dot, Eq, EqEq, BangEq, Lt,
+                Gt, LtEq, GtEq, Plus, Minus, Star, Slash, Bang, And, Or
             ]
         );
     }

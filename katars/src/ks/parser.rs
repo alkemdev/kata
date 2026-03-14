@@ -12,13 +12,13 @@ use super::lexer::Token;
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program = stmt*
-//   stmt    = expr ';'
+//   stmt    = 'ret' expr ';'?    -- explicit return
+//           | expr ';'?
 //   expr    = call
 //   call    = ident '(' (expr (',' expr)*)? ')'   -- function call
 //           | atom
 //   atom    = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
 //
-// Phase 1 supports only: print("hello, world");
 // The full token set is already defined in the lexer for future phases.
 
 fn span(s: &SimpleSpan) -> (usize, usize) {
@@ -85,9 +85,16 @@ fn stmt_parser<'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token, Span = SimpleSpan>,
 {
-    expr_parser()
-        .then_ignore(just(Token::Semicolon))
-        .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())))
+    let ret_stmt = just(Token::Ret)
+        .ignore_then(expr_parser())
+        .then_ignore(just(Token::Semicolon).or_not())
+        .map_with(|expr, ex| Spanned::new(Stmt::Ret(expr), span(&ex.span())));
+
+    let expr_stmt = expr_parser()
+        .then_ignore(just(Token::Semicolon).or_not())
+        .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
+
+    ret_stmt.or(expr_stmt)
 }
 
 fn program_parser<'tokens, I>() -> impl Parser<'tokens, I, Program, extra::Err<Rich<'tokens, Token>>>
@@ -185,7 +192,9 @@ mod tests {
     fn parse_print_call() {
         let prog = parse_ok(r#"print("hello, world");"#);
         assert_eq!(prog.len(), 1);
-        let Stmt::Expr(ref expr) = prog[0].node;
+        let Stmt::Expr(ref expr) = prog[0].node else {
+            panic!("expected Expr stmt, got {:?}", prog[0].node)
+        };
         let Expr::Call {
             ref callee,
             ref args,
@@ -200,20 +209,28 @@ mod tests {
 
     #[test]
     fn parse_multiple_statements() {
+        // With semicolons.
         let prog = parse_ok(r#"print("a"); print("b");"#);
+        assert_eq!(prog.len(), 2);
+        // Without semicolons.
+        let prog = parse_ok("print(true)\nprint(false)");
         assert_eq!(prog.len(), 2);
     }
 
     #[test]
     fn parse_bool_literals() {
         let prog = parse_ok("print(true); print(false);");
-        let Stmt::Expr(ref a) = prog[0].node;
+        let Stmt::Expr(ref a) = prog[0].node else {
+            panic!()
+        };
         let Expr::Call { ref args, .. } = a.node else {
             panic!()
         };
         assert!(matches!(args[0].node, Expr::Bool(true)));
 
-        let Stmt::Expr(ref b) = prog[1].node;
+        let Stmt::Expr(ref b) = prog[1].node else {
+            panic!()
+        };
         let Expr::Call { ref args, .. } = b.node else {
             panic!()
         };
@@ -223,7 +240,9 @@ mod tests {
     #[test]
     fn parse_nil_literal() {
         let prog = parse_ok("print(nil);");
-        let Stmt::Expr(ref expr) = prog[0].node;
+        let Stmt::Expr(ref expr) = prog[0].node else {
+            panic!()
+        };
         let Expr::Call { ref args, .. } = expr.node else {
             panic!()
         };
@@ -233,7 +252,9 @@ mod tests {
     #[test]
     fn parse_number_literal() {
         let prog = parse_ok("print(42);");
-        let Stmt::Expr(ref expr) = prog[0].node;
+        let Stmt::Expr(ref expr) = prog[0].node else {
+            panic!()
+        };
         let Expr::Call { ref args, .. } = expr.node else {
             panic!()
         };
@@ -249,12 +270,31 @@ mod tests {
         assert!(end > 0);
     }
 
-    // ── error path ────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_ret_stmt() {
+        let prog = parse_ok("ret 42");
+        assert_eq!(prog.len(), 1);
+        let Stmt::Ret(ref expr) = prog[0].node else {
+            panic!("expected Ret, got {:?}", prog[0].node)
+        };
+        assert!(matches!(expr.node, Expr::Num(n) if (n - 42.0).abs() < f64::EPSILON));
+    }
 
     #[test]
-    fn parse_error_missing_semicolon() {
-        parse_err(r#"print("hello")"#);
+    fn parse_ret_with_semicolon() {
+        let prog = parse_ok("ret true;");
+        assert_eq!(prog.len(), 1);
+        assert!(matches!(prog[0].node, Stmt::Ret(_)));
     }
+
+    #[test]
+    fn parse_no_semicolon() {
+        // Semicolons are optional; a bare call must parse successfully.
+        let prog = parse_ok(r#"print("hello")"#);
+        assert_eq!(prog.len(), 1);
+    }
+
+    // ── error path ────────────────────────────────────────────────────────────
 
     #[test]
     fn parse_error_unclosed_paren() {
