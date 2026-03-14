@@ -43,8 +43,6 @@ impl ReplState {
 
         info!(input = %input, "repl submit");
 
-        // Capture stdout from ks::run by running it in a way we can catch output.
-        // For now, we run it normally and capture the result type only.
         let source = if input.ends_with(';') {
             input.clone()
         } else {
@@ -53,10 +51,13 @@ impl ReplState {
 
         let result = match ks::parse(&source, "<repl>") {
             Err(()) => Err("parse error".to_string()),
-            Ok(program) => match ks::eval::exec_program(&program) {
-                Ok(()) => Ok(String::new()),
-                Err(e) => Err(e),
-            },
+            Ok(program) => {
+                let mut buf = Vec::new();
+                match ks::eval::exec_program(&program, &mut buf) {
+                    Ok(()) => Ok(String::from_utf8_lossy(&buf).into_owned()),
+                    Err(e) => Err(e),
+                }
+            }
         };
 
         debug!(?result, "repl result");

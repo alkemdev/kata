@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
@@ -33,26 +35,26 @@ impl std::fmt::Display for Value {
 
 // ── Interpreter ───────────────────────────────────────────────────────────────
 
-/// Execute a fully-parsed program, printing side-effects to stdout.
-pub fn exec_program(program: &Program) -> Result<(), String> {
+/// Execute a fully-parsed program, writing side-effects to `out`.
+pub fn exec_program(program: &Program, out: &mut impl Write) -> Result<(), String> {
     debug!(stmts = program.len(), "exec_program");
     for stmt in program {
-        exec_stmt(stmt)?;
+        exec_stmt(stmt, out)?;
     }
     Ok(())
 }
 
-fn exec_stmt(stmt: &Spanned<Stmt>) -> Result<(), String> {
+fn exec_stmt(stmt: &Spanned<Stmt>, out: &mut impl Write) -> Result<(), String> {
     trace!(?stmt.node, "exec_stmt");
     match &stmt.node {
         Stmt::Expr(expr) => {
-            eval_expr(expr)?;
+            eval_expr(expr, out)?;
             Ok(())
         }
     }
 }
 
-fn eval_expr(expr: &Spanned<Expr>) -> Result<Value, String> {
+fn eval_expr(expr: &Spanned<Expr>, out: &mut impl Write) -> Result<Value, String> {
     trace!(?expr.node, "eval_expr");
     match &expr.node {
         Expr::Nil => Ok(Value::Nil),
@@ -61,19 +63,19 @@ fn eval_expr(expr: &Spanned<Expr>) -> Result<Value, String> {
         Expr::Str(s) => Ok(Value::Str(s.clone())),
         Expr::Ident(name) => Err(format!("undefined variable '{name}'")),
 
-        Expr::Call { callee, args } => call(callee, args),
+        Expr::Call { callee, args } => call(callee, args, out),
     }
 }
 
-fn call(name: &str, args: &[Spanned<Expr>]) -> Result<Value, String> {
+fn call(name: &str, args: &[Spanned<Expr>], out: &mut impl Write) -> Result<Value, String> {
     debug!(name, argc = args.len(), "call");
     match name {
         "print" => {
             let parts: Vec<String> = args
                 .iter()
-                .map(|a| eval_expr(a).map(|v| v.to_string()))
+                .map(|a| eval_expr(a, out).map(|v| v.to_string()))
                 .collect::<Result<_, _>>()?;
-            println!("{}", parts.join(", "));
+            writeln!(out, "{}", parts.join(", ")).map_err(|e| e.to_string())?;
             Ok(Value::Nil)
         }
         other => Err(format!("unknown function '{other}'")),
@@ -153,14 +155,16 @@ mod tests {
     #[test]
     fn eval_literals() {
         let prog = program(vec![call_stmt("print", vec![s(Expr::Str("hi".into()))])]);
-        assert!(exec_program(&prog).is_ok());
+        let mut buf = Vec::new();
+        assert!(exec_program(&prog, &mut buf).is_ok());
+        assert_eq!(buf, b"hi\n");
     }
 
     #[test]
     fn eval_nil_literal() {
         // nil as an argument evaluates without error.
         let prog = program(vec![call_stmt("print", vec![s(Expr::Nil)])]);
-        assert!(exec_program(&prog).is_ok());
+        assert!(exec_program(&prog, &mut Vec::new()).is_ok());
     }
 
     #[test]
@@ -169,24 +173,24 @@ mod tests {
             "print",
             vec![s(Expr::Bool(true)), s(Expr::Bool(false))],
         )]);
-        assert!(exec_program(&prog).is_ok());
+        assert!(exec_program(&prog, &mut Vec::new()).is_ok());
     }
 
     #[test]
     fn eval_undefined_variable_is_error() {
         let prog = program(vec![call_stmt("print", vec![s(Expr::Ident("x".into()))])]);
-        assert!(exec_program(&prog).is_err());
+        assert!(exec_program(&prog, &mut Vec::new()).is_err());
     }
 
     #[test]
     fn eval_unknown_function_is_error() {
         let prog = program(vec![call_stmt("undefined_fn", vec![])]);
-        let err = exec_program(&prog).unwrap_err();
+        let err = exec_program(&prog, &mut Vec::new()).unwrap_err();
         assert!(err.contains("unknown function"), "unexpected error: {err}");
     }
 
     #[test]
     fn eval_empty_program() {
-        assert!(exec_program(&program(vec![])).is_ok());
+        assert!(exec_program(&program(vec![]), &mut Vec::new()).is_ok());
     }
 }

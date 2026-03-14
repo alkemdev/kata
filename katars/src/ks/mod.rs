@@ -20,5 +20,6 @@ pub fn parse(source: &str, filename: &str) -> Result<Program, ()> {
 /// Run `source`: parse then evaluate. Errors go to stderr.
 pub fn run(source: &str, filename: &str) -> Result<(), ()> {
     let program = parse(source, filename)?;
-    eval::exec_program(&program).map_err(|e| eprintln!("runtime error: {e}"))
+    eval::exec_program(&program, &mut std::io::stdout())
+        .map_err(|e| eprintln!("runtime error: {e}"))
 }
