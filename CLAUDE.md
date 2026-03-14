@@ -25,17 +25,32 @@ kata/
 │   └── tests/
 │       └── conformance.rs      subprocess-based conformance runner
 ├── tests/
-│   └── ks/                     conformance fixtures
-│       └── <category>/
-│           ├── <name>.ks
-│           ├── <name>.expected     (exit 0, stdout match)
-│           └── <name>.expected_err (nonzero exit, stderr contains fragment)
+│   └── ks/
+│       └── syntax/             conformance fixtures
+│           ├── expr/
+│           ├── error/
+│           ├── func/
+│           ├── if/
+│           ├── for/
+│           ├── literal/
+│           ├── stmt/
+│           ├── type/
+│           ├── warning/
+│           └── while/
+│               ├── <name>.ks
+│               ├── <name>.expected     (exit 0, stdout match)
+│               └── <name>.expected_err (nonzero exit, stderr contains fragment)
 └── docs/
     ├── plan/                   vision, architecture, roadmap
-    └── dev/                    feature specs and workflow
-        ├── feature-template.md spec template
-        ├── feature-workflow.md step-by-step process
-        └── specs/              per-feature specs (one file each)
+    ├── dev/                    feature specs and workflow
+    │   ├── feature-template.md spec template
+    │   ├── feature-workflow.md step-by-step process
+    │   └── specs/              per-feature specs (one file each)
+    └── disc/                   language design decisions
+        ├── README.md           workflow: when to write one, step-by-step process
+        ├── template.md         copy-paste template
+        ├── open/               decisions still being weighed
+        └── done/               closed decisions — source of truth, don't edit
 ```
 
 ## Key invariants
@@ -46,6 +61,12 @@ kata/
 - **BNF comment in `parser.rs` stays current** — update it before writing parser code.
 - **Serde on all AST types** — `Expr`, `Stmt`, `Program` must derive `Serialize`/`Deserialize` so `--dump-ast | jq .` works.
 - **No panics in `eval.rs`** — return `Err(String)` for all runtime errors.
+
+## Language design decisions
+
+Before proposing a change to KataScript syntax or semantics, check `docs/disc/done/` — the Decision section is the source of truth for that choice. `docs/disc/open/` lists choices still being weighed.
+
+Before implementing a feature with non-obvious design alternatives, check whether an open decision doc already covers it. If not, suggest creating one.
 
 ## Running tests
 

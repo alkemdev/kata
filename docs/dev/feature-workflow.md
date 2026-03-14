@@ -4,6 +4,12 @@ This document describes the standard process for adding a feature to KataScript.
 
 ---
 
+## Step 0 — Check for open decisions
+
+Before writing the spec, scan `docs/disc/open/` for decisions that affect this feature's design surface. If a relevant open decision exists, resolve it first or note it explicitly in the spec's Interactions section. If the feature requires a non-trivial design choice with no existing decision doc, create one first (see `docs/disc/README.md`).
+
+---
+
 ## Step 1 — Write the spec
 
 Copy the template and fill it in:
