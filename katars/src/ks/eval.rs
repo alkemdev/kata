@@ -5,11 +5,27 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
-use super::ast::{Expr, Program, Spanned, Stmt};
+use super::ast::{Expr, Program, Spanned, Stmt, VariantDef};
+
+// ── Enum type registry ───────────────────────────────────────────────────────
+
+/// A registered enum type definition.
+#[derive(Debug, Clone)]
+pub struct EnumType {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub variants: IndexMap<String, VariantInfo>,
+}
+
+/// Info about a single variant: how many fields it expects.
+#[derive(Debug, Clone)]
+pub struct VariantInfo {
+    pub field_count: usize,
+}
 
 // ── Environment ──────────────────────────────────────────────────────────────
 
-/// Lexically-scoped variable bindings.
+/// Lexically-scoped variable bindings and type definitions.
 ///
 /// A stack of frames: lookup walks from innermost to outermost.
 /// `let` always binds in the current (innermost) frame.
@@ -19,12 +35,15 @@ use super::ast::{Expr, Program, Spanned, Stmt};
 #[derive(Debug)]
 pub struct Scope {
     frames: Vec<IndexMap<String, Value>>,
+    /// Enum type definitions, keyed by name. Not scoped — enums are global.
+    types: IndexMap<String, EnumType>,
 }
 
 impl Scope {
     pub fn new() -> Self {
         Self {
             frames: vec![IndexMap::new()],
+            types: IndexMap::new(),
         }
     }
 
@@ -44,6 +63,16 @@ impl Scope {
             .last_mut()
             .expect("scope always has at least one frame")
             .insert(name, value);
+    }
+
+    /// Register an enum type definition.
+    pub fn define_enum(&mut self, def: EnumType) {
+        self.types.insert(def.name.clone(), def);
+    }
+
+    /// Look up an enum type definition.
+    pub fn get_enum(&self, name: &str) -> Option<&EnumType> {
+        self.types.get(name)
     }
 
     /// Enter a new inner frame.
@@ -72,6 +101,12 @@ pub enum Value {
         params: Vec<String>,
         body: Vec<Spanned<Stmt>>,
     },
+    /// An enum variant value.
+    Enum {
+        type_name: String,
+        variant: String,
+        fields: Vec<Value>,
+    },
 }
 
 impl PartialEq for Value {
@@ -81,7 +116,19 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Num(a), Value::Num(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Func { .. }, Value::Func { .. }) => false, // functions are never equal
+            (Value::Func { .. }, Value::Func { .. }) => false,
+            (
+                Value::Enum {
+                    type_name: t1,
+                    variant: v1,
+                    fields: f1,
+                },
+                Value::Enum {
+                    type_name: t2,
+                    variant: v2,
+                    fields: f2,
+                },
+            ) => t1 == t2 && v1 == v2 && f1 == f2,
             _ => false,
         }
     }
@@ -101,6 +148,16 @@ impl std::fmt::Display for Value {
             }
             Value::Str(s) => write!(f, "{s}"),
             Value::Func { params, .. } => write!(f, "<func({})>", params.join(", ")),
+            Value::Enum {
+                variant, fields, ..
+            } => {
+                if fields.is_empty() {
+                    write!(f, "{variant}")
+                } else {
+                    let inner: Vec<String> = fields.iter().map(|v| v.to_string()).collect();
+                    write!(f, "{variant}({})", inner.join(", "))
+                }
+            }
         }
     }
 }
@@ -122,8 +179,27 @@ pub enum Flow {
 }
 
 /// Execute a fully-parsed program, writing side-effects to `out`.
-pub fn exec_program(program: &Program, out: &mut impl Write) -> Result<(), String> {
+///
+/// If `prelude` is provided, it is executed first to populate the environment
+/// with standard definitions (Opt, Res, etc.).
+pub fn exec_program(
+    program: &Program,
+    prelude: Option<&Program>,
+    out: &mut impl Write,
+) -> Result<(), String> {
     let mut env = Scope::new();
+
+    // Load prelude into the environment.
+    if let Some(pre) = prelude {
+        debug!(stmts = pre.len(), "loading prelude");
+        for stmt in pre {
+            match exec_stmt(stmt, &mut env, out)? {
+                Flow::Next(_) => {}
+                Flow::Return(_) => return Err("ret in prelude".to_string()),
+            }
+        }
+    }
+
     debug!(stmts = program.len(), "exec_program");
     for stmt in program {
         match exec_stmt(stmt, &mut env, out)? {
@@ -143,6 +219,27 @@ pub fn exec_stmt(
     trace!(?stmt.node, "exec_stmt");
     match &stmt.node {
         Stmt::Expr(expr) => eval_expr(expr, env, out),
+        Stmt::EnumDef {
+            name,
+            type_params,
+            variants,
+        } => {
+            let mut variant_map = IndexMap::new();
+            for v in variants {
+                variant_map.insert(
+                    v.name.clone(),
+                    VariantInfo {
+                        field_count: v.fields.len(),
+                    },
+                );
+            }
+            env.define_enum(EnumType {
+                name: name.clone(),
+                type_params: type_params.clone(),
+                variants: variant_map,
+            });
+            Ok(Flow::Next(Value::Nil))
+        }
         Stmt::FuncDef { name, params, body } => {
             let func = Value::Func {
                 params: params.clone(),
@@ -206,6 +303,43 @@ fn eval_expr(expr: &Spanned<Expr>, env: &mut Scope, out: &mut impl Write) -> Res
             let result = exec_block(body, env, out);
             env.pop();
             result
+        }
+
+        Expr::EnumVariant {
+            enum_name,
+            type_args: _,
+            variant,
+            args,
+        } => {
+            let enum_def = env
+                .get_enum(enum_name)
+                .ok_or_else(|| format!("undefined type '{enum_name}'"))?
+                .clone();
+
+            let variant_info = enum_def
+                .variants
+                .get(variant.as_str())
+                .ok_or_else(|| format!("'{enum_name}' has no variant '{variant}'"))?
+                .clone();
+
+            if args.len() != variant_info.field_count {
+                return Err(format!(
+                    "'{variant}' expects {} argument(s), got {}",
+                    variant_info.field_count,
+                    args.len()
+                ));
+            }
+
+            let mut field_vals = Vec::with_capacity(args.len());
+            for a in args {
+                field_vals.push(eval_value(a, env, out)?);
+            }
+
+            Ok(Flow::Next(Value::Enum {
+                type_name: enum_name.clone(),
+                variant: variant.clone(),
+                fields: field_vals,
+            }))
         }
 
         Expr::Call { callee, args } => call(callee, args, env, out),
@@ -360,7 +494,7 @@ mod tests {
     fn eval_literals() {
         let prog = program(vec![call_stmt("print", vec![s(Expr::Str("hi".into()))])]);
         let mut buf = Vec::new();
-        assert!(exec_program(&prog, &mut buf).is_ok());
+        assert!(exec_program(&prog, None, &mut buf).is_ok());
         assert_eq!(buf, b"hi\n");
     }
 
@@ -368,7 +502,7 @@ mod tests {
     fn eval_nil_literal() {
         // nil as an argument evaluates without error.
         let prog = program(vec![call_stmt("print", vec![s(Expr::Nil)])]);
-        assert!(exec_program(&prog, &mut Vec::new()).is_ok());
+        assert!(exec_program(&prog, None, &mut Vec::new()).is_ok());
     }
 
     #[test]
@@ -377,31 +511,31 @@ mod tests {
             "print",
             vec![s(Expr::Bool(true)), s(Expr::Bool(false))],
         )]);
-        assert!(exec_program(&prog, &mut Vec::new()).is_ok());
+        assert!(exec_program(&prog, None, &mut Vec::new()).is_ok());
     }
 
     #[test]
     fn eval_undefined_variable_is_error() {
         let prog = program(vec![call_stmt("print", vec![s(Expr::Name("x".into()))])]);
-        assert!(exec_program(&prog, &mut Vec::new()).is_err());
+        assert!(exec_program(&prog, None, &mut Vec::new()).is_err());
     }
 
     #[test]
     fn eval_unknown_function_is_error() {
         let prog = program(vec![call_stmt("undefined_fn", vec![])]);
-        let err = exec_program(&prog, &mut Vec::new()).unwrap_err();
+        let err = exec_program(&prog, None, &mut Vec::new()).unwrap_err();
         assert!(err.contains("unknown function"), "unexpected error: {err}");
     }
 
     #[test]
     fn eval_empty_program() {
-        assert!(exec_program(&program(vec![]), &mut Vec::new()).is_ok());
+        assert!(exec_program(&program(vec![]), None, &mut Vec::new()).is_ok());
     }
 
     #[test]
     fn eval_ret_outside_function_is_error() {
         let prog = program(vec![s(Stmt::Ret(s(Expr::Num(42.0))))]);
-        let err = exec_program(&prog, &mut Vec::new()).unwrap_err();
+        let err = exec_program(&prog, None, &mut Vec::new()).unwrap_err();
         assert!(
             err.contains("ret outside of function"),
             "unexpected error: {err}"

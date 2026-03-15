@@ -36,6 +36,8 @@ pub enum Token {
     If,
     #[token("else")]
     Else,
+    #[token("enum")]
+    Enum,
     #[token("while")]
     While,
     #[token("with")]
@@ -53,6 +55,10 @@ pub enum Token {
     LParen,
     #[token(")")]
     RParen,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -111,11 +117,14 @@ impl fmt::Display for Token {
             Token::Func => write!(f, "func"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
+            Token::Enum => write!(f, "enum"),
             Token::While => write!(f, "while"),
             Token::With => write!(f, "with"),
             Token::Ret => write!(f, "ret"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
+            Token::LBracket => write!(f, "["),
+            Token::RBracket => write!(f, "]"),
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
             Token::Semicolon => write!(f, ";"),
@@ -227,6 +236,7 @@ mod tests {
         assert_eq!(one("func"), Token::Func);
         assert_eq!(one("if"), Token::If);
         assert_eq!(one("else"), Token::Else);
+        assert_eq!(one("enum"), Token::Enum);
         assert_eq!(one("while"), Token::While);
         assert_eq!(one("with"), Token::With);
         assert_eq!(one("ret"), Token::Ret);
@@ -255,10 +265,10 @@ mod tests {
     fn lex_punctuation() {
         use Token::*;
         assert_eq!(
-            tokens("( ) { } ; : , . = == != < > <= >= + - * / ! && ||"),
+            tokens("( ) [ ] { } ; : , . = == != < > <= >= + - * / ! && ||"),
             vec![
-                LParen, RParen, LBrace, RBrace, Semicolon, Colon, Comma, Dot, Eq, EqEq, BangEq, Lt,
-                Gt, LtEq, GtEq, Plus, Minus, Star, Slash, Bang, And, Or
+                LParen, RParen, LBracket, RBracket, LBrace, RBrace, Semicolon, Colon, Comma, Dot,
+                Eq, EqEq, BangEq, Lt, Gt, LtEq, GtEq, Plus, Minus, Star, Slash, Bang, And, Or
             ]
         );
     }

@@ -32,8 +32,22 @@ pub enum Stmt {
         params: Vec<String>,
         body: Vec<Spanned<Stmt>>,
     },
+    /// `enum Name[T] { Variant(T), Unit }` — enum type definition.
+    EnumDef {
+        name: String,
+        type_params: Vec<String>,
+        variants: Vec<VariantDef>,
+    },
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
+}
+
+/// A single variant in an enum definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariantDef {
+    pub name: String,
+    /// Field type names (e.g., `["T"]` for `Some(T)`). Empty for unit variants.
+    pub fields: Vec<String>,
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -55,6 +69,14 @@ pub enum Expr {
     With {
         bindings: Vec<(String, Spanned<Expr>)>,
         body: Vec<Spanned<Stmt>>,
+    },
+    /// Enum variant construction: `EnumName[TypeArgs].Variant(args)`.
+    /// e.g., `Opt[Int].Some(42)`, `Color.Red`
+    EnumVariant {
+        enum_name: String,
+        type_args: Vec<String>,
+        variant: String,
+        args: Vec<Spanned<Expr>>,
     },
     /// Function call: `callee(args...)`.
     Call {

@@ -6,17 +6,22 @@ use chumsky::{
 use logos::Logos;
 use tracing::{debug, info};
 
-use super::ast::{Expr, Program, Spanned, Stmt};
+use super::ast::{Expr, Program, Spanned, Stmt, VariantDef};
 use super::lexer::Token;
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
-//   program  = stmt*
-//   stmt     = 'func' IDENT '(' params? ')' '{' stmt* '}'  -- function def
-//            | 'let' IDENT '=' expr ';'?                    -- variable binding
-//            | 'ret' expr ';'?                               -- explicit return
-//            | expr ';'?
-//   params   = IDENT (',' IDENT)*
+//   program    = stmt*
+//   stmt       = 'enum' IDENT type_params? '{' variant_list '}'  -- enum def
+//              | 'func' IDENT '(' params? ')' '{' stmt* '}'      -- function def
+//              | 'let' IDENT '=' expr ';'?                        -- variable binding
+//              | 'ret' expr ';'?                                   -- explicit return
+//              | expr ';'?
+//   type_params = '[' IDENT (',' IDENT)* ']'
+//   variant_list = variant (',' variant)* ','?
+//   variant    = IDENT '(' IDENT (',' IDENT)* ')'  -- data variant
+//              | IDENT                               -- unit variant
+//   params     = IDENT (',' IDENT)*
 //   expr     = with_expr | call
 //   with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
 //   binding  = IDENT '=' expr
@@ -57,20 +62,52 @@ where
                 .clone()
                 .delimited_by(just(Token::LParen), just(Token::RParen));
 
+            // Type args: [Ident, Ident, ...]
+            let type_args = select! { Token::Ident(name) => name }
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBracket), just(Token::RBracket));
+
+            // Call args: (expr, expr, ...)
+            let call_args = expr
+                .clone()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen));
+
+            // Ident followed by optional type_args, optional .Variant, optional (args).
+            // Handles: name, name(args), Name[T].Variant, Name[T].Variant(args),
+            //          Name.Variant, Name.Variant(args)
             let ident_or_call = select! { Token::Ident(name) => name }
+                .then(type_args.or_not())
                 .then(
-                    expr.clone()
-                        .separated_by(just(Token::Comma))
-                        .allow_trailing()
-                        .collect::<Vec<_>>()
-                        .delimited_by(just(Token::LParen), just(Token::RParen))
+                    just(Token::Dot)
+                        .ignore_then(select! { Token::Ident(name) => name })
+                        .then(call_args.clone().or_not())
                         .or_not(),
                 )
-                .map_with(|(name, args), ex| {
+                .then(call_args.or_not())
+                .map_with(|(((name, targs), dot_part), direct_args), ex| {
                     let s = span(&ex.span());
-                    match args {
-                        Some(args) => Spanned::new(Expr::Call { callee: name, args }, s),
-                        None => Spanned::new(Expr::Name(name), s),
+                    match dot_part {
+                        // Name[T].Variant or Name[T].Variant(args)
+                        Some((variant, variant_args)) => Spanned::new(
+                            Expr::EnumVariant {
+                                enum_name: name,
+                                type_args: targs.unwrap_or_default(),
+                                variant,
+                                args: variant_args.unwrap_or_default(),
+                            },
+                            s,
+                        ),
+                        None => match direct_args {
+                            // name(args) — function call
+                            Some(args) => Spanned::new(Expr::Call { callee: name, args }, s),
+                            // bare name
+                            None => Spanned::new(Expr::Name(name), s),
+                        },
                     }
                 });
 
@@ -118,6 +155,49 @@ where
 
         // ── statement parser ─────────────────────────────────────────────
 
+        // variant = IDENT '(' IDENT (',' IDENT)* ')' | IDENT
+        let variant_def = select! { Token::Ident(name) => name }
+            .then(
+                select! { Token::Ident(name) => name }
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen))
+                    .or_not(),
+            )
+            .map(|(name, fields)| VariantDef {
+                name,
+                fields: fields.unwrap_or_default(),
+            });
+
+        // enum_def = 'enum' IDENT type_params? '{' variant_list '}'
+        let enum_type_params = select! { Token::Ident(name) => name }
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LBracket), just(Token::RBracket));
+
+        let enum_def = just(Token::Enum)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(enum_type_params.or_not())
+            .then(
+                variant_def
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )
+            .map_with(|((name, type_params), variants), ex| {
+                Spanned::new(
+                    Stmt::EnumDef {
+                        name,
+                        type_params: type_params.unwrap_or_default(),
+                        variants,
+                    },
+                    span(&ex.span()),
+                )
+            });
+
         let func_def = just(Token::Func)
             .ignore_then(select! { Token::Ident(name) => name })
             .then(
@@ -155,7 +235,11 @@ where
             .then_ignore(just(Token::Semicolon).or_not())
             .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
 
-        func_def.or(let_stmt).or(ret_stmt).or(expr_stmt)
+        enum_def
+            .or(func_def)
+            .or(let_stmt)
+            .or(ret_stmt)
+            .or(expr_stmt)
     })
 }
 
