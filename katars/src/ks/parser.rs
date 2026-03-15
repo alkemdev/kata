@@ -12,9 +12,11 @@ use super::lexer::Token;
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program  = stmt*
-//   stmt     = 'let' IDENT '=' expr ';'?   -- variable binding
-//            | 'ret' expr ';'?              -- explicit return
+//   stmt     = 'func' IDENT '(' params? ')' '{' stmt* '}'  -- function def
+//            | 'let' IDENT '=' expr ';'?                    -- variable binding
+//            | 'ret' expr ';'?                               -- explicit return
 //            | expr ';'?
+//   params   = IDENT (',' IDENT)*
 //   expr     = with_expr | call
 //   with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
 //   binding  = IDENT '=' expr
@@ -116,6 +118,25 @@ where
 
         // ── statement parser ─────────────────────────────────────────────
 
+        let func_def = just(Token::Func)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(
+                select! { Token::Ident(name) => name }
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
+            .then(
+                stmt.clone()
+                    .repeated()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )
+            .map_with(|((name, params), body), ex| {
+                Spanned::new(Stmt::FuncDef { name, params, body }, span(&ex.span()))
+            });
+
         let let_stmt = just(Token::Let)
             .ignore_then(select! { Token::Ident(name) => name })
             .then_ignore(just(Token::Eq))
@@ -134,7 +155,7 @@ where
             .then_ignore(just(Token::Semicolon).or_not())
             .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
 
-        let_stmt.or(ret_stmt).or(expr_stmt)
+        func_def.or(let_stmt).or(ret_stmt).or(expr_stmt)
     })
 }
 

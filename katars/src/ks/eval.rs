@@ -60,13 +60,31 @@ impl Scope {
 
 // ── Runtime value ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Value {
     Nil,
     Bool(bool),
     Num(f64),
     Str(String),
+    /// A user-defined function: parameter names + body AST.
+    Func {
+        params: Vec<String>,
+        body: Vec<Spanned<Stmt>>,
+    },
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Nil, Value::Nil) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Num(a), Value::Num(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Func { .. }, Value::Func { .. }) => false, // functions are never equal
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -82,6 +100,7 @@ impl std::fmt::Display for Value {
                 }
             }
             Value::Str(s) => write!(f, "{s}"),
+            Value::Func { params, .. } => write!(f, "<func({})>", params.join(", ")),
         }
     }
 }
@@ -123,56 +142,65 @@ pub fn exec_stmt(
 ) -> Result<Flow, String> {
     trace!(?stmt.node, "exec_stmt");
     match &stmt.node {
-        Stmt::Expr(expr) => {
-            let val = eval_expr(expr, env, out)?;
-            Ok(Flow::Next(val))
+        Stmt::Expr(expr) => eval_expr(expr, env, out),
+        Stmt::FuncDef { name, params, body } => {
+            let func = Value::Func {
+                params: params.clone(),
+                body: body.clone(),
+            };
+            env.set(name.clone(), func);
+            Ok(Flow::Next(Value::Nil))
         }
         Stmt::Let { name, value } => {
-            let val = eval_expr(value, env, out)?;
+            let val = eval_value(value, env, out)?;
             env.set(name.clone(), val);
             Ok(Flow::Next(Value::Nil))
         }
         Stmt::Ret(expr) => {
-            let val = eval_expr(expr, env, out)?;
+            let val = eval_value(expr, env, out)?;
             Ok(Flow::Return(val))
         }
     }
 }
 
-/// Execute a block of statements, returning the value of the last expression-statement.
+/// Execute a block of statements, returning the control flow outcome.
 ///
-/// If the block is empty or ends with a non-expression statement, returns `Nil`.
+/// Returns `Flow::Next(v)` where `v` is the last expression-statement's value,
+/// or `Flow::Return(v)` if a `ret` was hit (propagated to the caller).
 fn exec_block(
     stmts: &[Spanned<Stmt>],
     env: &mut Scope,
     out: &mut impl Write,
-) -> Result<Value, String> {
+) -> Result<Flow, String> {
     let mut last_val = Value::Nil;
     for stmt in stmts {
         match exec_stmt(stmt, env, out)? {
             Flow::Next(v) => last_val = v,
-            Flow::Return(_) => return Err("ret outside of function".to_string()),
+            ret @ Flow::Return(_) => return Ok(ret),
         }
     }
-    Ok(last_val)
+    Ok(Flow::Next(last_val))
 }
 
-fn eval_expr(expr: &Spanned<Expr>, env: &mut Scope, out: &mut impl Write) -> Result<Value, String> {
+/// Evaluate an expression, returning `Flow` to support `ret` propagation
+/// through `with` blocks.
+fn eval_expr(expr: &Spanned<Expr>, env: &mut Scope, out: &mut impl Write) -> Result<Flow, String> {
     trace!(?expr.node, "eval_expr");
     match &expr.node {
-        Expr::Nil => Ok(Value::Nil),
-        Expr::Bool(b) => Ok(Value::Bool(*b)),
-        Expr::Num(n) => Ok(Value::Num(*n)),
-        Expr::Str(s) => Ok(Value::Str(s.clone())),
+        Expr::Nil => Ok(Flow::Next(Value::Nil)),
+        Expr::Bool(b) => Ok(Flow::Next(Value::Bool(*b))),
+        Expr::Num(n) => Ok(Flow::Next(Value::Num(*n))),
+        Expr::Str(s) => Ok(Flow::Next(Value::Str(s.clone()))),
         Expr::Name(name) => env
             .get(name)
             .cloned()
+            .map(Flow::Next)
             .ok_or_else(|| format!("undefined variable '{name}'")),
 
         Expr::With { bindings, body } => {
             env.push();
             for (name, val_expr) in bindings {
-                let val = eval_expr(val_expr, env, out)?;
+                let val = eval_value(val_expr, env, out)?;
                 env.set(name.clone(), val);
             }
             let result = exec_block(body, env, out);
@@ -184,24 +212,78 @@ fn eval_expr(expr: &Spanned<Expr>, env: &mut Scope, out: &mut impl Write) -> Res
     }
 }
 
+/// Convenience: evaluate an expression and expect a value (not a return).
+/// Used in contexts where `ret` propagation is handled by the caller.
+fn eval_value(
+    expr: &Spanned<Expr>,
+    env: &mut Scope,
+    out: &mut impl Write,
+) -> Result<Value, String> {
+    match eval_expr(expr, env, out)? {
+        Flow::Next(v) => Ok(v),
+        Flow::Return(v) => Ok(v), // In `let x = with { ret 1 }`, the ret value becomes x
+    }
+}
+
 fn call(
     name: &str,
     args: &[Spanned<Expr>],
     env: &mut Scope,
     out: &mut impl Write,
-) -> Result<Value, String> {
+) -> Result<Flow, String> {
     debug!(name, argc = args.len(), "call");
+
+    // Built-in functions.
     match name {
         "print" => {
             let mut parts = Vec::with_capacity(args.len());
             for a in args {
-                parts.push(eval_expr(a, env, out)?.to_string());
+                parts.push(eval_value(a, env, out)?.to_string());
             }
             writeln!(out, "{}", parts.join(" ")).map_err(|e| e.to_string())?;
-            Ok(Value::Nil)
+            return Ok(Flow::Next(Value::Nil));
         }
-        other => Err(format!("unknown function '{other}'")),
+        _ => {}
     }
+
+    // User-defined functions.
+    let func = env
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("unknown function '{name}'"))?;
+
+    let Value::Func { params, body } = func else {
+        return Err(format!("'{name}' is not a function"));
+    };
+
+    // Evaluate arguments before pushing the new scope.
+    let mut arg_vals = Vec::with_capacity(args.len());
+    for a in args {
+        arg_vals.push(eval_value(a, env, out)?);
+    }
+
+    if arg_vals.len() != params.len() {
+        return Err(format!(
+            "'{name}' expects {} argument(s), got {}",
+            params.len(),
+            arg_vals.len()
+        ));
+    }
+
+    // Push function scope, bind params.
+    env.push();
+    for (param, val) in params.iter().zip(arg_vals) {
+        env.set(param.clone(), val);
+    }
+
+    // Execute body — catch Return as the function's result.
+    let result = match exec_block(&body, env, out)? {
+        Flow::Next(v) => v,
+        Flow::Return(v) => v,
+    };
+
+    env.pop();
+    Ok(Flow::Next(result))
 }
 
 #[cfg(test)]

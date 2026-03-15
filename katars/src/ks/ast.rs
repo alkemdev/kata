@@ -26,6 +26,12 @@ pub enum Stmt {
     Expr(Spanned<Expr>),
     /// `let <name> = <expr>` — variable binding.
     Let { name: String, value: Spanned<Expr> },
+    /// `func name(params) { body }` — function definition.
+    FuncDef {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Spanned<Stmt>>,
+    },
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
 }
