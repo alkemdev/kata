@@ -1,9 +1,12 @@
 pub mod ast;
-pub mod eval;
+pub mod interpreter;
 pub mod lexer;
 pub mod parser;
+pub mod types;
+pub mod value;
 
 pub use ast::Program;
+pub use interpreter::Interpreter;
 pub use lexer::SpannedToken;
 
 /// Lex `source` into a token stream. Always succeeds; lex errors appear as
@@ -26,6 +29,8 @@ pub fn run(source: &str, filename: &str) -> Result<(), ()> {
         eprintln!("fatal: failed to parse standard prelude");
     })?;
     let program = parse(source, filename)?;
-    eval::exec_program(&program, Some(&prelude), &mut std::io::stdout())
+    let mut interp = Interpreter::new();
+    interp
+        .exec_program(&program, Some(&prelude), &mut std::io::stdout())
         .map_err(|e| eprintln!("runtime error: {e}"))
 }

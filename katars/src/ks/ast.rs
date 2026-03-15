@@ -29,22 +29,31 @@ pub enum Stmt {
     /// `func name(params) { body }` — function definition.
     FuncDef {
         name: String,
-        params: Vec<String>,
+        params: Vec<Param>,
+        ret_type: Option<String>,
         body: Vec<Spanned<Stmt>>,
     },
     /// `enum Name[T] { Variant(T), Unit }` — enum type definition.
     EnumDef {
         name: String,
         type_params: Vec<String>,
-        variants: Vec<VariantDef>,
+        variants: Vec<AstVariantDef>,
     },
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
 }
 
-/// A single variant in an enum definition.
+/// A function parameter with optional type annotation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VariantDef {
+pub struct Param {
+    pub name: String,
+    /// Type annotation as written in source, e.g., "Int", "Str".
+    pub type_name: Option<String>,
+}
+
+/// A single variant in an enum definition (AST level).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AstVariantDef {
     pub name: String,
     /// Field type names (e.g., `["T"]` for `Some(T)`). Empty for unit variants.
     pub fields: Vec<String>,
@@ -56,8 +65,10 @@ pub struct VariantDef {
 pub enum Expr {
     /// String literal.
     Str(String),
-    /// Numeric literal (parsed as f64).
-    Num(f64),
+    /// Integer literal (arbitrary precision, stored as raw string for lossless parsing).
+    Int(String),
+    /// Float literal (stored as raw string for lossless parsing).
+    Float(String),
     /// Boolean literal.
     Bool(bool),
     /// The nil / null value.
@@ -65,23 +76,23 @@ pub enum Expr {
     /// Variable or type name reference.
     Name(String),
     /// `with` block: scoped bindings + body. Produces the last expression's value.
-    /// `with x = 1, y = 2 { body }` or `with { body }`.
     With {
         bindings: Vec<(String, Spanned<Expr>)>,
         body: Vec<Spanned<Stmt>>,
     },
-    /// Enum variant construction: `EnumName[TypeArgs].Variant(args)`.
-    /// e.g., `Opt[Int].Some(42)`, `Color.Red`
-    EnumVariant {
-        enum_name: String,
-        type_args: Vec<String>,
-        variant: String,
+    /// Attribute access: `a.b`
+    Attr {
+        object: Box<Spanned<Expr>>,
+        name: String,
+    },
+    /// Item access / type args: `a[b, c]`
+    Item {
+        object: Box<Spanned<Expr>>,
         args: Vec<Spanned<Expr>>,
     },
-    /// Function call: `callee(args...)`.
+    /// Function / constructor call: `a(b, c)`
     Call {
-        /// The function being called — an identifier for now.
-        callee: String,
+        callee: Box<Spanned<Expr>>,
         args: Vec<Spanned<Expr>>,
     },
 }
@@ -100,12 +111,11 @@ mod tests {
     #[test]
     fn expr_serde_roundtrip() {
         let expr = Expr::Call {
-            callee: "print".into(),
+            callee: Box::new(Spanned::new(Expr::Name("print".into()), (0, 5))),
             args: vec![Spanned::new(Expr::Str("hello".into()), (6, 13))],
         };
         let json = serde_json::to_string(&expr).unwrap();
         let back: Expr = serde_json::from_str(&json).unwrap();
-        // Spot-check the round-trip without requiring PartialEq on Expr.
         let json2 = serde_json::to_string(&back).unwrap();
         assert_eq!(json, json2);
     }

@@ -6,22 +6,25 @@ use chumsky::{
 use logos::Logos;
 use tracing::{debug, info};
 
-use super::ast::{Expr, Program, Spanned, Stmt, VariantDef};
+use super::ast::{AstVariantDef, Expr, Param, Program, Spanned, Stmt};
 use super::lexer::Token;
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program    = stmt*
-//   stmt       = 'enum' IDENT type_params? '{' variant_list '}'  -- enum def
-//              | 'func' IDENT '(' params? ')' '{' stmt* '}'      -- function def
-//              | 'let' IDENT '=' expr ';'?                        -- variable binding
-//              | 'ret' expr ';'?                                   -- explicit return
+//   stmt       = 'enum' IDENT type_params? '{' variant_list '}'      -- enum def
+//              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}' -- function def
+//              | 'let' IDENT '=' expr ';'?                            -- variable binding
+//              | 'ret' expr ';'?                                       -- explicit return
 //              | expr ';'?
 //   type_params = '[' IDENT (',' IDENT)* ']'
 //   variant_list = variant (',' variant)* ','?
 //   variant    = IDENT '(' IDENT (',' IDENT)* ')'  -- data variant
 //              | IDENT                               -- unit variant
-//   params     = IDENT (',' IDENT)*
+//   params     = param (',' param)*
+//   param      = IDENT ':' IDENT                    -- typed param
+//              | IDENT                               -- untyped param
+//   ret_ann    = ':' IDENT                           -- return type annotation
 //   expr     = with_expr | call
 //   with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
 //   binding  = IDENT '=' expr
@@ -50,69 +53,28 @@ where
         // ── expression parser (uses `stmt` for `with` bodies) ────────────
 
         let expr = recursive(|expr| {
+            // ── atoms ────────────────────────────────────────────────
+
             let str_lit = select! { Token::Str(s) => Expr::Str(s) };
-            let num_lit = select! { Token::Num(n) => Expr::Num(n.parse::<f64>().unwrap_or(0.0)) };
+            let num_lit = select! { Token::Num(n) => {
+                if n.contains('.') {
+                    Expr::Float(n)
+                } else {
+                    Expr::Int(n)
+                }
+            }};
             let bool_lit = select! {
                 Token::True  => Expr::Bool(true),
                 Token::False => Expr::Bool(false),
             };
             let nil_lit = just(Token::Nil).to(Expr::Nil);
+            let name = select! { Token::Ident(s) => Expr::Name(s) };
 
             let paren = expr
                 .clone()
                 .delimited_by(just(Token::LParen), just(Token::RParen));
 
-            // Type args: [Ident, Ident, ...]
-            let type_args = select! { Token::Ident(name) => name }
-                .separated_by(just(Token::Comma))
-                .allow_trailing()
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::LBracket), just(Token::RBracket));
-
-            // Call args: (expr, expr, ...)
-            let call_args = expr
-                .clone()
-                .separated_by(just(Token::Comma))
-                .allow_trailing()
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::LParen), just(Token::RParen));
-
-            // Ident followed by optional type_args, optional .Variant, optional (args).
-            // Handles: name, name(args), Name[T].Variant, Name[T].Variant(args),
-            //          Name.Variant, Name.Variant(args)
-            let ident_or_call = select! { Token::Ident(name) => name }
-                .then(type_args.or_not())
-                .then(
-                    just(Token::Dot)
-                        .ignore_then(select! { Token::Ident(name) => name })
-                        .then(call_args.clone().or_not())
-                        .or_not(),
-                )
-                .then(call_args.or_not())
-                .map_with(|(((name, targs), dot_part), direct_args), ex| {
-                    let s = span(&ex.span());
-                    match dot_part {
-                        // Name[T].Variant or Name[T].Variant(args)
-                        Some((variant, variant_args)) => Spanned::new(
-                            Expr::EnumVariant {
-                                enum_name: name,
-                                type_args: targs.unwrap_or_default(),
-                                variant,
-                                args: variant_args.unwrap_or_default(),
-                            },
-                            s,
-                        ),
-                        None => match direct_args {
-                            // name(args) — function call
-                            Some(args) => Spanned::new(Expr::Call { callee: name, args }, s),
-                            // bare name
-                            None => Spanned::new(Expr::Name(name), s),
-                        },
-                    }
-                });
-
             // with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
-            // binding   = IDENT '=' expr
             let binding = select! { Token::Ident(name) => name }
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone());
@@ -145,12 +107,68 @@ where
                 .or(num_lit)
                 .or(bool_lit)
                 .or(nil_lit)
+                .or(name)
                 .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
                 .or(paren)
-                .or(with_expr)
-                .or(ident_or_call);
+                .or(with_expr);
 
-            atom
+            // ── postfix chain: .attr, [item], (call) ─────────────────
+
+            enum Postfix {
+                Attr(String),
+                Item(Vec<Spanned<Expr>>),
+                Call(Vec<Spanned<Expr>>),
+            }
+
+            let attr = just(Token::Dot)
+                .ignore_then(select! { Token::Ident(name) => name })
+                .map(Postfix::Attr);
+
+            let item = expr
+                .clone()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBracket), just(Token::RBracket))
+                .map(Postfix::Item);
+
+            let call = expr
+                .clone()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen))
+                .map(Postfix::Call);
+
+            let postfix = attr.or(item).or(call);
+
+            atom.foldl(postfix.repeated(), |lhs, op| {
+                // Use the lhs span as a fallback — not perfect but functional.
+                let s = lhs.span;
+                match op {
+                    Postfix::Attr(name) => Spanned::new(
+                        Expr::Attr {
+                            object: Box::new(lhs),
+                            name,
+                        },
+                        s,
+                    ),
+                    Postfix::Item(args) => Spanned::new(
+                        Expr::Item {
+                            object: Box::new(lhs),
+                            args,
+                        },
+                        s,
+                    ),
+                    Postfix::Call(args) => Spanned::new(
+                        Expr::Call {
+                            callee: Box::new(lhs),
+                            args,
+                        },
+                        s,
+                    ),
+                }
+            })
         });
 
         // ── statement parser ─────────────────────────────────────────────
@@ -165,7 +183,7 @@ where
                     .delimited_by(just(Token::LParen), just(Token::RParen))
                     .or_not(),
             )
-            .map(|(name, fields)| VariantDef {
+            .map(|(name, fields)| AstVariantDef {
                 name,
                 fields: fields.unwrap_or_default(),
             });
@@ -198,23 +216,44 @@ where
                 )
             });
 
+        // param = IDENT ':' IDENT | IDENT
+        let param = select! { Token::Ident(name) => name }
+            .then(
+                just(Token::Colon)
+                    .ignore_then(select! { Token::Ident(name) => name })
+                    .or_not(),
+            )
+            .map(|(name, type_name)| Param { name, type_name });
+
+        // ret_ann = ':' IDENT
+        let ret_ann = just(Token::Colon).ignore_then(select! { Token::Ident(name) => name });
+
         let func_def = just(Token::Func)
             .ignore_then(select! { Token::Ident(name) => name })
             .then(
-                select! { Token::Ident(name) => name }
+                param
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::LParen), just(Token::RParen)),
             )
+            .then(ret_ann.or_not())
             .then(
                 stmt.clone()
                     .repeated()
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::LBrace), just(Token::RBrace)),
             )
-            .map_with(|((name, params), body), ex| {
-                Spanned::new(Stmt::FuncDef { name, params, body }, span(&ex.span()))
+            .map_with(|(((name, params), ret_type), body), ex| {
+                Spanned::new(
+                    Stmt::FuncDef {
+                        name,
+                        params,
+                        ret_type,
+                        body,
+                    },
+                    span(&ex.span()),
+                )
             });
 
         let let_stmt = just(Token::Let)
@@ -348,7 +387,7 @@ mod tests {
         else {
             panic!("expected Call, got {:?}", expr.node);
         };
-        assert_eq!(callee, "print");
+        assert!(matches!(callee.node, Expr::Name(ref n) if n == "print"));
         assert_eq!(args.len(), 1);
         assert!(matches!(args[0].node, Expr::Str(ref s) if s == "hello, world"));
     }
@@ -404,7 +443,7 @@ mod tests {
         let Expr::Call { ref args, .. } = expr.node else {
             panic!()
         };
-        assert!(matches!(args[0].node, Expr::Num(n) if (n - 42.0).abs() < f64::EPSILON));
+        assert!(matches!(args[0].node, Expr::Int(ref s) if s == "42"));
     }
 
     #[test]
@@ -423,7 +462,7 @@ mod tests {
         let Stmt::Ret(ref expr) = prog[0].node else {
             panic!("expected Ret, got {:?}", prog[0].node)
         };
-        assert!(matches!(expr.node, Expr::Num(n) if (n - 42.0).abs() < f64::EPSILON));
+        assert!(matches!(expr.node, Expr::Int(ref s) if s == "42"));
     }
 
     #[test]
@@ -452,7 +491,7 @@ mod tests {
             panic!("expected Let, got {:?}", prog[0].node)
         };
         assert_eq!(name, "x");
-        assert!(matches!(value.node, Expr::Num(n) if (n - 42.0).abs() < f64::EPSILON));
+        assert!(matches!(value.node, Expr::Int(ref s) if s == "42"));
     }
 
     #[test]

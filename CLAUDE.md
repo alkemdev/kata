@@ -15,54 +15,46 @@ kata/
 │   ├── src/
 │   │   ├── main.rs             clap CLI entrypoint — subcommands: ks, repl
 │   │   ├── ks/
-│   │   │   ├── mod.rs          public API: lex(), parse(), run()
+│   │   │   ├── mod.rs          public API: Interpreter, lex(), parse(), run()
 │   │   │   ├── lexer.rs        logos-based lexer; Token enum is source of truth
-│   │   │   ├── ast.rs          AST types (Expr, Stmt, Program); all serde-annotated
-│   │   │   ├── parser.rs       chumsky parser; BNF grammar comment kept current
-│   │   │   └── eval.rs         tree-walk evaluator; exec_program takes &mut impl Write
+│   │   │   ├── ast.rs          AST types (Expr, Stmt, Param, Program)
+│   │   │   ├── parser.rs       chumsky parser; postfix chain (Attr/Item/Call)
+│   │   │   ├── types.rs        TypeId, TypeDef, TypeRegistry — real type system
+│   │   │   ├── value.rs        Value enum (Int, Float, Str, Func, Enum, Type, ...)
+│   │   │   └── interpreter.rs  Interpreter struct — owns types, scope, eval logic
 │   │   └── tui/
-│   │       └── mod.rs          ratatui REPL; captures eval output into history pane
+│   │       └── mod.rs          ratatui REPL
 │   └── tests/
-│       └── conformance.rs      subprocess-based conformance runner
+│       └── conformance.rs      subprocess-based conformance runner (auto-discovery)
 ├── std/                        KataScript standard library (written in KS)
-│   └── prelude.ks              auto-loaded: Opt, Res, core utilities
-├── tests/
-│   └── ks/
-│       └── syntax/             conformance fixtures
-│           ├── expr/
-│           ├── error/
-│           ├── func/
-│           ├── if/
-│           ├── for/
-│           ├── literal/
-│           ├── stmt/
-│           ├── type/
-│           ├── warning/
-│           └── while/
-│               ├── <name>.ks
-│               ├── <name>.expected     (exit 0, stdout match)
-│               └── <name>.expected_err (nonzero exit, stderr contains fragment)
+│   └── prelude.ks              auto-loaded: Opt[T], Res[T, E]
+├── tests/ks/                   conformance fixtures by feature
+│   ├── int/, float/, str/, bool/, nil/, bin/   literal tests
+│   ├── let/                    variable binding + scoping
+│   ├── func/                   functions, typed params, ret
+│   ├── with/                   scoped blocks
+│   ├── enum/                   enum types, generics, prelude
+│   ├── type/                   typeof, types as values
+│   ├── call/                   general call expressions
+│   └── parse/                  parser error recovery
 └── docs/
-    ├── plan/                   vision, architecture, roadmap
+    ├── plan/                   vision, architecture, roadmap, stdlib
     ├── dev/                    feature specs and workflow
-    │   ├── feature-template.md spec template
-    │   ├── feature-workflow.md step-by-step process
-    │   └── specs/              per-feature specs (one file each)
-    └── disc/                   language design decisions
-        ├── README.md           workflow: when to write one, step-by-step process
-        ├── template.md         copy-paste template
-        ├── open/               decisions still being weighed
-        └── done/               closed decisions — source of truth, don't edit
+    └── disc/                   language design decisions (open/ and done/)
 ```
 
 ## Key invariants
 
 - **`Token` enum is the source of truth** for all lexable syntax. The lexer, parser, and any tooling derive from it.
-- **`exec_program` takes `&mut impl Write`** — never use `println!` inside the evaluator. All output goes through the writer.
-- **One behavior per conformance test** — each `.ks` + `.expected` pair tests exactly one thing.
-- **BNF comment in `parser.rs` stays current** — update it before writing parser code.
+- **`Interpreter` owns type registry + scope + all eval logic** — it is the single entry point for execution.
+- **All output goes through `&mut impl Write`** — never use `println!` inside the interpreter.
+- **Types are first-class values** — `print(Int)` works; types flow through the same `Value` enum as data.
+- **Real type checking** — enum construction, typed function params, and returns are validated at runtime via `TypeId`.
+- **`TypeId` handles, not strings** — type identity is a registry index, not a name comparison.
+- **No panics in the interpreter** — return `Err(String)` for all runtime errors.
 - **Serde on all AST types** — `Expr`, `Stmt`, `Program` must derive `Serialize`/`Deserialize` so `--dump-ast | jq .` works.
-- **No panics in `eval.rs`** — return `Err(String)` for all runtime errors.
+- **BNF comment in `parser.rs` stays current** — update it before writing parser code.
+- **One behavior per conformance test** — each `.ks` + `.expected` pair tests exactly one thing.
 
 ## Language design decisions
 
@@ -84,8 +76,8 @@ Type names are PascalCase; they remain Ident tokens in the lexer.
 ```sh
 cargo test                                    # all unit tests + conformance
 cargo test --test conformance                 # just the conformance runner
-cargo test --test conformance -- print::      # filter by category
-cargo run -- ks tests/ks/print/hello.ks      # run a specific script
+cargo test --test conformance -- func/        # filter by feature
+cargo run -- ks tests/ks/func/basic.ks        # run a specific script
 cargo run -- repl                             # TUI REPL
 ```
 
@@ -94,8 +86,8 @@ cargo run -- repl                             # TUI REPL
 Full process in `docs/dev/feature-workflow.md`. Short version:
 
 1. **Spec** — copy `docs/dev/feature-template.md` to `docs/dev/specs/<feature>.md`, fill it out.
-2. **Conformance tests** — add `.ks` + `.expected` (or `.expected_err`) fixtures in `tests/ks/<category>/`, register them in `katars/tests/conformance.rs`.
-3. **Implement** in order: lexer → AST → parser → eval.
+2. **Conformance tests** — add `.ks` + `.expected` (or `.expected_err`) fixtures in `tests/ks/<feature>/`. Auto-discovered by the conformance runner.
+3. **Implement** in order: lexer → AST → parser → interpreter.
 4. **Verify** done criteria; mark spec as done.
 
 Natural commit points: `spec: add <feature>`, `test: conformance for <feature>`, `feat: implement <feature>`, `spec: mark <feature> done`.
@@ -113,8 +105,30 @@ Natural commit points: `spec: add <feature>`, `test: conformance for <feature>`,
 - Use chumsky combinators (`just`, `choice`, `recursive`, etc.). See existing productions for style.
 - Add a parse unit test that checks the AST shape, not just "no error".
 
-## Extending the evaluator (`eval.rs`)
+## Interpreter architecture
 
-- All functions that produce output take `out: &mut impl Write` and thread it down.
-- Return `Err(String)` for runtime errors — no `panic!`, no `unwrap` on user data.
-- New builtins go in the `call` match arm; new statement types go in `exec_stmt`.
+The interpreter is split across three files:
+
+- **`types.rs`** — `TypeRegistry` manages `TypeDef`s keyed by `TypeId`. All type identity is handle-based. Enum variant definitions, generic parameters, and type expressions live here.
+- **`value.rs`** — `Value` enum: the runtime representation of all KataScript values. Includes `Int`, `Float`, `Str`, `Bool`, `Nil`, `Func`, `Enum` (constructed variant), `Type` (reified type-as-value), etc.
+- **`interpreter.rs`** — `Interpreter` struct owns the `TypeRegistry` and a stack of lexical scope frames. All statement execution (`exec_stmt`) and expression evaluation (`eval_expr`) live here.
+
+## Expression model
+
+The parser produces a postfix chain for member access, indexing, and calls:
+
+- `Expr::Attr` — dot access: `foo.bar`
+- `Expr::Item` — bracket access: `foo[0]`
+- `Expr::Call` — function/method call: `foo(x)`, `Opt.Some(1)`
+
+These compose uniformly — `a.b[c](d)` is a chain, not special-cased syntax.
+
+## Adding a builtin function
+
+Add a match arm in `Interpreter::call_builtin` in `interpreter.rs`. Builtins receive evaluated `&[Value]` args and return `Option<Result<Value, String>>` — return `None` to fall through to user-defined function lookup.
+
+## Adding a new type
+
+1. Add a `TypeDef` variant or register it in `TypeRegistry::with_prims()` in `types.rs`.
+2. Add a corresponding `Value` variant in `value.rs` if it needs a distinct runtime representation.
+3. Handle construction and operations in the relevant `Interpreter` methods.

@@ -1,1 +1,7 @@
 /target
+.claude/
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/

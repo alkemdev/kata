@@ -52,8 +52,9 @@ impl ReplState {
         let result = match ks::parse(&source, "<repl>") {
             Err(()) => Err("parse error".to_string()),
             Ok(program) => {
+                let mut interp = ks::Interpreter::new();
                 let mut buf = Vec::new();
-                match ks::eval::exec_program(&program, None, &mut buf) {
+                match interp.exec_program(&program, None, &mut buf) {
                     Ok(()) => Ok(String::from_utf8_lossy(&buf).into_owned()),
                     Err(e) => Err(e),
                 }
