@@ -24,6 +24,8 @@ pub type Program = Vec<Spanned<Stmt>>;
 pub enum Stmt {
     /// A bare expression used as a statement.
     Expr(Spanned<Expr>),
+    /// `let <name> = <expr>` — variable binding.
+    Let { name: String, value: Spanned<Expr> },
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
 }
@@ -40,8 +42,8 @@ pub enum Expr {
     Bool(bool),
     /// The nil / null value.
     Nil,
-    /// Variable reference.
-    Ident(String),
+    /// Variable or type name reference.
+    Name(String),
     /// Function call: `callee(args...)`.
     Call {
         /// The function being called — an identifier for now.

@@ -73,3 +73,4 @@ To revisit a closed decision, create `<id>-2.md` in `open/` referencing the orig
 - [func-vs-fn](done/func-vs-fn.md) — `func` vs `fn` as the function keyword
 - [semicolons](done/semicolons.md) — required vs optional vs forbidden semicolons
 - [ret-keyword](done/ret-keyword.md) — `return` vs `ret` for explicit return
+- [block-syntax](done/block-syntax.md) — `with {}` for scoped blocks, bare `{}` after control flow

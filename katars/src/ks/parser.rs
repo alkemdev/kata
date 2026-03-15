@@ -12,7 +12,8 @@ use super::lexer::Token;
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program = stmt*
-//   stmt    = 'ret' expr ';'?    -- explicit return
+//   stmt    = 'let' IDENT '=' expr ';'?   -- variable binding
+//           | 'ret' expr ';'?              -- explicit return
 //           | expr ';'?
 //   expr    = call
 //   call    = ident '(' (expr (',' expr)*)? ')'   -- function call
@@ -62,7 +63,7 @@ where
                 let s = span(&ex.span());
                 match args {
                     Some(args) => Spanned::new(Expr::Call { callee: name, args }, s),
-                    None => Spanned::new(Expr::Ident(name), s),
+                    None => Spanned::new(Expr::Name(name), s),
                 }
             });
 
@@ -85,6 +86,13 @@ fn stmt_parser<'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token, Span = SimpleSpan>,
 {
+    let let_stmt = just(Token::Let)
+        .ignore_then(select! { Token::Ident(name) => name })
+        .then_ignore(just(Token::Eq))
+        .then(expr_parser())
+        .then_ignore(just(Token::Semicolon).or_not())
+        .map_with(|(name, value), ex| Spanned::new(Stmt::Let { name, value }, span(&ex.span())));
+
     let ret_stmt = just(Token::Ret)
         .ignore_then(expr_parser())
         .then_ignore(just(Token::Semicolon).or_not())
@@ -94,7 +102,7 @@ where
         .then_ignore(just(Token::Semicolon).or_not())
         .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
 
-    ret_stmt.or(expr_stmt)
+    let_stmt.or(ret_stmt).or(expr_stmt)
 }
 
 fn program_parser<'tokens, I>() -> impl Parser<'tokens, I, Program, extra::Err<Rich<'tokens, Token>>>
@@ -292,6 +300,28 @@ mod tests {
         // Semicolons are optional; a bare call must parse successfully.
         let prog = parse_ok(r#"print("hello")"#);
         assert_eq!(prog.len(), 1);
+    }
+
+    #[test]
+    fn parse_let_stmt() {
+        let prog = parse_ok("let x = 42");
+        assert_eq!(prog.len(), 1);
+        let Stmt::Let {
+            ref name,
+            ref value,
+        } = prog[0].node
+        else {
+            panic!("expected Let, got {:?}", prog[0].node)
+        };
+        assert_eq!(name, "x");
+        assert!(matches!(value.node, Expr::Num(n) if (n - 42.0).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    fn parse_let_with_semicolon() {
+        let prog = parse_ok(r#"let s = "hi";"#);
+        assert_eq!(prog.len(), 1);
+        assert!(matches!(prog[0].node, Stmt::Let { .. }));
     }
 
     // ── error path ────────────────────────────────────────────────────────────

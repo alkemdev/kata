@@ -1,9 +1,62 @@
 use std::io::Write;
 
+use indexmap::IndexMap;
+
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
 use super::ast::{Expr, Program, Spanned, Stmt};
+
+// ── Environment ──────────────────────────────────────────────────────────────
+
+/// Lexically-scoped variable bindings.
+///
+/// A stack of frames: lookup walks from innermost to outermost.
+/// `let` always binds in the current (innermost) frame.
+/// `push` / `pop` bracket blocks, function bodies, etc.
+///
+/// Each frame is an `IndexMap` so iteration follows insertion order.
+#[derive(Debug)]
+pub struct Scope {
+    frames: Vec<IndexMap<String, Value>>,
+}
+
+impl Scope {
+    pub fn new() -> Self {
+        Self {
+            frames: vec![IndexMap::new()],
+        }
+    }
+
+    /// Look up a name, walking from innermost frame outward.
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        for frame in self.frames.iter().rev() {
+            if let Some(v) = frame.get(name) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    /// Bind a name in the current (innermost) frame.
+    pub fn set(&mut self, name: String, value: Value) {
+        self.frames
+            .last_mut()
+            .expect("scope always has at least one frame")
+            .insert(name, value);
+    }
+
+    /// Enter a new inner frame.
+    pub fn push(&mut self) {
+        self.frames.push(IndexMap::new());
+    }
+
+    /// Leave the current inner frame, discarding its bindings.
+    pub fn pop(&mut self) {
+        debug_assert!(self.frames.len() > 1, "cannot pop the global frame");
+        self.frames.pop();
+    }
+}
 
 // ── Runtime value ─────────────────────────────────────────────────────────────
 
@@ -50,9 +103,10 @@ pub enum Flow {
 
 /// Execute a fully-parsed program, writing side-effects to `out`.
 pub fn exec_program(program: &Program, out: &mut impl Write) -> Result<(), String> {
+    let mut env = Scope::new();
     debug!(stmts = program.len(), "exec_program");
     for stmt in program {
-        match exec_stmt(stmt, out)? {
+        match exec_stmt(stmt, &mut env, out)? {
             Flow::Next => {}
             Flow::Return(_) => return Err("ret outside of function".to_string()),
         }
@@ -61,40 +115,57 @@ pub fn exec_program(program: &Program, out: &mut impl Write) -> Result<(), Strin
 }
 
 /// Execute one statement and return the control-flow outcome.
-pub fn exec_stmt(stmt: &Spanned<Stmt>, out: &mut impl Write) -> Result<Flow, String> {
+pub fn exec_stmt(
+    stmt: &Spanned<Stmt>,
+    env: &mut Scope,
+    out: &mut impl Write,
+) -> Result<Flow, String> {
     trace!(?stmt.node, "exec_stmt");
     match &stmt.node {
         Stmt::Expr(expr) => {
-            eval_expr(expr, out)?;
+            eval_expr(expr, env, out)?;
+            Ok(Flow::Next)
+        }
+        Stmt::Let { name, value } => {
+            let val = eval_expr(value, env, out)?;
+            env.set(name.clone(), val);
             Ok(Flow::Next)
         }
         Stmt::Ret(expr) => {
-            let val = eval_expr(expr, out)?;
+            let val = eval_expr(expr, env, out)?;
             Ok(Flow::Return(val))
         }
     }
 }
 
-fn eval_expr(expr: &Spanned<Expr>, out: &mut impl Write) -> Result<Value, String> {
+fn eval_expr(expr: &Spanned<Expr>, env: &Scope, out: &mut impl Write) -> Result<Value, String> {
     trace!(?expr.node, "eval_expr");
     match &expr.node {
         Expr::Nil => Ok(Value::Nil),
         Expr::Bool(b) => Ok(Value::Bool(*b)),
         Expr::Num(n) => Ok(Value::Num(*n)),
         Expr::Str(s) => Ok(Value::Str(s.clone())),
-        Expr::Ident(name) => Err(format!("undefined variable '{name}'")),
+        Expr::Name(name) => env
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("undefined variable '{name}'")),
 
-        Expr::Call { callee, args } => call(callee, args, out),
+        Expr::Call { callee, args } => call(callee, args, env, out),
     }
 }
 
-fn call(name: &str, args: &[Spanned<Expr>], out: &mut impl Write) -> Result<Value, String> {
+fn call(
+    name: &str,
+    args: &[Spanned<Expr>],
+    env: &Scope,
+    out: &mut impl Write,
+) -> Result<Value, String> {
     debug!(name, argc = args.len(), "call");
     match name {
         "print" => {
             let parts: Vec<String> = args
                 .iter()
-                .map(|a| eval_expr(a, out).map(|v| v.to_string()))
+                .map(|a| eval_expr(a, env, out).map(|v| v.to_string()))
                 .collect::<Result<_, _>>()?;
             writeln!(out, "{}", parts.join(" ")).map_err(|e| e.to_string())?;
             Ok(Value::Nil)
@@ -199,7 +270,7 @@ mod tests {
 
     #[test]
     fn eval_undefined_variable_is_error() {
-        let prog = program(vec![call_stmt("print", vec![s(Expr::Ident("x".into()))])]);
+        let prog = program(vec![call_stmt("print", vec![s(Expr::Name("x".into()))])]);
         assert!(exec_program(&prog, &mut Vec::new()).is_err());
     }
 

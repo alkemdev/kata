@@ -1,0 +1,4 @@
+let a = true
+let b = false
+print(a)
+print(b)
