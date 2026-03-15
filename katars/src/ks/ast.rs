@@ -44,6 +44,12 @@ pub enum Expr {
     Nil,
     /// Variable or type name reference.
     Name(String),
+    /// `with` block: scoped bindings + body. Produces the last expression's value.
+    /// `with x = 1, y = 2 { body }` or `with { body }`.
+    With {
+        bindings: Vec<(String, Spanned<Expr>)>,
+        body: Vec<Spanned<Stmt>>,
+    },
     /// Function call: `callee(args...)`.
     Call {
         /// The function being called — an identifier for now.

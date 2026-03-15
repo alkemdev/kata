@@ -38,6 +38,8 @@ pub enum Token {
     Else,
     #[token("while")]
     While,
+    #[token("with")]
+    With,
     #[token("ret")]
     Ret,
 
@@ -110,6 +112,7 @@ impl fmt::Display for Token {
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
             Token::While => write!(f, "while"),
+            Token::With => write!(f, "with"),
             Token::Ret => write!(f, "ret"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
@@ -225,6 +228,7 @@ mod tests {
         assert_eq!(one("if"), Token::If);
         assert_eq!(one("else"), Token::Else);
         assert_eq!(one("while"), Token::While);
+        assert_eq!(one("with"), Token::With);
         assert_eq!(one("ret"), Token::Ret);
     }
 

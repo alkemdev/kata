@@ -11,14 +11,16 @@ use super::lexer::Token;
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
-//   program = stmt*
-//   stmt    = 'let' IDENT '=' expr ';'?   -- variable binding
-//           | 'ret' expr ';'?              -- explicit return
-//           | expr ';'?
-//   expr    = call
-//   call    = ident '(' (expr (',' expr)*)? ')'   -- function call
-//           | atom
-//   atom    = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
+//   program  = stmt*
+//   stmt     = 'let' IDENT '=' expr ';'?   -- variable binding
+//            | 'ret' expr ';'?              -- explicit return
+//            | expr ';'?
+//   expr     = with_expr | call
+//   with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
+//   binding  = IDENT '=' expr
+//   call     = ident '(' (expr (',' expr)*)? ')'   -- function call
+//            | atom
+//   atom     = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
 //
 // The full token set is already defined in the lexer for future phases.
 
@@ -26,83 +28,114 @@ fn span(s: &SimpleSpan) -> (usize, usize) {
     (s.start, s.end)
 }
 
-// ── Expression parser ─────────────────────────────────────────────────────────
-
-fn expr_parser<'tokens, I>(
-) -> impl Parser<'tokens, I, Spanned<Expr>, extra::Err<Rich<'tokens, Token>>>
-where
-    I: ValueInput<'tokens, Token = Token, Span = SimpleSpan>,
-{
-    recursive(|expr| {
-        // Atoms: terminals that are not calls.
-        let str_lit = select! { Token::Str(s) => Expr::Str(s) };
-        let num_lit = select! { Token::Num(n) => Expr::Num(n.parse::<f64>().unwrap_or(0.0)) };
-        let bool_lit = select! {
-            Token::True  => Expr::Bool(true),
-            Token::False => Expr::Bool(false),
-        };
-        let nil_lit = just(Token::Nil).to(Expr::Nil);
-
-        // Parenthesised expression.
-        let paren = expr
-            .clone()
-            .delimited_by(just(Token::LParen), just(Token::RParen));
-
-        // Ident-or-call: parse the ident, then optionally an argument list.
-        // If '(' follows we have a call; otherwise a variable reference.
-        let ident_or_call = select! { Token::Ident(name) => name }
-            .then(
-                expr.clone()
-                    .separated_by(just(Token::Comma))
-                    .allow_trailing()
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .or_not(),
-            )
-            .map_with(|(name, args), ex| {
-                let s = span(&ex.span());
-                match args {
-                    Some(args) => Spanned::new(Expr::Call { callee: name, args }, s),
-                    None => Spanned::new(Expr::Name(name), s),
-                }
-            });
-
-        let atom = str_lit
-            .or(num_lit)
-            .or(bool_lit)
-            .or(nil_lit)
-            .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
-            .or(paren)
-            .or(ident_or_call);
-
-        atom
-    })
-}
-
-// ── Statement parser ──────────────────────────────────────────────────────────
+// ── Statement & expression parsers ───────────────────────────────────────────
+//
+// `with` bodies contain statements, and statements contain expressions, so the
+// two are mutually recursive. We use `recursive` at the statement level and
+// build the expression parser inline.
 
 fn stmt_parser<'tokens, I>(
 ) -> impl Parser<'tokens, I, Spanned<Stmt>, extra::Err<Rich<'tokens, Token>>>
 where
     I: ValueInput<'tokens, Token = Token, Span = SimpleSpan>,
 {
-    let let_stmt = just(Token::Let)
-        .ignore_then(select! { Token::Ident(name) => name })
-        .then_ignore(just(Token::Eq))
-        .then(expr_parser())
-        .then_ignore(just(Token::Semicolon).or_not())
-        .map_with(|(name, value), ex| Spanned::new(Stmt::Let { name, value }, span(&ex.span())));
+    recursive(|stmt| {
+        // ── expression parser (uses `stmt` for `with` bodies) ────────────
 
-    let ret_stmt = just(Token::Ret)
-        .ignore_then(expr_parser())
-        .then_ignore(just(Token::Semicolon).or_not())
-        .map_with(|expr, ex| Spanned::new(Stmt::Ret(expr), span(&ex.span())));
+        let expr = recursive(|expr| {
+            let str_lit = select! { Token::Str(s) => Expr::Str(s) };
+            let num_lit = select! { Token::Num(n) => Expr::Num(n.parse::<f64>().unwrap_or(0.0)) };
+            let bool_lit = select! {
+                Token::True  => Expr::Bool(true),
+                Token::False => Expr::Bool(false),
+            };
+            let nil_lit = just(Token::Nil).to(Expr::Nil);
 
-    let expr_stmt = expr_parser()
-        .then_ignore(just(Token::Semicolon).or_not())
-        .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
+            let paren = expr
+                .clone()
+                .delimited_by(just(Token::LParen), just(Token::RParen));
 
-    let_stmt.or(ret_stmt).or(expr_stmt)
+            let ident_or_call = select! { Token::Ident(name) => name }
+                .then(
+                    expr.clone()
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LParen), just(Token::RParen))
+                        .or_not(),
+                )
+                .map_with(|(name, args), ex| {
+                    let s = span(&ex.span());
+                    match args {
+                        Some(args) => Spanned::new(Expr::Call { callee: name, args }, s),
+                        None => Spanned::new(Expr::Name(name), s),
+                    }
+                });
+
+            // with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
+            // binding   = IDENT '=' expr
+            let binding = select! { Token::Ident(name) => name }
+                .then_ignore(just(Token::Eq))
+                .then(expr.clone());
+
+            let with_expr = just(Token::With)
+                .ignore_then(
+                    binding
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .or_not(),
+                )
+                .then(
+                    stmt.clone()
+                        .repeated()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                )
+                .map_with(|(bindings, body), ex| {
+                    Spanned::new(
+                        Expr::With {
+                            bindings: bindings.unwrap_or_default(),
+                            body,
+                        },
+                        span(&ex.span()),
+                    )
+                });
+
+            let atom = str_lit
+                .or(num_lit)
+                .or(bool_lit)
+                .or(nil_lit)
+                .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
+                .or(paren)
+                .or(with_expr)
+                .or(ident_or_call);
+
+            atom
+        });
+
+        // ── statement parser ─────────────────────────────────────────────
+
+        let let_stmt = just(Token::Let)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then_ignore(just(Token::Eq))
+            .then(expr.clone())
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|(name, value), ex| {
+                Spanned::new(Stmt::Let { name, value }, span(&ex.span()))
+            });
+
+        let ret_stmt = just(Token::Ret)
+            .ignore_then(expr.clone())
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|expr, ex| Spanned::new(Stmt::Ret(expr), span(&ex.span())));
+
+        let expr_stmt = expr
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
+
+        let_stmt.or(ret_stmt).or(expr_stmt)
+    })
 }
 
 fn program_parser<'tokens, I>() -> impl Parser<'tokens, I, Program, extra::Err<Rich<'tokens, Token>>>
@@ -322,6 +355,39 @@ mod tests {
         let prog = parse_ok(r#"let s = "hi";"#);
         assert_eq!(prog.len(), 1);
         assert!(matches!(prog[0].node, Stmt::Let { .. }));
+    }
+
+    #[test]
+    fn parse_with_bare() {
+        let prog = parse_ok("with { print(1) }");
+        assert_eq!(prog.len(), 1);
+        let Stmt::Expr(ref expr) = prog[0].node else {
+            panic!()
+        };
+        let Expr::With {
+            ref bindings,
+            ref body,
+        } = expr.node
+        else {
+            panic!()
+        };
+        assert!(bindings.is_empty());
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn parse_with_bindings() {
+        let prog = parse_ok("with x = 1, y = 2 { print(x) }");
+        assert_eq!(prog.len(), 1);
+        let Stmt::Expr(ref expr) = prog[0].node else {
+            panic!()
+        };
+        let Expr::With { ref bindings, .. } = expr.node else {
+            panic!()
+        };
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].0, "x");
+        assert_eq!(bindings[1].0, "y");
     }
 
     // ── error path ────────────────────────────────────────────────────────────

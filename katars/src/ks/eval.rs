@@ -95,8 +95,9 @@ impl std::fmt::Display for Value {
 /// `Flow::Return(v)` and uses it as the function's result value.
 #[derive(Debug)]
 pub enum Flow {
-    /// Statement completed normally; continue to the next.
-    Next,
+    /// Statement completed normally. Carries the value for expression-statements,
+    /// `Nil` for non-expression statements (let, etc.).
+    Next(Value),
     /// A `ret` statement was hit; carry the value up to the call site.
     Return(Value),
 }
@@ -107,7 +108,7 @@ pub fn exec_program(program: &Program, out: &mut impl Write) -> Result<(), Strin
     debug!(stmts = program.len(), "exec_program");
     for stmt in program {
         match exec_stmt(stmt, &mut env, out)? {
-            Flow::Next => {}
+            Flow::Next(_) => {}
             Flow::Return(_) => return Err("ret outside of function".to_string()),
         }
     }
@@ -123,13 +124,13 @@ pub fn exec_stmt(
     trace!(?stmt.node, "exec_stmt");
     match &stmt.node {
         Stmt::Expr(expr) => {
-            eval_expr(expr, env, out)?;
-            Ok(Flow::Next)
+            let val = eval_expr(expr, env, out)?;
+            Ok(Flow::Next(val))
         }
         Stmt::Let { name, value } => {
             let val = eval_expr(value, env, out)?;
             env.set(name.clone(), val);
-            Ok(Flow::Next)
+            Ok(Flow::Next(Value::Nil))
         }
         Stmt::Ret(expr) => {
             let val = eval_expr(expr, env, out)?;
@@ -138,7 +139,25 @@ pub fn exec_stmt(
     }
 }
 
-fn eval_expr(expr: &Spanned<Expr>, env: &Scope, out: &mut impl Write) -> Result<Value, String> {
+/// Execute a block of statements, returning the value of the last expression-statement.
+///
+/// If the block is empty or ends with a non-expression statement, returns `Nil`.
+fn exec_block(
+    stmts: &[Spanned<Stmt>],
+    env: &mut Scope,
+    out: &mut impl Write,
+) -> Result<Value, String> {
+    let mut last_val = Value::Nil;
+    for stmt in stmts {
+        match exec_stmt(stmt, env, out)? {
+            Flow::Next(v) => last_val = v,
+            Flow::Return(_) => return Err("ret outside of function".to_string()),
+        }
+    }
+    Ok(last_val)
+}
+
+fn eval_expr(expr: &Spanned<Expr>, env: &mut Scope, out: &mut impl Write) -> Result<Value, String> {
     trace!(?expr.node, "eval_expr");
     match &expr.node {
         Expr::Nil => Ok(Value::Nil),
@@ -150,6 +169,17 @@ fn eval_expr(expr: &Spanned<Expr>, env: &Scope, out: &mut impl Write) -> Result<
             .cloned()
             .ok_or_else(|| format!("undefined variable '{name}'")),
 
+        Expr::With { bindings, body } => {
+            env.push();
+            for (name, val_expr) in bindings {
+                let val = eval_expr(val_expr, env, out)?;
+                env.set(name.clone(), val);
+            }
+            let result = exec_block(body, env, out);
+            env.pop();
+            result
+        }
+
         Expr::Call { callee, args } => call(callee, args, env, out),
     }
 }
@@ -157,16 +187,16 @@ fn eval_expr(expr: &Spanned<Expr>, env: &Scope, out: &mut impl Write) -> Result<
 fn call(
     name: &str,
     args: &[Spanned<Expr>],
-    env: &Scope,
+    env: &mut Scope,
     out: &mut impl Write,
 ) -> Result<Value, String> {
     debug!(name, argc = args.len(), "call");
     match name {
         "print" => {
-            let parts: Vec<String> = args
-                .iter()
-                .map(|a| eval_expr(a, env, out).map(|v| v.to_string()))
-                .collect::<Result<_, _>>()?;
+            let mut parts = Vec::with_capacity(args.len());
+            for a in args {
+                parts.push(eval_expr(a, env, out)?.to_string());
+            }
             writeln!(out, "{}", parts.join(" ")).map_err(|e| e.to_string())?;
             Ok(Value::Nil)
         }
