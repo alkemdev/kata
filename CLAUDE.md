@@ -24,6 +24,8 @@ kata/
 │   │       └── mod.rs          ratatui REPL; captures eval output into history pane
 │   └── tests/
 │       └── conformance.rs      subprocess-based conformance runner
+├── std/                        KataScript standard library (written in KS)
+│   └── prelude.ks              auto-loaded: Opt, Res, core utilities
 ├── tests/
 │   └── ks/
 │       └── syntax/             conformance fixtures
@@ -67,6 +69,15 @@ kata/
 Before proposing a change to KataScript syntax or semantics, check `docs/disc/done/` — the Decision section is the source of truth for that choice. `docs/disc/open/` lists choices still being weighed.
 
 Before implementing a feature with non-obvious design alternatives, check whether an open decision doc already covers it. If not, suggest creating one.
+
+## Type system reference
+
+See [disc: type-system](docs/disc/open/type-system.md) for the canonical type design.
+
+Two-layer architecture: prim types (runtime-handled) and builtin types (self-hostable).
+Prim: Int, I8–I256, U8–U256, F16–F128, Float (deferred), Str, Bin, Nil, Bool, Func.
+Builtin: List, Map, Set, Range, Opt, Res — all defined in KS itself (see `docs/plan/stdlib.md`).
+Type names are PascalCase; they remain Ident tokens in the lexer.
 
 ## Running tests
 

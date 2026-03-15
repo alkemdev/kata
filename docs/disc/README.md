@@ -64,7 +64,9 @@ To revisit a closed decision, create `<id>-2.md` in `open/` referencing the orig
 
 ### Open
 
-*(none)*
+- [type-system](open/type-system.md) — two-layer type architecture, fundamental types, platonic typing
+- [nil-option](open/nil-option.md) — nil vs Option[T] vs both
+- [error-handling](open/error-handling.md) — Result vs exceptions vs hybrid
 
 ### Done
 
