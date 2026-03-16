@@ -41,5 +41,5 @@ The `ret` decision set a precedent: "kata intentionally diverges from verbose ke
 - Future declaration keywords should target 4 characters where possible
 
 ## References
-- `docs/plan/` — vision doc
+- `plan/phil/vision.md` — vision doc
 - `katars/src/ks/lexer.rs:244` — `fn` documented as plain identifier

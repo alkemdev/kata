@@ -20,9 +20,9 @@ cargo run -- ks tests/hello.ks
 ```
 katars/   kata CLI + KataScript tree-walk evaluator
 tests/    KataScript source files
-docs/plan/  design docs: vision, architecture, roadmap
+plan/     design docs: philosophy, proposals, specs, roadmap
 ```
 
 ## Design
 
-See [docs/plan/](docs/plan/) for the full plan.
+See [plan/](plan/) for the full plan.

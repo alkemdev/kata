@@ -107,7 +107,7 @@ with Opt.Some(x) = maybe_value() {
 - The binding form (`with x = expr { ... }`) provides scoped variable introduction
 
 ## References
-- [disc: func-vs-fn](../done/func-vs-fn.md) — 4-char keyword family precedent
+- [spec: func-vs-fn](func-vs-fn.md) — 4-char keyword family precedent
 - JavaScript block/object ambiguity — https://2ality.com/2012/09/expressions-vs-statements.html
 - Rust block expressions — always `{}`, no map literals
 - Python `with` statement — resource management with `__enter__`/`__exit__`

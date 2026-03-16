@@ -4,6 +4,17 @@
 
 kata is a personal programming language workbench: a KataScript interpreter (`kata ks`), a TUI REPL (`kata repl`), and supporting tooling. KataScript is a dynamically-typed, expression-oriented scripting language. The project exists to explore language design and compiler construction from first principles.
 
+## Language status
+
+- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin
+- **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
+- **Functions**: func, typed params, return type annotation, ret, closures
+- **Control flow**: if/elif/else (expression), while, && || (short-circuit)
+- **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via std.ops
+- **Types**: enum (generics), types as values, typeof, Opt[T]/Res[T,E] in prelude
+- **Blocks**: with (scoped bindings)
+- **Not yet**: for, lists, maps, string interpolation, const, error handling, modules, break/continue
+
 ## Directory map
 
 ```
@@ -37,11 +48,25 @@ kata/
 │   ├── type/                   typeof, types as values
 │   ├── call/                   general call expressions
 │   ├── ops/                    operators, std.ops dispatch
+│   ├── if/                     if/elif/else expressions
+│   ├── while/                  while loops
 │   └── parse/                  parser error recovery
-└── docs/
-    ├── plan/                   vision, architecture, roadmap, stdlib
-    ├── dev/                    feature specs and workflow
-    └── disc/                   language design decisions (open/ and done/)
+└── plan/
+    ├── phil/                   guiding philosophy — why, not what
+    │   ├── vision.md           design axioms, 5-phase bootstrap
+    │   └── stdlib.md           runtime intrinsics vs KS-defined types
+    ├── prop/                   active proposals — where discussion happens
+    │   ├── template.md         proposal template
+    │   ├── type-system.md
+    │   ├── nil-option.md
+    │   ├── error-handling.md
+    │   └── operator-overloading.md
+    ├── spec/                   approved decisions — immutable
+    │   ├── func-vs-fn.md
+    │   ├── semicolons.md
+    │   ├── ret-keyword.md
+    │   └── block-syntax.md
+    └── roadmap.md              phased milestones
 ```
 
 ## Key invariants
@@ -57,19 +82,24 @@ kata/
 - **BNF comment in `parser.rs` stays current** — update it before writing parser code.
 - **One behavior per conformance test** — each `.ks` + `.expected` pair tests exactly one thing.
 
-## Language design decisions
+## Design decisions
 
-Before proposing a change to KataScript syntax or semantics, check `docs/disc/done/` — the Decision section is the source of truth for that choice. `docs/disc/open/` lists choices still being weighed.
+Before proposing a change to KataScript syntax or semantics, check `plan/spec/` — the Decision section is the source of truth for that choice. `plan/prop/` lists choices still being weighed.
 
-Before implementing a feature with non-obvious design alternatives, check whether an open decision doc already covers it. If not, suggest creating one.
+Before implementing a feature with non-obvious design alternatives, check whether a proposal in `plan/prop/` already covers it. If not, suggest creating one.
+
+Three categories:
+- **`plan/phil/`** — guiding philosophy. Rarely changes. "Why are we building it this way?"
+- **`plan/prop/`** — active proposals. Where design alternatives are weighed. Closed by moving to `spec/`. "What should we do about X?"
+- **`plan/spec/`** — approved decisions. Immutable. "Why did we choose Y?" To revisit, open a new proposal.
 
 ## Type system reference
 
-See [disc: type-system](docs/disc/open/type-system.md) for the canonical type design.
+See [prop: type-system](plan/prop/type-system.md) for the canonical type design.
 
 Two-layer architecture: prim types (runtime-handled) and builtin types (self-hostable).
 Prim: Int, I8–I256, U8–U256, F16–F128, Float (deferred), Str, Bin, Nil, Bool, Func.
-Builtin: List, Map, Set, Range, Opt, Res — all defined in KS itself (see `docs/plan/stdlib.md`).
+Builtin: List, Map, Set, Range, Opt, Res — all defined in KS itself (see `plan/phil/stdlib.md`).
 Type names are PascalCase; they remain Ident tokens in the lexer.
 
 ## Running tests
@@ -84,14 +114,23 @@ cargo run -- repl                             # TUI REPL
 
 ## How to add a feature
 
-Full process in `docs/dev/feature-workflow.md`. Short version:
+Three tiers depending on design complexity:
 
-1. **Spec** — copy `docs/dev/feature-template.md` to `docs/dev/specs/<feature>.md`, fill it out.
-2. **Conformance tests** — add `.ks` + `.expected` (or `.expected_err`) fixtures in `tests/ks/<feature>/`. Auto-discovered by the conformance runner.
-3. **Implement** in order: lexer → AST → parser → interpreter.
-4. **Verify** done criteria; mark spec as done.
+**Tier 1 — obvious implementation.** Check `plan/prop/` for relevant proposals. Write conformance tests (`.ks` + `.expected` in `tests/ks/<feature>/`). Implement in order: lexer → AST → parser → interpreter. Update BNF in `parser.rs`. Commit as `feat: <feature>`.
 
-Natural commit points: `spec: add <feature>`, `test: conformance for <feature>`, `feat: implement <feature>`, `spec: mark <feature> done`.
+**Tier 2 — design fork.** Open a proposal in `plan/prop/` using the template. Deliberate on alternatives. Close by moving to `plan/spec/`. Then implement as Tier 1.
+
+**Tier 3 — structural change.** Proposal if needed. Multi-commit along natural boundaries. Each commit should be independently correct.
+
+## Commit conventions
+
+- `feat:` / `refactor:` / `fix:` / `docs:` / `infra:`
+- Tests land with the feature, one commit per feature
+- Message explains the *why* and the *unexpected*, not just what changed
+
+## Keeping docs current
+
+After a feature commits, update the **Language status** section above.
 
 ## Extending the lexer (`lexer.rs`)
 
@@ -135,7 +174,7 @@ The `std` namespace is a `Value::Namespace`. Attribute access chains: `std` → 
 
 Truthiness (`std.ops.truth`): nil, false, 0, 0.0, "" are falsy; everything else is truthy.
 
-See [disc: operator-overloading](docs/disc/open/operator-overloading.md) for the plan to support user-defined operator dispatch.
+See [prop: operator-overloading](plan/prop/operator-overloading.md) for the plan to support user-defined operator dispatch.
 
 ## Adding a builtin function
 

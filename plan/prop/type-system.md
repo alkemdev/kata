@@ -59,14 +59,14 @@ Runtime-handled, irreducible. The evaluator matches on these directly.
 
 ### Layer 2: Builtin types
 
-Shipped with the language, live in global scope. Written in KataScript itself — the runtime provides only intrinsics that can't be expressed in KS. See `docs/plan/stdlib.md`.
+Shipped with the language, live in global scope. Written in KataScript itself — the runtime provides only intrinsics that can't be expressed in KS. See `plan/phil/stdlib.md`.
 
 - `List[T]` — ordered, growable sequence
 - `Map[K, V]` — key-value mapping
 - `Set[T]` — unordered unique collection
 - `Range` — numeric range (for iteration, slicing)
-- `Opt[T]` — explicit presence/absence (see [disc: nil-option](nil-option.md))
-- `Res[T, E]` — success/failure (see [disc: error-handling](error-handling.md))
+- `Opt[T]` — explicit presence/absence (see [prop: nil-option](nil-option.md))
+- `Res[T, E]` — success/failure (see [prop: error-handling](error-handling.md))
 
 ### Platonic typing (Phase 3)
 
@@ -116,8 +116,8 @@ Open sub-questions:
 
 ## References
 - `katars/src/ks/eval.rs:10-17` — current `Value` enum
-- [disc: func-vs-fn](../done/func-vs-fn.md) — 4-char keyword family precedent
-- [disc: nil-option](nil-option.md) — nil vs Option
-- [disc: error-handling](error-handling.md) — Result vs exceptions
+- [spec: func-vs-fn](../spec/func-vs-fn.md) — 4-char keyword family precedent
+- [prop: nil-option](nil-option.md) — nil vs Option
+- [prop: error-handling](error-handling.md) — Result vs exceptions
 - Python numeric tower (int/float/complex)
 - Rust primitive vs std library type distinction

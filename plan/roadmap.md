@@ -1,32 +1,29 @@
 # Roadmap
 
-## Phase 1 — Hello World (current)
+## Phase 1 — Hello World (done)
 
 **Goal:** `cargo run -- ks hello.ks` prints `hello, world`.
 
-Done when:
 - [x] Workspace builds clean
 - [x] `kata ks <file>` dispatches to ks evaluator
 - [x] `print("hello, world")` evaluates and prints
 
-Scope: single builtin (`print`), string literals, no variables, no control flow.
-
 ---
 
-## Phase 2 — Full KataScript Semantics
+## Phase 2 — Full KataScript Semantics (current)
 
 **Goal:** KataScript is a real language with conformance tests.
 
-Adds:
-- Variables (`let`, `const`)
-- Arithmetic, comparison, logical operators
-- `if`/`else`, `while`, `for`
-- Functions (`fn`, closures, first-class)
-- Strings with interpolation
-- Lists and maps
-- Error handling (`try`/`catch` or `Result`)
-- Module system (`import`)
-- Conformance test suite in `tests/ks/`
+- [x] Variables (`let`, ~~`const`~~) + assignment
+- [x] Arithmetic, comparison, logical operators
+- [x] `if`/`elif`/`else`
+- [x] `while`
+- [ ] `for`
+- [x] Functions (`func`, closures, first-class)
+- [ ] Strings with interpolation
+- [ ] Lists and maps
+- [ ] Error handling (`try`/`catch` or `Result`)
+- [ ] Module system (`import`)
 
 ---
 

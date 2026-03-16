@@ -58,7 +58,7 @@ Open sub-questions:
 <!-- blank while open -->
 
 ## References
-- [disc: type-system](type-system.md) — `kind` design (future)
+- [prop: type-system](type-system.md) — `kind` design (future)
 - Python data model: `__add__`, `__radd__` for reverse dispatch
 - Rust `std::ops::Add` trait
 - Julia multiple dispatch — dispatches on all argument types

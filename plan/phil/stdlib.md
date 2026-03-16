@@ -79,5 +79,5 @@ When the type system is mature enough, `List`, `Map`, `Set` migrate from runtime
 
 - **Prelude loading mechanism:** Does the evaluator read `std/prelude.ks` from disk at startup? Embed it at compile time via `include_str!`? The latter is simpler for distribution (single binary) but harder to iterate on.
 - **Method syntax on enums:** `opt.unwrap()` needs either a method dispatch system or standalone functions like `unwrap(opt)`. Methods are nicer but require more machinery.
-- **Nil ↔ Opt relationship:** See [disc: nil-option](../disc/open/nil-option.md). If `nil` stays as a prim, it's independent of `Opt.None`. If it becomes sugar, every type is implicitly optional.
-- **Error ↔ Res relationship:** See [disc: error-handling](../disc/open/error-handling.md). Runtime errors (type mismatches, etc.) might produce `Res.Err` or might remain a separate panic mechanism.
+- **Nil ↔ Opt relationship:** See [prop: nil-option](../prop/nil-option.md). If `nil` stays as a prim, it's independent of `Opt.None`. If it becomes sugar, every type is implicitly optional.
+- **Error ↔ Res relationship:** See [prop: error-handling](../prop/error-handling.md). Runtime errors (type mismatches, etc.) might produce `Res.Err` or might remain a separate panic mechanism.
