@@ -530,6 +530,7 @@ dependencies = [
  "indexmap",
  "logos",
  "num-bigint",
+ "num-traits",
  "ratatui",
  "serde",
  "serde_json",

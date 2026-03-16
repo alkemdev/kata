@@ -1,12 +1,13 @@
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{
     input::{Stream, ValueInput},
+    pratt::*,
     prelude::*,
 };
 use logos::Logos;
 use tracing::{debug, info};
 
-use super::ast::{AstVariantDef, Expr, Param, Program, Spanned, Stmt};
+use super::ast::{AstVariantDef, BinOp, Expr, Param, Program, Spanned, Stmt, UnaryOp};
 use super::lexer::Token;
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
@@ -25,14 +26,16 @@ use super::lexer::Token;
 //   param      = IDENT ':' IDENT                    -- typed param
 //              | IDENT                               -- untyped param
 //   ret_ann    = ':' IDENT                           -- return type annotation
-//   expr     = with_expr | call
-//   with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
-//   binding  = IDENT '=' expr
-//   call     = ident '(' (expr (',' expr)*)? ')'   -- function call
-//            | atom
-//   atom     = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
-//
-// The full token set is already defined in the lexer for future phases.
+//   expr       = with_expr | if_expr | op_expr
+//   with_expr  = 'with' (binding (',' binding)*)? '{' stmt* '}'
+//   binding    = IDENT '=' expr
+//   if_expr    = 'if' expr '{' stmt* '}' ('else' '{' stmt* '}' | 'elif' if_expr)?
+//   op_expr    = unary (binop unary)*          -- pratt precedence climbing
+//   binop      = '+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>='
+//              | '&&' | '||'
+//   unary      = ('-' | '!') unary | postfix
+//   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')')*
+//   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
 
 fn span(s: &SimpleSpan) -> (usize, usize) {
     (s.start, s.end)
@@ -103,6 +106,57 @@ where
                     )
                 });
 
+            // if_expr = 'if' expr '{' stmt* '}' ('else' (if_expr | '{' stmt* '}'))?
+            let block = stmt
+                .clone()
+                .repeated()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace));
+
+            // if_expr  = 'if' expr block (else_tail)?
+            // else_tail = 'else' block
+            //           | 'elif' expr block (else_tail)?
+            //
+            // Only else_tail is recursive (chains elif). The top-level
+            // if_expr is not recursive, so consecutive if-statements
+            // stay separate.
+            let else_tail = recursive(|else_tail| {
+                // else { ... }
+                just(Token::Else).ignore_then(block.clone()).or(
+                    // elif cond { ... } (else_tail)? → nested If as else body
+                    just(Token::Elif)
+                        .ignore_then(expr.clone())
+                        .then(block.clone())
+                        .then(else_tail.or_not())
+                        .map_with(|((cond, then_body), else_body), ex| {
+                            let if_node = Spanned::new(
+                                Expr::If {
+                                    cond: Box::new(cond),
+                                    then_body,
+                                    else_body,
+                                },
+                                span(&ex.span()),
+                            );
+                            vec![Spanned::new(Stmt::Expr(if_node.clone()), if_node.span)]
+                        }),
+                )
+            });
+
+            let if_expr = just(Token::If)
+                .ignore_then(expr.clone())
+                .then(block.clone())
+                .then(else_tail.or_not())
+                .map_with(|((cond, then_body), else_body), ex| {
+                    Spanned::new(
+                        Expr::If {
+                            cond: Box::new(cond),
+                            then_body,
+                            else_body,
+                        },
+                        span(&ex.span()),
+                    )
+                });
+
             let atom = str_lit
                 .or(num_lit)
                 .or(bool_lit)
@@ -110,7 +164,8 @@ where
                 .or(name)
                 .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
                 .or(paren)
-                .or(with_expr);
+                .or(with_expr)
+                .or(if_expr);
 
             // ── postfix chain: .attr, [item], (call) ─────────────────
 
@@ -142,8 +197,7 @@ where
 
             let postfix = attr.or(item).or(call);
 
-            atom.foldl(postfix.repeated(), |lhs, op| {
-                // Use the lhs span as a fallback — not perfect but functional.
+            let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
                 let s = lhs.span;
                 match op {
                     Postfix::Attr(name) => Spanned::new(
@@ -168,7 +222,98 @@ where
                         s,
                     ),
                 }
-            })
+            });
+
+            // ── operator precedence (pratt) ────────────────────────────
+            //
+            // Precedence (low → high):
+            //   0: ||
+            //   1: &&
+            //   2: == !=
+            //   3: < > <= >=
+            //   4: + -
+            //   5: * /
+            //   6: unary - !
+
+            macro_rules! bin {
+                ($op:expr) => {
+                    |l: Spanned<Expr>, _, r: Spanned<Expr>, _: &mut _| {
+                        let s = (l.span.0, r.span.1);
+                        Spanned::new(
+                            Expr::BinOp {
+                                op: $op,
+                                left: Box::new(l),
+                                right: Box::new(r),
+                            },
+                            s,
+                        )
+                    }
+                };
+            }
+
+            macro_rules! un {
+                ($op:expr) => {
+                    |_: Token, operand: Spanned<Expr>, _: &mut _| {
+                        let s = operand.span;
+                        Spanned::new(
+                            Expr::UnaryOp {
+                                op: $op,
+                                operand: Box::new(operand),
+                            },
+                            s,
+                        )
+                    }
+                };
+            }
+
+            postfix_chain.pratt((
+                // Unary (highest precedence)
+                prefix(6, just(Token::Minus), un!(UnaryOp::Neg)),
+                prefix(6, just(Token::Bang), un!(UnaryOp::Not)),
+                // Multiplicative
+                infix(left(5), just(Token::Star), bin!(BinOp::Mul)),
+                infix(left(5), just(Token::Slash), bin!(BinOp::Div)),
+                // Additive
+                infix(left(4), just(Token::Plus), bin!(BinOp::Add)),
+                infix(left(4), just(Token::Minus), bin!(BinOp::Sub)),
+                // Comparison
+                infix(left(3), just(Token::Lt), bin!(BinOp::Lt)),
+                infix(left(3), just(Token::Gt), bin!(BinOp::Gt)),
+                infix(left(3), just(Token::LtEq), bin!(BinOp::Le)),
+                infix(left(3), just(Token::GtEq), bin!(BinOp::Ge)),
+                // Equality
+                infix(left(2), just(Token::EqEq), bin!(BinOp::Eq)),
+                infix(left(2), just(Token::BangEq), bin!(BinOp::Ne)),
+                // Short-circuit logical (own AST nodes, not BinOp)
+                infix(
+                    left(1),
+                    just(Token::And),
+                    |l: Spanned<Expr>, _, r: Spanned<Expr>, _: &mut _| {
+                        let s = (l.span.0, r.span.1);
+                        Spanned::new(
+                            Expr::And {
+                                left: Box::new(l),
+                                right: Box::new(r),
+                            },
+                            s,
+                        )
+                    },
+                ),
+                infix(
+                    left(0),
+                    just(Token::Or),
+                    |l: Spanned<Expr>, _, r: Spanned<Expr>, _: &mut _| {
+                        let s = (l.span.0, r.span.1);
+                        Spanned::new(
+                            Expr::Or {
+                                left: Box::new(l),
+                                right: Box::new(r),
+                            },
+                            s,
+                        )
+                    },
+                ),
+            ))
         });
 
         // ── statement parser ─────────────────────────────────────────────

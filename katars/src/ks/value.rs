@@ -35,6 +35,10 @@ pub enum Value {
         variant_idx: u32,
         field_types: Vec<TypeId>,
     },
+    /// A namespace value — e.g., `std`, `std.ops`.
+    Namespace(String),
+    /// A built-in function — e.g., `std.ops.add`.
+    BuiltinFn(String),
 }
 
 /// A function parameter with an optional type annotation.
@@ -58,6 +62,8 @@ impl Value {
             Value::Enum { type_id, .. } => *type_id,
             Value::Type(_) => prim::TYPE,
             Value::VariantConstructor { .. } => prim::FUNC,
+            Value::Namespace(_) => prim::NIL,
+            Value::BuiltinFn(_) => prim::FUNC,
         }
     }
 
@@ -97,6 +103,8 @@ impl Value {
                 let type_name = types.display_name(*type_id);
                 format!("<constructor {type_name}.{variant_name}>")
             }
+            Value::Namespace(name) => format!("<namespace {name}>"),
+            Value::BuiltinFn(name) => format!("<builtin {name}>"),
         }
     }
 }
@@ -125,6 +133,8 @@ impl PartialEq for Value {
             ) => t1 == t2 && v1 == v2 && f1 == f2,
             (Value::Func { .. }, Value::Func { .. }) => false,
             (Value::VariantConstructor { .. }, Value::VariantConstructor { .. }) => false,
+            (Value::Namespace(a), Value::Namespace(b)) => a == b,
+            (Value::BuiltinFn(a), Value::BuiltinFn(b)) => a == b,
             _ => false,
         }
     }
@@ -160,6 +170,8 @@ impl fmt::Display for Value {
             Value::VariantConstructor { variant_idx, .. } => {
                 write!(f, "<constructor:variant:{variant_idx}>")
             }
+            Value::Namespace(name) => write!(f, "<namespace {name}>"),
+            Value::BuiltinFn(name) => write!(f, "<builtin {name}>"),
         }
     }
 }

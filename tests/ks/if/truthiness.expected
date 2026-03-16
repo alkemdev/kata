@@ -1,0 +1,5 @@
+truthy int
+falsy zero
+falsy empty str
+truthy str
+falsy nil

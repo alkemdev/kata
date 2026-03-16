@@ -2,10 +2,11 @@ use std::io::Write;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use tracing::{debug, trace};
 
-use super::ast::{AstVariantDef, Expr, Param, Program, Spanned, Stmt};
-use super::types::{prim, ResolvedVariantDef, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
+use super::ast::{AstVariantDef, BinOp, Expr, Program, Spanned, Stmt, UnaryOp};
+use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncParam, Value};
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
@@ -48,6 +49,9 @@ impl Interpreter {
         interp.set("Bin".into(), Value::Type(prim::BIN));
         interp.set("Func".into(), Value::Type(prim::FUNC));
         interp.set("Type".into(), Value::Type(prim::TYPE));
+
+        // The `std` namespace — std.ops.add, std.ops.sub, etc.
+        interp.set("std".into(), Value::Namespace("std".into()));
 
         interp
     }
@@ -287,6 +291,58 @@ impl Interpreter {
                 let func = self.eval_value(callee, out)?;
                 self.eval_call(func, &arg_vals, out)
             }
+
+            Expr::BinOp { op, left, right } => {
+                let lv = self.eval_value(left, out)?;
+                let rv = self.eval_value(right, out)?;
+                let result = Self::eval_binop(*op, &lv, &rv)?;
+                Ok(Flow::Next(result))
+            }
+
+            Expr::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                let cv = self.eval_value(cond, out)?;
+                if Self::truth(&cv) {
+                    self.push_scope();
+                    let result = self.exec_block(then_body, out);
+                    self.pop_scope();
+                    result
+                } else if let Some(else_stmts) = else_body {
+                    self.push_scope();
+                    let result = self.exec_block(else_stmts, out);
+                    self.pop_scope();
+                    result
+                } else {
+                    Ok(Flow::Next(Value::Nil))
+                }
+            }
+
+            Expr::And { left, right } => {
+                let lv = self.eval_value(left, out)?;
+                if !Self::truth(&lv) {
+                    return Ok(Flow::Next(lv));
+                }
+                let rv = self.eval_value(right, out)?;
+                Ok(Flow::Next(rv))
+            }
+
+            Expr::Or { left, right } => {
+                let lv = self.eval_value(left, out)?;
+                if Self::truth(&lv) {
+                    return Ok(Flow::Next(lv));
+                }
+                let rv = self.eval_value(right, out)?;
+                Ok(Flow::Next(rv))
+            }
+
+            Expr::UnaryOp { op, operand } => {
+                let val = self.eval_value(operand, out)?;
+                let result = Self::eval_unaryop(*op, &val)?;
+                Ok(Flow::Next(result))
+            }
         }
     }
 
@@ -374,6 +430,17 @@ impl Interpreter {
                     )),
                 }
             }
+            // Namespace.child — e.g., std.ops, std.ops.add
+            Value::Namespace(ns) => {
+                let qualified = format!("{ns}.{name}");
+                // Known sub-namespaces return another Namespace;
+                // everything else is a builtin function.
+                match qualified.as_str() {
+                    "std.ops" => Ok(Flow::Next(Value::Namespace(qualified))),
+                    _ => Ok(Flow::Next(Value::BuiltinFn(qualified))),
+                }
+            }
+
             other => Err(format!(
                 "cannot access '.{name}' on {}",
                 self.types.display_name(other.type_id())
@@ -483,10 +550,212 @@ impl Interpreter {
                 }))
             }
 
+            Value::BuiltinFn(name) => self.call_builtin_fn(&name, args),
+
             other => Err(format!(
                 "'{}' is not callable",
                 self.types.display_name(other.type_id())
             )),
+        }
+    }
+
+    // ── Operators ─────────────────────────────────────────────────────────
+
+    /// Truthiness: nil, false, 0, 0.0, "" are falsy; everything else is truthy.
+    fn truth(val: &Value) -> bool {
+        match val {
+            Value::Nil => false,
+            Value::Bool(b) => *b,
+            Value::Int(n) => *n != BigInt::ZERO,
+            Value::Float(n) => *n != 0.0,
+            Value::Str(s) => !s.is_empty(),
+            _ => true,
+        }
+    }
+
+    fn eval_unaryop(op: UnaryOp, val: &Value) -> Result<Value, String> {
+        match op {
+            UnaryOp::Neg => match val {
+                Value::Int(n) => Ok(Value::Int(-n)),
+                Value::Float(n) => Ok(Value::Float(-n)),
+                other => Err(format!(
+                    "cannot negate {}",
+                    other.type_id().display_static()
+                )),
+            },
+            UnaryOp::Not => Ok(Value::Bool(!Self::truth(val))),
+        }
+    }
+
+    fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, String> {
+        match op {
+            BinOp::Add => Self::op_add(left, right),
+            BinOp::Sub => Self::op_arith(left, right, "sub", |a, b| a - b, |a, b| a - b),
+            BinOp::Mul => Self::op_arith(left, right, "mul", |a, b| a * b, |a, b| a * b),
+            BinOp::Div => Self::op_div(left, right),
+            BinOp::Eq => Ok(Value::Bool(left == right || Self::cross_eq(left, right))),
+            BinOp::Ne => Ok(Value::Bool(left != right && !Self::cross_eq(left, right))),
+            BinOp::Lt => Self::op_cmp(left, right, "lt", |o| o.is_lt()),
+            BinOp::Gt => Self::op_cmp(left, right, "gt", |o| o.is_gt()),
+            BinOp::Le => Self::op_cmp(left, right, "le", |o| !o.is_gt()),
+            BinOp::Ge => Self::op_cmp(left, right, "ge", |o| !o.is_lt()),
+        }
+    }
+
+    fn op_add(left: &Value, right: &Value) -> Result<Value, String> {
+        match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+            (Value::Int(a), Value::Float(b)) => {
+                Ok(Value::Float(a.to_f64().unwrap_or(f64::NAN) + b))
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                Ok(Value::Float(a + b.to_f64().unwrap_or(f64::NAN)))
+            }
+            (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
+            _ => Err(format!(
+                "cannot add {} and {}",
+                left.type_id().display_static(),
+                right.type_id().display_static(),
+            )),
+        }
+    }
+
+    fn op_arith(
+        left: &Value,
+        right: &Value,
+        name: &str,
+        int_op: impl Fn(&BigInt, &BigInt) -> BigInt,
+        float_op: impl Fn(f64, f64) -> f64,
+    ) -> Result<Value, String> {
+        match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(a, b))),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
+            (Value::Int(a), Value::Float(b)) => {
+                Ok(Value::Float(float_op(a.to_f64().unwrap_or(f64::NAN), *b)))
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                Ok(Value::Float(float_op(*a, b.to_f64().unwrap_or(f64::NAN))))
+            }
+            _ => Err(format!(
+                "cannot {name} {} and {}",
+                left.type_id().display_static(),
+                right.type_id().display_static(),
+            )),
+        }
+    }
+
+    fn op_div(left: &Value, right: &Value) -> Result<Value, String> {
+        match (left, right) {
+            (Value::Int(_), Value::Int(b)) if *b == BigInt::ZERO => {
+                Err("division by zero".to_string())
+            }
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+            (Value::Int(a), Value::Float(b)) => {
+                Ok(Value::Float(a.to_f64().unwrap_or(f64::NAN) / b))
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                Ok(Value::Float(a / b.to_f64().unwrap_or(f64::NAN)))
+            }
+            _ => Err(format!(
+                "cannot div {} and {}",
+                left.type_id().display_static(),
+                right.type_id().display_static(),
+            )),
+        }
+    }
+
+    /// Cross-type equality for Int/Float promotion.
+    fn cross_eq(left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Int(a), Value::Float(b)) => a.to_f64().map_or(false, |a| a == *b),
+            (Value::Float(a), Value::Int(b)) => b.to_f64().map_or(false, |b| *a == b),
+            _ => false,
+        }
+    }
+
+    fn op_cmp(
+        left: &Value,
+        right: &Value,
+        name: &str,
+        pred: impl Fn(std::cmp::Ordering) -> bool,
+    ) -> Result<Value, String> {
+        let ord = match (left, right) {
+            (Value::Int(a), Value::Int(b)) => a.cmp(b),
+            (Value::Float(a), Value::Float(b)) => a
+                .partial_cmp(b)
+                .ok_or_else(|| format!("cannot compare NaN"))?,
+            (Value::Int(a), Value::Float(b)) => {
+                let af = a.to_f64().unwrap_or(f64::NAN);
+                af.partial_cmp(b)
+                    .ok_or_else(|| format!("cannot compare NaN"))?
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                let bf = b.to_f64().unwrap_or(f64::NAN);
+                a.partial_cmp(&bf)
+                    .ok_or_else(|| format!("cannot compare NaN"))?
+            }
+            (Value::Str(a), Value::Str(b)) => a.cmp(b),
+            _ => {
+                return Err(format!(
+                    "cannot {name} {} and {}",
+                    left.type_id().display_static(),
+                    right.type_id().display_static(),
+                ))
+            }
+        };
+        Ok(Value::Bool(pred(ord)))
+    }
+
+    /// Dispatch a named builtin function (from `std.ops.*` namespace).
+    fn call_builtin_fn(&self, name: &str, args: &[Value]) -> Result<Flow, String> {
+        let suffix = name
+            .strip_prefix("std.ops.")
+            .ok_or_else(|| format!("unknown builtin function '{name}'"))?;
+
+        // Binary ops: match suffix against BinOp::method_name().
+        const BINOPS: [BinOp; 10] = [
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::Mul,
+            BinOp::Div,
+            BinOp::Eq,
+            BinOp::Ne,
+            BinOp::Lt,
+            BinOp::Gt,
+            BinOp::Le,
+            BinOp::Ge,
+        ];
+        for op in BINOPS {
+            if suffix == op.method_name() {
+                if args.len() != 2 {
+                    return Err(format!("{name} expects 2 arguments, got {}", args.len()));
+                }
+                return Ok(Flow::Next(Self::eval_binop(op, &args[0], &args[1])?));
+            }
+        }
+
+        // Unary ops and special functions.
+        match suffix {
+            "neg" | "not" => {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects 1 argument, got {}", args.len()));
+                }
+                let op = if suffix == "neg" {
+                    UnaryOp::Neg
+                } else {
+                    UnaryOp::Not
+                };
+                Ok(Flow::Next(Self::eval_unaryop(op, &args[0])?))
+            }
+            "truth" => {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects 1 argument, got {}", args.len()));
+                }
+                Ok(Flow::Next(Value::Bool(Self::truth(&args[0]))))
+            }
+            _ => Err(format!("unknown builtin function '{name}'")),
         }
     }
 

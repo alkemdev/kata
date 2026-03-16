@@ -1,0 +1,1 @@
+if false { print("no") } else { print("yes") }

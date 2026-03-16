@@ -36,6 +36,7 @@ kata/
 │   ├── enum/                   enum types, generics, prelude
 │   ├── type/                   typeof, types as values
 │   ├── call/                   general call expressions
+│   ├── ops/                    operators, std.ops dispatch
 │   └── parse/                  parser error recovery
 └── docs/
     ├── plan/                   vision, architecture, roadmap, stdlib
@@ -122,6 +123,19 @@ The parser produces a postfix chain for member access, indexing, and calls:
 - `Expr::Call` — function/method call: `foo(x)`, `Opt.Some(1)`
 
 These compose uniformly — `a.b[c](d)` is a chain, not special-cased syntax.
+
+## Operator dispatch (`std.ops`)
+
+Operators dispatch through a unified system:
+- `a + b` evaluates to `Expr::BinOp { op: Add, ... }` and calls `eval_binop`
+- `std.ops.add(a, b)` is a `BuiltinFn` that calls the same `eval_binop`
+- `&&` and `||` are **not** operators — they're `Expr::And`/`Expr::Or` control flow nodes with short-circuit evaluation
+
+The `std` namespace is a `Value::Namespace`. Attribute access chains: `std` → `std.ops` (sub-namespace) → `std.ops.add` (`BuiltinFn`). Known sub-namespaces are listed in `eval_attr`.
+
+Truthiness (`std.ops.truth`): nil, false, 0, 0.0, "" are falsy; everything else is truthy.
+
+See [disc: operator-overloading](docs/disc/open/operator-overloading.md) for the plan to support user-defined operator dispatch.
 
 ## Adding a builtin function
 

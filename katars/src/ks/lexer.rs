@@ -36,6 +36,8 @@ pub enum Token {
     If,
     #[token("else")]
     Else,
+    #[token("elif")]
+    Elif,
     #[token("enum")]
     Enum,
     #[token("while")]
@@ -117,6 +119,7 @@ impl fmt::Display for Token {
             Token::Func => write!(f, "func"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
+            Token::Elif => write!(f, "elif"),
             Token::Enum => write!(f, "enum"),
             Token::While => write!(f, "while"),
             Token::With => write!(f, "with"),

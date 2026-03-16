@@ -10,6 +10,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TypeId(pub u32);
 
+impl TypeId {
+    /// Display name for primitive types without needing a registry reference.
+    pub fn display_static(self) -> &'static str {
+        match self {
+            prim::NIL => "Nil",
+            prim::BOOL => "Bool",
+            prim::INT => "Int",
+            prim::FLOAT => "Float",
+            prim::STR => "Str",
+            prim::BIN => "Bin",
+            prim::FUNC => "Func",
+            prim::TYPE => "Type",
+            _ => "<type>",
+        }
+    }
+}
+
 // ── TypeDef ──────────────────────────────────────────────────────────────────
 
 /// A type definition in the registry.

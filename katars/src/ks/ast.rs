@@ -59,6 +59,78 @@ pub struct AstVariantDef {
     pub fields: Vec<String>,
 }
 
+// ── Operators ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+impl BinOp {
+    /// The `ops.*` function name for this operator.
+    pub fn method_name(self) -> &'static str {
+        match self {
+            BinOp::Add => "add",
+            BinOp::Sub => "sub",
+            BinOp::Mul => "mul",
+            BinOp::Div => "div",
+            BinOp::Eq => "eq",
+            BinOp::Ne => "ne",
+            BinOp::Lt => "lt",
+            BinOp::Gt => "gt",
+            BinOp::Le => "le",
+            BinOp::Ge => "ge",
+        }
+    }
+
+    /// Symbolic representation for error messages.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Le => "<=",
+            BinOp::Ge => ">=",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnaryOp {
+    Neg,
+    Not,
+}
+
+impl UnaryOp {
+    pub fn method_name(self) -> &'static str {
+        match self {
+            UnaryOp::Neg => "neg",
+            UnaryOp::Not => "not",
+        }
+    }
+
+    pub fn symbol(self) -> &'static str {
+        match self {
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+        }
+    }
+}
+
 // ── Expressions ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +166,33 @@ pub enum Expr {
     Call {
         callee: Box<Spanned<Expr>>,
         args: Vec<Spanned<Expr>>,
+    },
+    /// Binary operator: `a + b`, `a == b`, etc.
+    BinOp {
+        op: BinOp,
+        left: Box<Spanned<Expr>>,
+        right: Box<Spanned<Expr>>,
+    },
+    /// Unary operator: `-a`, `!a`
+    UnaryOp {
+        op: UnaryOp,
+        operand: Box<Spanned<Expr>>,
+    },
+    /// `if cond { body } else { body }` — expression-oriented, returns last value.
+    If {
+        cond: Box<Spanned<Expr>>,
+        then_body: Vec<Spanned<Stmt>>,
+        else_body: Option<Vec<Spanned<Stmt>>>,
+    },
+    /// Short-circuit and: `a && b` — evaluates `b` only if `truth(a)`.
+    And {
+        left: Box<Spanned<Expr>>,
+        right: Box<Spanned<Expr>>,
+    },
+    /// Short-circuit or: `a || b` — evaluates `b` only if `!truth(a)`.
+    Or {
+        left: Box<Spanned<Expr>>,
+        right: Box<Spanned<Expr>>,
     },
 }
 
