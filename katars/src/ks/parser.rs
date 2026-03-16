@@ -16,6 +16,7 @@ use super::lexer::Token;
 //   stmt       = 'enum' IDENT type_params? '{' variant_list '}'      -- enum def
 //              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}' -- function def
 //              | 'let' IDENT '=' expr ';'?                            -- variable binding
+//              | IDENT '=' expr ';'?                                    -- assignment
 //              | 'ret' expr ';'?                                       -- explicit return
 //              | expr ';'?
 //   type_params = '[' IDENT (',' IDENT)* ']'
@@ -26,7 +27,8 @@ use super::lexer::Token;
 //   param      = IDENT ':' IDENT                    -- typed param
 //              | IDENT                               -- untyped param
 //   ret_ann    = ':' IDENT                           -- return type annotation
-//   expr       = with_expr | if_expr | op_expr
+//   expr       = with_expr | if_expr | while_expr | op_expr
+//   while_expr = 'while' expr '{' stmt* '}'
 //   with_expr  = 'with' (binding (',' binding)*)? '{' stmt* '}'
 //   binding    = IDENT '=' expr
 //   if_expr    = 'if' expr '{' stmt* '}' ('else' '{' stmt* '}' | 'elif' if_expr)?
@@ -157,6 +159,19 @@ where
                     )
                 });
 
+            let while_expr = just(Token::While)
+                .ignore_then(expr.clone())
+                .then(block.clone())
+                .map_with(|(cond, body), ex| {
+                    Spanned::new(
+                        Expr::While {
+                            cond: Box::new(cond),
+                            body,
+                        },
+                        span(&ex.span()),
+                    )
+                });
+
             let atom = str_lit
                 .or(num_lit)
                 .or(bool_lit)
@@ -165,7 +180,8 @@ where
                 .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
                 .or(paren)
                 .or(with_expr)
-                .or(if_expr);
+                .or(if_expr)
+                .or(while_expr);
 
             // ── postfix chain: .attr, [item], (call) ─────────────────
 
@@ -415,6 +431,14 @@ where
             .then_ignore(just(Token::Semicolon).or_not())
             .map_with(|expr, ex| Spanned::new(Stmt::Ret(expr), span(&ex.span())));
 
+        let assign_stmt = select! { Token::Ident(name) => name }
+            .then_ignore(just(Token::Eq))
+            .then(expr.clone())
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|(name, value), ex| {
+                Spanned::new(Stmt::Assign { name, value }, span(&ex.span()))
+            });
+
         let expr_stmt = expr
             .then_ignore(just(Token::Semicolon).or_not())
             .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
@@ -422,6 +446,7 @@ where
         enum_def
             .or(func_def)
             .or(let_stmt)
+            .or(assign_stmt)
             .or(ret_stmt)
             .or(expr_stmt)
     })

@@ -198,6 +198,18 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
+            Stmt::Assign { name, value } => {
+                // Find the frame that has this variable and update it.
+                let val = self.eval_value(value, out)?;
+                for frame in self.frames.iter_mut().rev() {
+                    if frame.contains_key(name.as_str()) {
+                        frame.insert(name.clone(), val);
+                        return Ok(Flow::Next(Value::Nil));
+                    }
+                }
+                Err(format!("undefined variable '{name}'"))
+            }
+
             Stmt::Ret(expr) => {
                 let val = self.eval_value(expr, out)?;
                 Ok(Flow::Return(val))
@@ -318,6 +330,25 @@ impl Interpreter {
                 } else {
                     Ok(Flow::Next(Value::Nil))
                 }
+            }
+
+            Expr::While { cond, body } => {
+                loop {
+                    let cv = self.eval_value(cond, out)?;
+                    if !Self::truth(&cv) {
+                        break;
+                    }
+                    self.push_scope();
+                    match self.exec_block(body, out)? {
+                        Flow::Next(_) => {}
+                        ret @ Flow::Return(_) => {
+                            self.pop_scope();
+                            return Ok(ret);
+                        }
+                    }
+                    self.pop_scope();
+                }
+                Ok(Flow::Next(Value::Nil))
             }
 
             Expr::And { left, right } => {

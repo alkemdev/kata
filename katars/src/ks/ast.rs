@@ -39,6 +39,8 @@ pub enum Stmt {
         type_params: Vec<String>,
         variants: Vec<AstVariantDef>,
     },
+    /// `name = expr` — reassign an existing variable.
+    Assign { name: String, value: Spanned<Expr> },
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
 }
@@ -183,6 +185,11 @@ pub enum Expr {
         cond: Box<Spanned<Expr>>,
         then_body: Vec<Spanned<Stmt>>,
         else_body: Option<Vec<Spanned<Stmt>>>,
+    },
+    /// `while cond { body }` — loop while condition is truthy, returns nil.
+    While {
+        cond: Box<Spanned<Expr>>,
+        body: Vec<Spanned<Stmt>>,
     },
     /// Short-circuit and: `a && b` — evaluates `b` only if `truth(a)`.
     And {
