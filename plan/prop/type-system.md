@@ -59,7 +59,7 @@ Runtime-handled, irreducible. The evaluator matches on these directly.
 
 ### Layer 2: Builtin types
 
-Shipped with the language, live in global scope. Written in KataScript itself — the runtime provides only intrinsics that can't be expressed in KS. See `plan/phil/stdlib.md`.
+Shipped with the language, live in global scope. Written in KataScript itself — the runtime provides only intrinsics that can't be expressed in KS. See `docs/phil/stdlib.md`.
 
 - `List[T]` — ordered, growable sequence
 - `Map[K, V]` — key-value mapping
