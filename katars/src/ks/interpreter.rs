@@ -7,11 +7,18 @@ use num_traits::ToPrimitive;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, MethodSig, Program, Spanned, Stmt,
-    UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, MethodSig, Param, Program,
+    Spanned, Stmt, UnaryOp,
 };
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncParam, Value};
+
+// ── Protocol constants ──────────────────────────────────────────────────────
+
+const SELF_PARAM: &str = "self";
+const METHOD_TO_ITER: &str = "to_iter";
+const METHOD_NEXT: &str = "next";
+const VARIANT_NONE: &str = "None";
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
 
@@ -110,6 +117,17 @@ impl Interpreter {
         self.frames.pop();
     }
 
+    /// Update an existing variable in the nearest enclosing scope that contains it.
+    fn update_in_scope(&mut self, name: &str, value: Value) -> Result<(), String> {
+        for frame in self.frames.iter_mut().rev() {
+            if frame.contains_key(name) {
+                frame.insert(name.to_string(), value);
+                return Ok(());
+            }
+        }
+        Err(format!("undefined variable '{name}'"))
+    }
+
     // ── Type resolution ──────────────────────────────────────────────────
 
     /// Resolve a type name string (from source code) to a TypeId.
@@ -174,25 +192,11 @@ impl Interpreter {
     ) -> Result<(), String> {
         if let Some(pre) = prelude {
             debug!(stmts = pre.len(), "loading prelude");
-            for stmt in pre {
-                match self.exec_stmt(stmt, out)? {
-                    Flow::Next(_) => {}
-                    Flow::Return(_) => return Err("ret in prelude".to_string()),
-                    Flow::Break => return Err("break outside of loop".to_string()),
-                    Flow::Continue => return Err("continue outside of loop".to_string()),
-                }
-            }
+            self.exec_top_level(pre, "in prelude", out)?;
         }
 
         debug!(stmts = program.len(), "exec_program");
-        for stmt in program {
-            match self.exec_stmt(stmt, out)? {
-                Flow::Next(_) => {}
-                Flow::Return(_) => return Err("ret outside of function".to_string()),
-                Flow::Break => return Err("break outside of loop".to_string()),
-                Flow::Continue => return Err("continue outside of loop".to_string()),
-            }
-        }
+        self.exec_top_level(program, "outside of function", out)?;
         Ok(())
     }
 
@@ -242,26 +246,13 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::FuncDef {
+            Stmt::FuncDef(FuncDef {
                 name,
                 params,
                 ret_type,
                 body,
-            } => {
-                let func_params: Vec<FuncParam> = params
-                    .iter()
-                    .map(|p| {
-                        let type_id = p
-                            .type_ann
-                            .as_ref()
-                            .map(|ann| self.resolve_type_expr(&ann.node))
-                            .transpose()?;
-                        Ok(FuncParam {
-                            name: p.name.clone(),
-                            type_id,
-                        })
-                    })
-                    .collect::<Result<_, String>>()?;
+            }) => {
+                let func_params = self.resolve_params(params)?;
 
                 let ret_tid = ret_type
                     .as_ref()
@@ -287,13 +278,8 @@ impl Interpreter {
                 let val = self.eval_value(value, out)?;
                 match target {
                     AssignTarget::Name(name) => {
-                        for frame in self.frames.iter_mut().rev() {
-                            if frame.contains_key(name.as_str()) {
-                                frame.insert(name.clone(), val);
-                                return Ok(Flow::Next(Value::Nil));
-                            }
-                        }
-                        Err(format!("undefined variable '{name}'"))
+                        self.update_in_scope(name, val)?;
+                        Ok(Flow::Next(Value::Nil))
                     }
                     AssignTarget::Attr { object, attr } => self.exec_attr_assign(object, attr, val),
                 }
@@ -415,12 +401,7 @@ impl Interpreter {
                 // Copy-in copy-out: write mutated self back to the receiver variable.
                 if let Some(var_name) = receiver_var {
                     if let Some(mutated_self) = self.last_method_self.take() {
-                        for frame in self.frames.iter_mut().rev() {
-                            if frame.contains_key(var_name.as_str()) {
-                                frame.insert(var_name, mutated_self);
-                                break;
-                            }
-                        }
+                        self.update_in_scope(&var_name, mutated_self)?;
                     }
                 }
 
@@ -464,124 +445,34 @@ impl Interpreter {
                 let iterable = self.eval_value(iter_expr, out)?;
 
                 // 2. Call .to_iter() on it.
-                let to_iter_method = {
-                    let tid = iterable.type_id();
-                    let method_table = self.methods.get(&tid).ok_or_else(|| {
-                        format!(
-                            "'{}' is not iterable (no methods)",
-                            self.types.display_name(tid)
-                        )
-                    })?;
-                    method_table
-                        .get("to_iter")
-                        .ok_or_else(|| {
-                            format!(
-                                "'{}' is not iterable (no 'to_iter' method)",
-                                self.types.display_name(tid)
-                            )
-                        })?
-                        .clone()
-                };
-
-                let Value::Func {
-                    params: to_iter_params,
-                    ret_type: to_iter_ret,
-                    body: to_iter_body,
-                } = to_iter_method
-                else {
-                    return Err("to_iter is not a function".to_string());
-                };
-
-                // Call to_iter: bind self = iterable, execute body.
-                let iter_val = {
-                    let bound = Value::BoundMethod {
-                        receiver: Box::new(iterable),
-                        params: to_iter_params,
-                        ret_type: to_iter_ret,
-                        body: to_iter_body,
-                    };
-                    match self.eval_call(bound, &[], out)? {
-                        Flow::Next(v) => v,
-                        _ => return Err("to_iter returned abnormal flow".to_string()),
-                    }
-                };
-
-                // Store the iterator in a temp variable for mutable self write-back.
-                let iter_var = "__iter".to_string();
-                self.push_scope();
-                self.set(iter_var.clone(), iter_val);
+                let iter_val = self.call_method(&iterable, METHOD_TO_ITER, &[], out)?;
 
                 // 3. Loop: call .next() on the iterator.
+                // The iterator lives as a Rust local — no synthetic variable in scope.
+                let mut iterator = iter_val;
                 loop {
-                    // Look up .next() method on the iterator's type.
-                    let next_method = {
-                        let current_iter = self.get(&iter_var).cloned().ok_or_else(|| {
-                            "internal error: iterator variable missing".to_string()
-                        })?;
-                        let tid = current_iter.type_id();
-                        let method_table = self.methods.get(&tid).ok_or_else(|| {
-                            format!(
-                                "iterator '{}' has no methods (missing 'next')",
-                                self.types.display_name(tid)
-                            )
-                        })?;
-                        method_table
-                            .get("next")
-                            .ok_or_else(|| {
-                                format!(
-                                    "iterator '{}' has no 'next' method",
-                                    self.types.display_name(tid)
-                                )
-                            })?
-                            .clone()
-                    };
-
-                    let Value::Func {
-                        params: next_params,
-                        ret_type: next_ret,
-                        body: next_body,
-                    } = next_method
-                    else {
-                        return Err("next is not a function".to_string());
-                    };
-
-                    let current_iter = self.get(&iter_var).cloned().unwrap();
-
-                    // Build a BoundMethod to call .next() and get copy-out.
-                    let bound = Value::BoundMethod {
-                        receiver: Box::new(current_iter),
-                        params: next_params,
-                        ret_type: next_ret,
-                        body: next_body,
-                    };
-
+                    let bound = self.resolve_method(&iterator, METHOD_NEXT)?;
                     let next_result = match self.eval_call(bound, &[], out)? {
                         Flow::Next(v) => v,
                         _ => break,
                     };
 
-                    // Copy-out: write mutated self back to __iter.
+                    // Copy-out: update the local iterator with mutated self.
                     if let Some(mutated_self) = self.last_method_self.take() {
-                        for frame in self.frames.iter_mut().rev() {
-                            if frame.contains_key(iter_var.as_str()) {
-                                frame.insert(iter_var.clone(), mutated_self);
-                                break;
-                            }
-                        }
+                        iterator = mutated_self;
                     }
 
                     // 4. Check if result is Opt.None.
                     let Value::Enum {
+                        type_id: opt_tid,
                         variant_idx,
                         fields,
-                        ..
                     } = &next_result
                     else {
                         return Err("iterator .next() must return an Opt value".to_string());
                     };
 
-                    // variant_idx 1 is None (Opt has Some=0, None=1).
-                    if *variant_idx == 1 {
+                    if self.types.variant_name(*opt_tid, *variant_idx) == VARIANT_NONE {
                         break;
                     }
 
@@ -595,26 +486,12 @@ impl Interpreter {
                     self.push_scope();
                     self.set(binding.clone(), val);
 
-                    match self.exec_block(body, out)? {
-                        Flow::Next(_) => {}
-                        Flow::Continue => {
-                            self.pop_scope();
-                            continue;
-                        }
-                        Flow::Break => {
-                            self.pop_scope();
-                            break;
-                        }
-                        ret @ Flow::Return(_) => {
-                            self.pop_scope();
-                            self.pop_scope(); // pop the __iter scope too
-                            return Ok(ret);
-                        }
+                    let flow = self.exec_block(body, out)?;
+                    if let Some(early) = self.dispatch_loop_flow(flow) {
+                        return Ok(early);
                     }
-                    self.pop_scope();
                 }
 
-                self.pop_scope(); // pop __iter scope
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -625,22 +502,10 @@ impl Interpreter {
                         break;
                     }
                     self.push_scope();
-                    match self.exec_block(body, out)? {
-                        Flow::Next(_) => {}
-                        Flow::Continue => {
-                            self.pop_scope();
-                            continue;
-                        }
-                        Flow::Break => {
-                            self.pop_scope();
-                            break;
-                        }
-                        ret @ Flow::Return(_) => {
-                            self.pop_scope();
-                            return Ok(ret);
-                        }
+                    let flow = self.exec_block(body, out)?;
+                    if let Some(early) = self.dispatch_loop_flow(flow) {
+                        return Ok(early);
                     }
-                    self.pop_scope();
                 }
                 Ok(Flow::Next(Value::Nil))
             }
@@ -721,7 +586,8 @@ impl Interpreter {
     fn eval_value(&mut self, expr: &Spanned<Expr>, out: &mut impl Write) -> Result<Value, String> {
         match self.eval_expr(expr, out)? {
             Flow::Next(v) | Flow::Return(v) => Ok(v),
-            Flow::Break | Flow::Continue => Ok(Value::Nil),
+            Flow::Break => Err("break outside of loop".to_string()),
+            Flow::Continue => Err("continue outside of loop".to_string()),
         }
     }
 
@@ -848,42 +714,26 @@ impl Interpreter {
     fn register_impl(
         &mut self,
         type_name: &str,
-        method_stmts: &[Spanned<Stmt>],
+        methods: &[Spanned<FuncDef>],
         _out: &mut impl Write,
     ) -> Result<(), String> {
         let type_id = self.resolve_type(type_name)?;
 
-        for method_stmt in method_stmts {
-            let Stmt::FuncDef {
+        for method in methods {
+            let FuncDef {
                 name,
                 params,
                 ret_type,
                 body,
-            } = &method_stmt.node
-            else {
-                return Err("impl blocks may only contain func definitions".to_string());
-            };
+            } = &method.node;
 
-            if params.is_empty() || params[0].name != "self" {
+            if params.is_empty() || params[0].name != SELF_PARAM {
                 return Err(format!(
                     "method '{name}' must have 'self' as first parameter"
                 ));
             }
 
-            let func_params: Vec<FuncParam> = params
-                .iter()
-                .map(|p| {
-                    let tid = p
-                        .type_ann
-                        .as_ref()
-                        .map(|ann| self.resolve_type_expr(&ann.node))
-                        .transpose()?;
-                    Ok(FuncParam {
-                        name: p.name.clone(),
-                        type_id: tid,
-                    })
-                })
-                .collect::<Result<_, String>>()?;
+            let func_params = self.resolve_params(params)?;
 
             let ret_tid = ret_type
                 .as_ref()
@@ -972,6 +822,54 @@ impl Interpreter {
         Err(format!("undefined variable '{var_name}'"))
     }
 
+    // ── Method helpers ────────────────────────────────────────────────
+
+    /// Look up a method by name in the method table for a given type.
+    fn lookup_method(&self, type_id: TypeId, name: &str) -> Option<Value> {
+        self.methods
+            .get(&type_id)
+            .and_then(|table| table.get(name))
+            .cloned()
+    }
+
+    /// Wrap a Func value as a BoundMethod with the given receiver.
+    fn bind_method(&self, receiver: Value, method: Value, name: &str) -> Result<Value, String> {
+        if !matches!(method, Value::Func { .. }) {
+            return Err(format!(
+                "method table entry '{name}' on '{}' is not a function",
+                self.types.display_name(receiver.type_id())
+            ));
+        }
+        Ok(Value::BoundMethod {
+            receiver: Box::new(receiver),
+            func: Box::new(method),
+        })
+    }
+
+    /// Look up and bind a method, ready to call.
+    fn resolve_method(&self, receiver: &Value, name: &str) -> Result<Value, String> {
+        let tid = receiver.type_id();
+        let func = self
+            .lookup_method(tid, name)
+            .ok_or_else(|| format!("'{}' has no method '{name}'", self.types.display_name(tid)))?;
+        self.bind_method(receiver.clone(), func, name)
+    }
+
+    /// Call a method on a value by name (no copy-out — caller handles that).
+    fn call_method(
+        &mut self,
+        receiver: &Value,
+        name: &str,
+        args: &[Value],
+        out: &mut impl Write,
+    ) -> Result<Value, String> {
+        let bound = self.resolve_method(receiver, name)?;
+        match self.eval_call(bound, args, out)? {
+            Flow::Next(v) | Flow::Return(v) => Ok(v),
+            _ => Err(format!("method '{name}' returned abnormal flow")),
+        }
+    }
+
     // ── Attr: a.b ─────────────────────────────────────────────────────
 
     fn eval_attr(&self, object: &Value, name: &str) -> Result<Flow, String> {
@@ -1023,23 +921,8 @@ impl Interpreter {
                     return Ok(Flow::Next(val.clone()));
                 }
                 // Method lookup.
-                if let Some(method_table) = self.methods.get(type_id) {
-                    if let Some(func) = method_table.get(name) {
-                        let Value::Func {
-                            params,
-                            ret_type,
-                            body,
-                        } = func.clone()
-                        else {
-                            unreachable!();
-                        };
-                        return Ok(Flow::Next(Value::BoundMethod {
-                            receiver: Box::new(object.clone()),
-                            params,
-                            ret_type,
-                            body,
-                        }));
-                    }
+                if let Ok(bound) = self.resolve_method(object, name) {
+                    return Ok(Flow::Next(bound));
                 }
                 Err(format!(
                     "'{}' has no field or method '{name}'",
@@ -1059,29 +942,12 @@ impl Interpreter {
 
             other => {
                 // Check method table for any value type.
-                let tid = other.type_id();
-                if let Some(method_table) = self.methods.get(&tid) {
-                    if let Some(func) = method_table.get(name) {
-                        // Return a bound method: a Func that captures `self` as first arg.
-                        let Value::Func {
-                            params,
-                            ret_type,
-                            body,
-                        } = func.clone()
-                        else {
-                            unreachable!("method table should only contain Func values");
-                        };
-                        return Ok(Flow::Next(Value::BoundMethod {
-                            receiver: Box::new(other.clone()),
-                            params,
-                            ret_type,
-                            body,
-                        }));
-                    }
+                if let Ok(bound) = self.resolve_method(other, name) {
+                    return Ok(Flow::Next(bound));
                 }
                 Err(format!(
                     "cannot access '.{name}' on {}",
-                    self.types.display_name(tid)
+                    self.types.display_name(other.type_id())
                 ))
             }
         }
@@ -1144,39 +1010,7 @@ impl Interpreter {
                     ));
                 }
 
-                // Type-check arguments.
-                for (param, val) in params.iter().zip(args.iter()) {
-                    if let Some(expected) = param.type_id {
-                        self.check_type(val, expected)?;
-                    }
-                }
-
-                // Push scope, bind params.
-                self.push_scope();
-                for (param, val) in params.iter().zip(args.iter()) {
-                    self.set(param.name.clone(), val.clone());
-                }
-
-                let result = match self.exec_block(&body, out)? {
-                    Flow::Next(v) => v,
-                    Flow::Return(v) => v,
-                    Flow::Break => {
-                        self.pop_scope();
-                        return Err("break outside of loop".to_string());
-                    }
-                    Flow::Continue => {
-                        self.pop_scope();
-                        return Err("continue outside of loop".to_string());
-                    }
-                };
-
-                self.pop_scope();
-
-                // Type-check return value.
-                if let Some(expected_ret) = ret_type {
-                    self.check_type(&result, expected_ret)?;
-                }
-
+                let result = self.call_func_body(&params, args, ret_type, &body, false, out)?;
                 Ok(Flow::Next(result))
             }
 
@@ -1206,15 +1040,17 @@ impl Interpreter {
                 }))
             }
 
-            Value::BoundMethod {
-                receiver,
-                params,
-                ret_type,
-                body,
-            } => {
-                // BoundMethod has `self` as first param. The caller does NOT
-                // pass `self` — it's pre-bound. So user-visible args match
-                // params[1..].
+            Value::BoundMethod { receiver, func } => {
+                let Value::Func {
+                    params,
+                    ret_type,
+                    body,
+                } = *func
+                else {
+                    return Err("bound method does not wrap a Func".to_string());
+                };
+
+                // params[0] is self (pre-bound); user-visible args match params[1..].
                 let method_params = &params[1..];
                 if args.len() != method_params.len() {
                     return Err(format!(
@@ -1224,43 +1060,13 @@ impl Interpreter {
                     ));
                 }
 
-                // Type-check explicit args.
-                for (param, val) in method_params.iter().zip(args.iter()) {
-                    if let Some(expected) = param.type_id {
-                        self.check_type(val, expected)?;
-                    }
-                }
+                // Build full arg list: [self] + user args.
+                let mut full_args = Vec::with_capacity(params.len());
+                full_args.push(*receiver);
+                full_args.extend_from_slice(args);
 
-                // Push scope, bind self + params.
-                self.push_scope();
-                self.set("self".to_string(), *receiver);
-                for (param, val) in method_params.iter().zip(args.iter()) {
-                    self.set(param.name.clone(), val.clone());
-                }
-
-                let result = match self.exec_block(&body, out)? {
-                    Flow::Next(v) => v,
-                    Flow::Return(v) => v,
-                    Flow::Break => {
-                        self.pop_scope();
-                        return Err("break outside of loop".to_string());
-                    }
-                    Flow::Continue => {
-                        self.pop_scope();
-                        return Err("continue outside of loop".to_string());
-                    }
-                };
-
-                // Capture mutated self before popping scope (copy-out).
-                self.last_method_self = self.get("self").cloned();
-
-                self.pop_scope();
-
-                // Type-check return.
-                if let Some(expected_ret) = ret_type {
-                    self.check_type(&result, expected_ret)?;
-                }
-
+                let result =
+                    self.call_func_body(&params, &full_args, ret_type, &body, true, out)?;
                 Ok(Flow::Next(result))
             }
 
@@ -1399,16 +1205,16 @@ impl Interpreter {
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Float(a), Value::Float(b)) => a
                 .partial_cmp(b)
-                .ok_or_else(|| format!("cannot compare NaN"))?,
+                .ok_or_else(|| "cannot compare NaN".to_string())?,
             (Value::Int(a), Value::Float(b)) => {
                 let af = a.to_f64().unwrap_or(f64::NAN);
                 af.partial_cmp(b)
-                    .ok_or_else(|| format!("cannot compare NaN"))?
+                    .ok_or_else(|| "cannot compare NaN".to_string())?
             }
             (Value::Float(a), Value::Int(b)) => {
                 let bf = b.to_f64().unwrap_or(f64::NAN);
                 a.partial_cmp(&bf)
-                    .ok_or_else(|| format!("cannot compare NaN"))?
+                    .ok_or_else(|| "cannot compare NaN".to_string())?
             }
             (Value::Str(a), Value::Str(b)) => a.cmp(b),
             _ => {
@@ -1495,6 +1301,113 @@ impl Interpreter {
                 Ok(Some(Flow::Next(Value::Type(tid))))
             }
             _ => Ok(None),
+        }
+    }
+
+    // ── Shared helpers ──────────────────────────────────────────────────
+
+    /// Resolve AST params to FuncParam values.
+    fn resolve_params(&mut self, params: &[Param]) -> Result<Vec<FuncParam>, String> {
+        params
+            .iter()
+            .map(|p| {
+                let type_id = p
+                    .type_ann
+                    .as_ref()
+                    .map(|ann| self.resolve_type_expr(&ann.node))
+                    .transpose()?;
+                Ok(FuncParam {
+                    name: p.name.clone(),
+                    type_id,
+                })
+            })
+            .collect()
+    }
+
+    /// Execute a top-level statement list, rejecting ret/break/continue.
+    fn exec_top_level(
+        &mut self,
+        stmts: &[Spanned<Stmt>],
+        context: &str,
+        out: &mut impl Write,
+    ) -> Result<(), String> {
+        for stmt in stmts {
+            match self.exec_stmt(stmt, out)? {
+                Flow::Next(_) => {}
+                Flow::Return(_) => return Err(format!("ret {context}")),
+                Flow::Break => return Err("break outside of loop".to_string()),
+                Flow::Continue => return Err("continue outside of loop".to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Execute a function body: type-check args, push scope, bind params,
+    /// run body, pop scope, type-check return value.
+    ///
+    /// When `is_method` is true, stashes the final value of `self` in
+    /// `last_method_self` before popping the scope (copy-out semantics).
+    fn call_func_body(
+        &mut self,
+        params: &[FuncParam],
+        args: &[Value],
+        ret_type: Option<TypeId>,
+        body: &[Spanned<Stmt>],
+        is_method: bool,
+        out: &mut impl Write,
+    ) -> Result<Value, String> {
+        for (param, val) in params.iter().zip(args.iter()) {
+            if let Some(expected) = param.type_id {
+                self.check_type(val, expected)?;
+            }
+        }
+
+        self.push_scope();
+        for (param, val) in params.iter().zip(args.iter()) {
+            self.set(param.name.clone(), val.clone());
+        }
+
+        let result = match self.exec_block(body, out)? {
+            Flow::Next(v) | Flow::Return(v) => v,
+            Flow::Break => {
+                self.pop_scope();
+                return Err("break outside of loop".to_string());
+            }
+            Flow::Continue => {
+                self.pop_scope();
+                return Err("continue outside of loop".to_string());
+            }
+        };
+
+        if is_method {
+            self.last_method_self = self.get(SELF_PARAM).cloned();
+        }
+
+        self.pop_scope();
+
+        if let Some(expected_ret) = ret_type {
+            self.check_type(&result, expected_ret)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Dispatch loop-body flow control. Always pops scope.
+    /// Returns `None` to continue looping, `Some(flow)` to exit.
+    fn dispatch_loop_flow(&mut self, flow: Flow) -> Option<Flow> {
+        match flow {
+            Flow::Next(_) | Flow::Continue => {
+                self.pop_scope();
+                None
+            }
+            Flow::Break => {
+                self.pop_scope();
+                Some(Flow::Next(Value::Nil))
+            }
+            ret @ Flow::Return(_) => {
+                self.pop_scope();
+                Some(ret)
+            }
         }
     }
 }

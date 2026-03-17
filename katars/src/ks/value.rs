@@ -41,12 +41,10 @@ pub enum Value {
         type_id: TypeId,
         fields: IndexMap<String, Value>,
     },
-    /// A bound method — a function with `self` already captured.
+    /// A bound method — a Func with `self` already captured.
     BoundMethod {
         receiver: Box<Value>,
-        params: Vec<FuncParam>,
-        ret_type: Option<TypeId>,
-        body: Vec<Spanned<Stmt>>,
+        func: Box<Value>,
     },
     /// A namespace value — e.g., `std`, `std.ops`.
     Namespace(String),
@@ -130,9 +128,13 @@ impl Value {
                 let type_name = types.display_name(*type_id);
                 format!("<constructor {type_name}.{variant_name}>")
             }
-            Value::BoundMethod { params, .. } => {
-                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                format!("<bound-method({})>", names.join(", "))
+            Value::BoundMethod { func, .. } => {
+                if let Value::Func { params, .. } = func.as_ref() {
+                    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                    format!("<bound-method({})>", names.join(", "))
+                } else {
+                    "<bound-method(?)>".to_string()
+                }
             }
             Value::Namespace(name) => format!("<namespace {name}>"),
             Value::BuiltinFn(name) => format!("<builtin {name}>"),
@@ -216,9 +218,13 @@ impl fmt::Display for Value {
             Value::VariantConstructor { variant_idx, .. } => {
                 write!(f, "<constructor:variant:{variant_idx}>")
             }
-            Value::BoundMethod { params, .. } => {
-                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                write!(f, "<bound-method({})>", names.join(", "))
+            Value::BoundMethod { func, .. } => {
+                if let Value::Func { params, .. } = func.as_ref() {
+                    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                    write!(f, "<bound-method({})>", names.join(", "))
+                } else {
+                    write!(f, "<bound-method(?)>")
+                }
             }
             Value::Namespace(name) => write!(f, "<namespace {name}>"),
             Value::BuiltinFn(name) => write!(f, "<builtin {name}>"),

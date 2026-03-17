@@ -8,8 +8,8 @@ use logos::Logos;
 use tracing::{debug, info};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, MethodSig, Param, Program, Spanned,
-    Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, MethodSig, Param, Program,
+    Spanned, Stmt, UnaryOp,
 };
 use super::lexer::Token;
 
@@ -453,24 +453,27 @@ where
                 )
             });
 
-        // interface_def = 'type' IDENT type_params? '{' method_sig* '}'
-        // method_sig = 'func' IDENT '(' params ')' ret_ann?
-        let iface_param = select! { Token::Ident(name) => name }
+        // param = IDENT ':' expr | IDENT
+        let param = select! { Token::Ident(name) => name }
             .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
             .map(|(name, type_ann)| Param { name, type_ann });
 
-        let iface_ret_ann = just(Token::Colon).ignore_then(expr.clone());
+        // ret_ann = ':' expr
+        let ret_ann = just(Token::Colon).ignore_then(expr.clone());
 
+        // interface_def = 'type' IDENT type_params? '{' method_sig* '}'
+        // method_sig = 'func' IDENT '(' params ')' ret_ann?
         let method_sig = just(Token::Func)
             .ignore_then(select! { Token::Ident(name) => name })
             .then(
-                iface_param
+                param
+                    .clone()
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::LParen), just(Token::RParen)),
             )
-            .then(iface_ret_ann.or_not())
+            .then(ret_ann.clone().or_not())
             .map(|((name, params), ret_type)| MethodSig {
                 name,
                 params,
@@ -499,23 +502,17 @@ where
             });
 
         // impl_block = 'impl' IDENT ('as' expr)? '{' func_def* '}'
-        // (func_def is parsed inline here since it needs stmt for its body)
-        let impl_func_param = select! { Token::Ident(name) => name }
-            .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
-            .map(|(name, type_ann)| Param { name, type_ann });
-
-        let impl_ret_ann = just(Token::Colon).ignore_then(expr.clone());
-
         let impl_func_def = just(Token::Func)
             .ignore_then(select! { Token::Ident(name) => name })
             .then(
-                impl_func_param
+                param
+                    .clone()
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::LParen), just(Token::RParen)),
             )
-            .then(impl_ret_ann.or_not())
+            .then(ret_ann.clone().or_not())
             .then(
                 stmt.clone()
                     .repeated()
@@ -524,7 +521,7 @@ where
             )
             .map_with(|(((name, params), ret_type), body), ex| {
                 Spanned::new(
-                    Stmt::FuncDef {
+                    FuncDef {
                         name,
                         params,
                         ret_type,
@@ -554,14 +551,6 @@ where
                 )
             });
 
-        // param = IDENT ':' expr | IDENT
-        let param = select! { Token::Ident(name) => name }
-            .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
-            .map(|(name, type_ann)| Param { name, type_ann });
-
-        // ret_ann = ':' expr
-        let ret_ann = just(Token::Colon).ignore_then(expr.clone());
-
         let func_def = just(Token::Func)
             .ignore_then(select! { Token::Ident(name) => name })
             .then(
@@ -580,12 +569,12 @@ where
             )
             .map_with(|(((name, params), ret_type), body), ex| {
                 Spanned::new(
-                    Stmt::FuncDef {
+                    Stmt::FuncDef(FuncDef {
                         name,
                         params,
                         ret_type,
                         body,
-                    },
+                    }),
                     span(&ex.span()),
                 )
             });

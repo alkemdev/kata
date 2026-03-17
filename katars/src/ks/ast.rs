@@ -27,12 +27,7 @@ pub enum Stmt {
     /// `let <name> = <expr>` — variable binding.
     Let { name: String, value: Spanned<Expr> },
     /// `func name(params) { body }` — function definition.
-    FuncDef {
-        name: String,
-        params: Vec<Param>,
-        ret_type: Option<Spanned<Expr>>,
-        body: Vec<Spanned<Stmt>>,
-    },
+    FuncDef(FuncDef),
     /// `enum Name[T] { Variant(T), Unit }` — enum type definition.
     EnumDef {
         name: String,
@@ -55,7 +50,7 @@ pub enum Stmt {
     Impl {
         type_name: String,
         as_type: Option<Spanned<Expr>>,
-        methods: Vec<Spanned<Stmt>>,
+        methods: Vec<Spanned<FuncDef>>,
     },
     /// `target = expr` — reassign an existing variable or field.
     Assign {
@@ -92,6 +87,16 @@ pub struct AstVariantDef {
 pub struct AstFieldDef {
     pub name: String,
     pub type_ann: Spanned<Expr>,
+}
+
+/// A full function definition — name, params, optional return type, body.
+/// Used by `Stmt::FuncDef` and `Stmt::Impl.methods`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuncDef {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret_type: Option<Spanned<Expr>>,
+    pub body: Vec<Spanned<Stmt>>,
 }
 
 /// A method signature in an interface definition (no body).
