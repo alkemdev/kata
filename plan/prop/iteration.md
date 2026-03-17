@@ -110,17 +110,17 @@ while x lt 10 {
 
 The external iterator (Option A) is the right long-term answer. It's the pattern that scaled best across languages. The question is what to implement now vs later.
 
-**Iterator as a kind:**
+**Iterator as an abstract type:**
 ```ks
-kind Iterator {
-    func next(self): Opt[T]  // T is an associated type — needs design
+type Iter[T] {
+    func next(self): Opt[T]
 }
 
-kind Iterable {
-    func iter(self): Iterator
+type ToIter[T] {
+    func to_iter(self): Iter[T]
 }
 ```
-This is the principled version but requires `kind` (Phase 3). Before `kind` exists, the protocol is a convention: types that have `.iter()` returning an object with `.next()` work with `for`.
+This is the principled version using `type` (abstract interface). Before `type` interfaces exist, the protocol is a convention: types that have `.to_iter()` returning an object with `.next()` work with `for`.
 
 **Opt[T] for completion signaling:** `next()` returning `Opt.Some(value)` or `Opt.None` is clean. `Opt` already exists. This avoids sentinel values, separate `.has_next()` methods, or exceptions.
 
@@ -147,7 +147,7 @@ Should `for` be an expression that produces a value? Rust's `for` evaluates to `
 The `..` syntax is concise but adds lexer/parser complexity (must not conflict with future float literals like `1.0..2.0` — is that `1.0 .. 2.0` or `1.0. .2.0`?). A `range()` function is simpler and sufficient for now.
 
 Range implementation:
-- If product types exist: `type Range { start: Int, end: Int, step: Int }` with an iterator method
+- If product types exist: `kind Range { start: Int, end: Int, step: Int }` with an iterator method
 - If not: `Value::Range { start, end, step }` as a runtime primitive — less principled but unblocks `for`
 
 ### `break` and `continue`
@@ -164,9 +164,9 @@ Option 3 is cleanest — `break` and `continue` are statements that only make se
 Given the dependency chain, the likely implementation order is:
 
 1. **Phase 2 (now):** Add `break`/`continue` to `while`. Add `for` keyword to lexer.
-2. **After type-definitions:** Add `Range` type (either as `Value::Range` prim or a product type).
+2. **After kind definitions:** Add `Range` kind (either as `Value::Range` prim or a product type).
 3. **After method-dispatch:** Add `.iter()`/`.next()` convention. Wire `for` desugaring.
-4. **After kind:** Formalize `Iterator`/`Iterable` as kinds.
+4. **After type interfaces:** Formalize `Iter[T]`/`ToIter[T]` as abstract types.
 
 Option C (built-in for-range first, protocol later) is the pragmatic middle ground. A built-in `for x in range(start, end)` can work without method dispatch if the interpreter special-cases `Range` values. When the protocol lands, the special case becomes the general case.
 

@@ -31,15 +31,15 @@ If a type has a function named `add` in scope (or attached to the type), operato
 **Pros:** Familiar (Python `__add__`, Ruby operator methods). Less ceremony than explicit registration. Works with future method syntax.
 **Cons:** Requires method dispatch or at minimum a way to associate functions with types. Implicit — harder to see what's happening. Name collisions with regular functions.
 
-### Option C: Kind/trait-based — `kind Addable { fn add(self, other) }`
-Operator protocols are defined as kinds. Types implement kinds to participate in dispatch. `kind Addable` is defined in `std/ops.ks`.
+### Option C: Abstract type-based — `type Addable { func add(self, other) }`
+Operator protocols are defined as abstract types. Concrete kinds/enums conform via `impl Kind as Addable { ... }`. `type Addable` is defined in `std/ops.ks`.
 **Pros:** Principled and composable. Static-like guarantees even in a dynamic language. Forward-compatible with structural typing. Rust/Haskell-validated approach.
-**Cons:** Requires the `kind` system to exist first. Heavier machinery. Might be overkill for a scripting language.
+**Cons:** Requires the `type` interface system to exist first. Heavier machinery. Might be overkill for a scripting language.
 
-### Option D: Hybrid — registration now, kinds later
-Start with Option A (`std.ops.def`) as the low-level mechanism. When `kind` lands, `kind Addable` becomes sugar that calls `std.ops.def` under the hood. Both paths coexist.
-**Pros:** Incremental. Unblocks operator overloading now. Kinds add structure later without breaking existing code.
-**Cons:** Two mechanisms to explain. The registration API might calcify if kinds take a different shape than expected.
+### Option D: Hybrid — registration now, abstract types later
+Start with Option A (`std.ops.def`) as the low-level mechanism. When `type` interfaces land, `type Addable` becomes sugar that calls `std.ops.def` under the hood. Both paths coexist.
+**Pros:** Incremental. Unblocks operator overloading now. Abstract types add structure later without breaking existing code.
+**Cons:** Two mechanisms to explain. The registration API might calcify if abstract types take a different shape than expected.
 
 ## Discussion
 **Current state (2026-03-16):** `std.ops` exists as a builtin namespace. Operators dispatch through `eval_binop` for prims. No override mechanism exists yet. No methods, kinds, or pattern matching.
@@ -58,7 +58,7 @@ Open sub-questions:
 <!-- blank while open -->
 
 ## References
-- [prop: type-system](type-system.md) — `kind` design (future)
+- [prop: type-system](type-system.md) — `type` for abstract interfaces (future)
 - Python data model: `__add__`, `__radd__` for reverse dispatch
 - Rust `std::ops::Add` trait
 - Julia multiple dispatch — dispatches on all argument types

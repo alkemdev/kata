@@ -42,10 +42,24 @@ pub enum Token {
     Enum,
     #[token("while")]
     While,
+    #[token("for")]
+    For,
+    #[token("in")]
+    In,
     #[token("with")]
     With,
+    #[token("kind")]
+    Kind,
+    #[token("impl")]
+    Impl,
     #[token("type")]
     Type,
+    #[token("as")]
+    As,
+    #[token("break")]
+    Break,
+    #[token("continue")]
+    Continue,
     #[token("ret")]
     Ret,
 
@@ -124,8 +138,15 @@ impl fmt::Display for Token {
             Token::Elif => write!(f, "elif"),
             Token::Enum => write!(f, "enum"),
             Token::While => write!(f, "while"),
+            Token::For => write!(f, "for"),
+            Token::In => write!(f, "in"),
             Token::With => write!(f, "with"),
+            Token::Kind => write!(f, "kind"),
+            Token::Impl => write!(f, "impl"),
             Token::Type => write!(f, "type"),
+            Token::As => write!(f, "as"),
+            Token::Break => write!(f, "break"),
+            Token::Continue => write!(f, "continue"),
             Token::Ret => write!(f, "ret"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
@@ -244,8 +265,15 @@ mod tests {
         assert_eq!(one("else"), Token::Else);
         assert_eq!(one("enum"), Token::Enum);
         assert_eq!(one("while"), Token::While);
+        assert_eq!(one("for"), Token::For);
+        assert_eq!(one("in"), Token::In);
         assert_eq!(one("with"), Token::With);
+        assert_eq!(one("kind"), Token::Kind);
+        assert_eq!(one("impl"), Token::Impl);
         assert_eq!(one("type"), Token::Type);
+        assert_eq!(one("as"), Token::As);
+        assert_eq!(one("break"), Token::Break);
+        assert_eq!(one("continue"), Token::Continue);
         assert_eq!(one("ret"), Token::Ret);
     }
 

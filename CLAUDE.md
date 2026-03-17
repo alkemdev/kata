@@ -9,11 +9,13 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
 - **Functions**: func, typed params, return type annotation, ret, closures
-- **Control flow**: if/elif/else (expression), while, && || (short-circuit)
 - **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via std.ops
-- **Types**: enum (generics), struct (type keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in prelude
+- **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in prelude
+- **Methods**: impl blocks, method dispatch, mutable self (copy-in copy-out)
+- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T] in prelude
+- **Control flow**: if/elif/else (expression), while, for (iterator protocol), break, continue, && || (short-circuit)
 - **Blocks**: with (scoped bindings)
-- **Not yet**: for, lists, maps, string interpolation, const, error handling, modules, break/continue
+- **Not yet**: lists, maps, string interpolation, const, error handling, modules
 
 ## Project layout
 
@@ -56,7 +58,7 @@ Work tracking (`plan/`):
 
 ## Type system reference
 
-See [prop: type-system](plan/prop/type-system.md) for the canonical type design. Two-layer architecture: prim types (runtime-handled) and builtin types (self-hostable in KS). See `docs/phil/stdlib.md` for the division. Type names are PascalCase; they remain Ident tokens in the lexer.
+See [prop: type-system](plan/prop/type-system.md) for the canonical type design. Three keywords for defining types: `kind` (concrete product type), `enum` (concrete sum type), `type` (abstract interface). Conformance declared via `impl Kind as Type { ... }`. Two-layer architecture: prim types (runtime-handled) and builtin types (self-hostable in KS). See `docs/phil/stdlib.md` for the division. Type names are PascalCase; they remain Ident tokens in the lexer.
 
 ## Running tests
 

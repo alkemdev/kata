@@ -18,7 +18,13 @@
 - [x] Arithmetic, comparison, logical operators
 - [x] `if`/`elif`/`else`
 - [x] `while`
-- [ ] `for`
+- [x] `enum` (sum types, generics, prelude Opt/Res)
+- [x] `kind` (product types, generics, field access/mutation)
+- [ ] `impl` blocks + method dispatch
+- [ ] Mutable self (copy-in copy-out)
+- [ ] `break`/`continue`
+- [ ] `type` interfaces + `impl K as T` conformance
+- [ ] `for` loops + iteration protocol
 - [x] Functions (`func`, closures, first-class)
 - [ ] Strings with interpolation
 - [ ] Lists and maps

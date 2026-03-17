@@ -8,17 +8,22 @@ use logos::Logos;
 use tracing::{debug, info};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, Param, Program, Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, MethodSig, Param, Program, Spanned,
+    Stmt, UnaryOp,
 };
 use super::lexer::Token;
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program    = stmt*
-//   stmt       = 'enum' IDENT type_params? '{' variant_list '}'      -- enum def
-//              | 'type' IDENT type_params? '{' field_list '}'         -- type def
-//              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}' -- function def
+//   stmt       = 'enum' IDENT type_params? '{' variant_list '}'       -- enum def
+//              | 'kind' IDENT type_params? '{' field_list '}'          -- kind def
+//              | 'type' IDENT type_params? '{' method_sig* '}'         -- interface def
+//              | 'impl' IDENT ('as' expr)? '{' func_def* '}'          -- impl block
+//              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}'  -- function def
 //              | 'let' IDENT '=' expr ';'?                            -- variable binding
+//              | 'break' ';'?                                          -- break out of loop
+//              | 'continue' ';'?                                       -- next loop iteration
 //              | 'ret' expr ';'?                                       -- explicit return
 //              | expr_or_assign ';'?                                   -- expr or assignment
 //   type_params = '[' IDENT (',' IDENT)* ']'
@@ -31,7 +36,8 @@ use super::lexer::Token;
 //   param      = IDENT ':' expr                     -- typed param (type ann is expr)
 //              | IDENT                               -- untyped param
 //   ret_ann    = ':' expr                            -- return type annotation (expr)
-//   expr       = with_expr | if_expr | while_expr | op_expr
+//   expr       = with_expr | if_expr | while_expr | for_expr | op_expr
+//   for_expr   = 'for' IDENT 'in' expr '{' stmt* '}'
 //   while_expr = 'while' expr '{' stmt* '}'
 //   with_expr  = 'with' (binding (',' binding)*)? '{' stmt* '}'
 //   binding    = IDENT '=' expr
@@ -178,6 +184,22 @@ where
                     )
                 });
 
+            let for_expr = just(Token::For)
+                .ignore_then(select! { Token::Ident(name) => name })
+                .then_ignore(just(Token::In))
+                .then(expr.clone())
+                .then(block.clone())
+                .map_with(|((binding, iter_expr), body), ex| {
+                    Spanned::new(
+                        Expr::For {
+                            binding,
+                            iter_expr: Box::new(iter_expr),
+                            body,
+                        },
+                        span(&ex.span()),
+                    )
+                });
+
             let atom = str_lit
                 .or(num_lit)
                 .or(bool_lit)
@@ -187,7 +209,8 @@ where
                 .or(paren)
                 .or(with_expr)
                 .or(if_expr)
-                .or(while_expr);
+                .or(while_expr)
+                .or(for_expr);
 
             // ── postfix chain: .attr, [item], (call) ─────────────────
 
@@ -403,15 +426,15 @@ where
                 )
             });
 
-        // type_def = 'type' IDENT type_params? '{' field_list '}'
+        // kind_def = 'kind' IDENT type_params? '{' field_list '}'
         let field_def = select! { Token::Ident(name) => name }
             .then_ignore(just(Token::Colon))
             .then(expr.clone())
             .map(|(name, type_ann)| AstFieldDef { name, type_ann });
 
-        let type_def = just(Token::Type)
+        let kind_def = just(Token::Kind)
             .ignore_then(select! { Token::Ident(name) => name })
-            .then(type_params.or_not())
+            .then(type_params.clone().or_not())
             .then(
                 field_def
                     .separated_by(just(Token::Comma))
@@ -421,10 +444,111 @@ where
             )
             .map_with(|((name, type_params), fields), ex| {
                 Spanned::new(
-                    Stmt::TypeDef {
+                    Stmt::KindDef {
                         name,
                         type_params: type_params.unwrap_or_default(),
                         fields,
+                    },
+                    span(&ex.span()),
+                )
+            });
+
+        // interface_def = 'type' IDENT type_params? '{' method_sig* '}'
+        // method_sig = 'func' IDENT '(' params ')' ret_ann?
+        let iface_param = select! { Token::Ident(name) => name }
+            .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
+            .map(|(name, type_ann)| Param { name, type_ann });
+
+        let iface_ret_ann = just(Token::Colon).ignore_then(expr.clone());
+
+        let method_sig = just(Token::Func)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(
+                iface_param
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
+            .then(iface_ret_ann.or_not())
+            .map(|((name, params), ret_type)| MethodSig {
+                name,
+                params,
+                ret_type,
+            });
+
+        let interface_def = just(Token::Type)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(type_params.clone().or_not())
+            .then(
+                method_sig
+                    .separated_by(just(Token::Comma).or_not())
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )
+            .map_with(|((name, type_params), methods), ex| {
+                Spanned::new(
+                    Stmt::InterfaceDef {
+                        name,
+                        type_params: type_params.unwrap_or_default(),
+                        methods,
+                    },
+                    span(&ex.span()),
+                )
+            });
+
+        // impl_block = 'impl' IDENT ('as' expr)? '{' func_def* '}'
+        // (func_def is parsed inline here since it needs stmt for its body)
+        let impl_func_param = select! { Token::Ident(name) => name }
+            .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
+            .map(|(name, type_ann)| Param { name, type_ann });
+
+        let impl_ret_ann = just(Token::Colon).ignore_then(expr.clone());
+
+        let impl_func_def = just(Token::Func)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(
+                impl_func_param
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
+            .then(impl_ret_ann.or_not())
+            .then(
+                stmt.clone()
+                    .repeated()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )
+            .map_with(|(((name, params), ret_type), body), ex| {
+                Spanned::new(
+                    Stmt::FuncDef {
+                        name,
+                        params,
+                        ret_type,
+                        body,
+                    },
+                    span(&ex.span()),
+                )
+            });
+
+        let impl_block = just(Token::Impl)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(just(Token::As).ignore_then(expr.clone()).or_not())
+            .then(
+                impl_func_def
+                    .repeated()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )
+            .map_with(|((type_name, as_type), methods), ex| {
+                Spanned::new(
+                    Stmt::Impl {
+                        type_name,
+                        as_type,
+                        methods,
                     },
                     span(&ex.span()),
                 )
@@ -475,6 +599,14 @@ where
                 Spanned::new(Stmt::Let { name, value }, span(&ex.span()))
             });
 
+        let break_stmt = just(Token::Break)
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|_, ex| Spanned::new(Stmt::Break, span(&ex.span())));
+
+        let continue_stmt = just(Token::Continue)
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|_, ex| Spanned::new(Stmt::Continue, span(&ex.span())));
+
         let ret_stmt = just(Token::Ret)
             .ignore_then(expr.clone())
             .then_ignore(just(Token::Semicolon).or_not())
@@ -508,9 +640,13 @@ where
             });
 
         enum_def
-            .or(type_def)
+            .or(kind_def)
+            .or(interface_def)
+            .or(impl_block)
             .or(func_def)
             .or(let_stmt)
+            .or(break_stmt)
+            .or(continue_stmt)
             .or(ret_stmt)
             .or(expr_or_assign)
     })

@@ -41,6 +41,13 @@ pub enum Value {
         type_id: TypeId,
         fields: IndexMap<String, Value>,
     },
+    /// A bound method — a function with `self` already captured.
+    BoundMethod {
+        receiver: Box<Value>,
+        params: Vec<FuncParam>,
+        ret_type: Option<TypeId>,
+        body: Vec<Spanned<Stmt>>,
+    },
     /// A namespace value — e.g., `std`, `std.ops`.
     Namespace(String),
     /// A built-in function — e.g., `std.ops.add`.
@@ -67,6 +74,7 @@ impl Value {
             Value::Func { .. } => prim::FUNC,
             Value::Enum { type_id, .. } => *type_id,
             Value::Struct { type_id, .. } => *type_id,
+            Value::BoundMethod { .. } => prim::FUNC,
             Value::Type(_) => prim::TYPE,
             Value::VariantConstructor { .. } => prim::FUNC,
             Value::Namespace(_) => prim::NIL,
@@ -122,6 +130,10 @@ impl Value {
                 let type_name = types.display_name(*type_id);
                 format!("<constructor {type_name}.{variant_name}>")
             }
+            Value::BoundMethod { params, .. } => {
+                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                format!("<bound-method({})>", names.join(", "))
+            }
             Value::Namespace(name) => format!("<namespace {name}>"),
             Value::BuiltinFn(name) => format!("<builtin {name}>"),
         }
@@ -161,6 +173,7 @@ impl PartialEq for Value {
                 },
             ) => t1 == t2 && f1 == f2,
             (Value::Func { .. }, Value::Func { .. }) => false,
+            (Value::BoundMethod { .. }, Value::BoundMethod { .. }) => false,
             (Value::VariantConstructor { .. }, Value::VariantConstructor { .. }) => false,
             (Value::Namespace(a), Value::Namespace(b)) => a == b,
             (Value::BuiltinFn(a), Value::BuiltinFn(b)) => a == b,
@@ -202,6 +215,10 @@ impl fmt::Display for Value {
             Value::Type(tid) => write!(f, "<type:{tid}>"),
             Value::VariantConstructor { variant_idx, .. } => {
                 write!(f, "<constructor:variant:{variant_idx}>")
+            }
+            Value::BoundMethod { params, .. } => {
+                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                write!(f, "<bound-method({})>", names.join(", "))
             }
             Value::Namespace(name) => write!(f, "<namespace {name}>"),
             Value::BuiltinFn(name) => write!(f, "<builtin {name}>"),

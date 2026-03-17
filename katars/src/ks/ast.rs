@@ -39,17 +39,33 @@ pub enum Stmt {
         type_params: Vec<String>,
         variants: Vec<AstVariantDef>,
     },
-    /// `type Name[T] { field: Type, ... }` — product type definition.
-    TypeDef {
+    /// `kind Name[T] { field: Type, ... }` — product type definition.
+    KindDef {
         name: String,
         type_params: Vec<String>,
         fields: Vec<AstFieldDef>,
+    },
+    /// `type Name[T] { method_sig* }` — abstract interface definition.
+    InterfaceDef {
+        name: String,
+        type_params: Vec<String>,
+        methods: Vec<MethodSig>,
+    },
+    /// `impl Name (as Name)? { func_def* }` — attach methods to a kind or enum.
+    Impl {
+        type_name: String,
+        as_type: Option<Spanned<Expr>>,
+        methods: Vec<Spanned<Stmt>>,
     },
     /// `target = expr` — reassign an existing variable or field.
     Assign {
         target: AssignTarget,
         value: Spanned<Expr>,
     },
+    /// `break` — exit the current loop.
+    Break,
+    /// `continue` — skip to the next loop iteration.
+    Continue,
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
 }
@@ -76,6 +92,14 @@ pub struct AstVariantDef {
 pub struct AstFieldDef {
     pub name: String,
     pub type_ann: Spanned<Expr>,
+}
+
+/// A method signature in an interface definition (no body).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MethodSig {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret_type: Option<Spanned<Expr>>,
 }
 
 /// Assignment target. Object is a full expression — supports `a.b.c = v`.
@@ -212,6 +236,12 @@ pub enum Expr {
         cond: Box<Spanned<Expr>>,
         then_body: Vec<Spanned<Stmt>>,
         else_body: Option<Vec<Spanned<Stmt>>>,
+    },
+    /// `for x in expr { body }` — iterate via the iterator protocol.
+    For {
+        binding: String,
+        iter_expr: Box<Spanned<Expr>>,
+        body: Vec<Spanned<Stmt>>,
     },
     /// `while cond { body }` — loop while condition is truthy, returns nil.
     While {

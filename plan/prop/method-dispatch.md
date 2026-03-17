@@ -19,13 +19,13 @@ Method dispatch is needed for:
 - **Stdlib ergonomics** — `opt.unwrap()`, `list.len()`, `str.split(",")` (see [stdlib plan](../phil/stdlib.md))
 - **Product types** ([prop: type-definitions](type-definitions.md)) — types need associated functions, not just data
 
-The dispatch mechanism must work for both `enum` and `type` (product types), and eventually for prim types (e.g., `"hello".len()`).
+The dispatch mechanism must work for both `enum` and `kind` (product types), and eventually for prim types (e.g., `"hello".len()`).
 
 ## Alternatives
 
 ### Option A: `impl` blocks (Rust model)
 ```ks
-type Point { x: Float, y: Float }
+kind Point { x: Float, y: Float }
 
 impl Point {
     func distance(self, other: Point): Float {
@@ -73,7 +73,7 @@ Any function whose first parameter matches the type of the receiver can be calle
 
 ### Option D: `impl` blocks + UFCS for extension
 ```ks
-type Point { x: Float, y: Float }
+kind Point { x: Float, y: Float }
 
 impl Point {
     func distance(self, other: Point): Float { ... }
@@ -119,7 +119,7 @@ Adding method dispatch means step 2 needs: "if `x` has type `T`, and `T` has a m
 
 **`self` semantics:** In a dynamically-typed language, `self` is just the first argument. The question is whether it's explicit (`func distance(self, other)`) or implicit (Python `self`, or implicit receiver like Ruby). Explicit `self` is simpler — it's a regular parameter that the caller doesn't pass when using dot syntax.
 
-**`impl` vs inline:** `impl` blocks are more flexible (add methods after the fact, multiple blocks, separate data from behavior). Inline methods (Option B) are simpler but less extensible. For a language that wants `kind` conformance later, `impl` is the natural fit — `impl Kind for Type { ... }` is a small step from `impl Type { ... }`.
+**`impl` vs inline:** `impl` blocks are more flexible (add methods after the fact, multiple blocks, separate data from behavior). Inline methods (Option B) are simpler but less extensible. For a language that wants abstract type conformance, `impl` is the natural fit — `impl Kind as Type { ... }` declares conformance, a small step from `impl Kind { ... }`.
 
 **UFCS consideration:** Pure UFCS (Option C) is elegant but problematic in a dynamic language — without static types, the interpreter can't pre-resolve which function `x.foo()` refers to. It would need to: get `x`'s runtime type, find all functions named `foo` in scope, check if any accept that type as first arg. This is slow and fragile. UFCS as a fallback (Option D) is more tractable.
 
@@ -146,7 +146,7 @@ Option 2 is cleanest — the interpreter registers methods for prim types the sa
 
 ## References
 - [prop: type-definitions](type-definitions.md) — product types that methods attach to
-- [prop: type-system](type-system.md) — `kind` for structural protocols
+- [prop: type-system](type-system.md) — `type` for abstract interfaces, `kind` for concrete product types
 - [prop: operator-overloading](operator-overloading.md) — operator dispatch as a special case of method dispatch
 - [prop: iteration](iteration.md) — iteration protocol needs `.iter()`, `.next()`
 - [phil: stdlib](../phil/stdlib.md) — prim method ergonomics (`.unwrap()`, `.len()`)

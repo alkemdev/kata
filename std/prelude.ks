@@ -10,3 +10,12 @@ enum Res[T, E] {
     Ok(T),
     Err(E),
 }
+
+// Iteration protocol interfaces
+type Iter[T] {
+    func next(self): Opt[T]
+}
+
+type ToIter[T] {
+    func to_iter(self): Iter[T]
+}

@@ -68,16 +68,20 @@ Shipped with the language, live in global scope. Written in KataScript itself �
 - `Opt[T]` — explicit presence/absence (see [prop: nil-option](nil-option.md))
 - `Res[T, E]` — success/failure (see [prop: error-handling](error-handling.md))
 
-### Platonic typing (Phase 3)
+### Type taxonomy (Phase 2–3)
 
-Structural conformance to "forms":
-- `type` defines a concrete type
-- `kind` defines a form/protocol (structural interface)
-- A value conforms to a `kind` if it has the right shape — no explicit `impl` needed
+Three keywords for defining types:
+- `kind` — concrete product type with named fields ("a kind of thing")
+- `enum` — concrete sum type with variants
+- `type` — abstract interface/protocol ("the Platonic form"); specifies required methods
 
-This fits the 4-char keyword family: `func`/`type`/`kind`/`decl`.
+Conformance is declared via `impl`:
+- `impl Kind { ... }` — attach methods to a kind or enum
+- `impl Kind as Type { ... }` — declare that Kind conforms to an abstract Type
 
-Deferred to Phase 3. The exact semantics of `kind` (method requirements, associated types, conformance checking) are TBD.
+This fits the 4-char keyword family: `func`/`kind`/`enum`/`type`/`impl`/`with`.
+
+`kind` and `enum` are implemented. `type` (abstract interfaces) and `impl` are in progress.
 
 ### Naming conventions
 

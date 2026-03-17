@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 
 use indexmap::IndexMap;
@@ -6,7 +7,8 @@ use num_traits::ToPrimitive;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, Program, Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, MethodSig, Program, Spanned, Stmt,
+    UnaryOp,
 };
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncParam, Value};
@@ -20,6 +22,20 @@ pub enum Flow {
     Next(Value),
     /// A `ret` statement was hit; carry the value up to the call site.
     Return(Value),
+    /// A `break` was hit; exit the current loop.
+    Break,
+    /// A `continue` was hit; skip to the next loop iteration.
+    Continue,
+}
+
+// ── Interface storage ────────────────────────────────────────────
+
+/// A registered interface — stores method signatures for conformance checking.
+#[derive(Debug, Clone)]
+struct InterfaceDef {
+    #[allow(dead_code)]
+    type_params: Vec<String>,
+    methods: Vec<MethodSig>,
 }
 
 // ── Interpreter ──────────────────────────────────────────────────────────────
@@ -31,6 +47,12 @@ pub struct Interpreter {
     pub types: TypeRegistry,
     /// Lexically-scoped variable frames. Lookup walks innermost to outermost.
     frames: Vec<IndexMap<String, Value>>,
+    /// Method tables: TypeId → method_name → Func value.
+    methods: HashMap<TypeId, IndexMap<String, Value>>,
+    /// Interface definitions: name → method signatures.
+    interfaces: IndexMap<String, InterfaceDef>,
+    /// Temporary: holds mutated `self` after a method call for copy-out.
+    last_method_self: Option<Value>,
 }
 
 impl Interpreter {
@@ -40,6 +62,9 @@ impl Interpreter {
         let mut interp = Self {
             types,
             frames: vec![IndexMap::new()],
+            methods: HashMap::new(),
+            interfaces: IndexMap::new(),
+            last_method_self: None,
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -101,11 +126,27 @@ impl Interpreter {
             .ok_or_else(|| format!("undefined type '{name}'"))
     }
 
-    /// Resolve a type annotation expression (non-parameterized context) to a TypeId.
-    fn resolve_type_expr(&self, expr: &Expr) -> Result<TypeId, String> {
+    /// Resolve a type annotation expression to a TypeId.
+    /// Handles bare names (`Int`) and parameterized types (`Opt[Int]`).
+    fn resolve_type_expr(&mut self, expr: &Expr) -> Result<TypeId, String> {
         match expr {
             Expr::Name(n) => self.resolve_type(n),
-            _ => Err("complex type annotations not yet supported".to_string()),
+            Expr::Item { object, args } => {
+                let base_id = self.resolve_type_expr(&object.node)?;
+                let mut type_args = Vec::with_capacity(args.len());
+                for a in args {
+                    type_args.push(self.resolve_type_expr(&a.node)?);
+                }
+                match self.types.get(base_id) {
+                    TypeDef::Enum { .. } => self.types.instantiate_enum(base_id, type_args),
+                    TypeDef::Struct { .. } => self.types.instantiate_struct(base_id, type_args),
+                    _ => Err(format!(
+                        "'{}' is not a generic type",
+                        self.types.display_name(base_id)
+                    )),
+                }
+            }
+            _ => Err("unsupported type annotation expression".to_string()),
         }
     }
 
@@ -137,6 +178,8 @@ impl Interpreter {
                 match self.exec_stmt(stmt, out)? {
                     Flow::Next(_) => {}
                     Flow::Return(_) => return Err("ret in prelude".to_string()),
+                    Flow::Break => return Err("break outside of loop".to_string()),
+                    Flow::Continue => return Err("continue outside of loop".to_string()),
                 }
             }
         }
@@ -146,6 +189,8 @@ impl Interpreter {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(_) => {}
                 Flow::Return(_) => return Err("ret outside of function".to_string()),
+                Flow::Break => return Err("break outside of loop".to_string()),
+                Flow::Continue => return Err("continue outside of loop".to_string()),
             }
         }
         Ok(())
@@ -167,12 +212,33 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::TypeDef {
+            Stmt::KindDef {
                 name,
                 type_params,
                 fields,
             } => {
                 self.register_struct(name, type_params, fields)?;
+                Ok(Flow::Next(Value::Nil))
+            }
+
+            Stmt::InterfaceDef {
+                name,
+                type_params,
+                methods,
+            } => {
+                self.register_interface(name, type_params, methods)?;
+                Ok(Flow::Next(Value::Nil))
+            }
+
+            Stmt::Impl {
+                type_name,
+                as_type,
+                methods,
+            } => {
+                self.register_impl(type_name, methods, out)?;
+                if let Some(iface_expr) = as_type {
+                    self.check_conformance(type_name, &iface_expr.node)?;
+                }
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -233,6 +299,9 @@ impl Interpreter {
                 }
             }
 
+            Stmt::Break => Ok(Flow::Break),
+            Stmt::Continue => Ok(Flow::Continue),
+
             Stmt::Ret(expr) => {
                 let val = self.eval_value(expr, out)?;
                 Ok(Flow::Return(val))
@@ -251,7 +320,7 @@ impl Interpreter {
         for stmt in stmts {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(v) => last_val = v,
-                ret @ Flow::Return(_) => return Ok(ret),
+                flow @ (Flow::Return(_) | Flow::Break | Flow::Continue) => return Ok(flow),
             }
         }
         Ok(Flow::Next(last_val))
@@ -324,7 +393,38 @@ impl Interpreter {
                 }
 
                 let func = self.eval_value(callee, out)?;
-                self.eval_call(func, &arg_vals, out)
+
+                // Method call with copy-in copy-out: if callee was obj.method,
+                // extract the receiver variable name for self write-back.
+                let receiver_var = if matches!(func, Value::BoundMethod { .. }) {
+                    if let Expr::Attr { object, .. } = &callee.node {
+                        if let Expr::Name(var) = &object.node {
+                            Some(var.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let result = self.eval_call(func, &arg_vals, out)?;
+
+                // Copy-in copy-out: write mutated self back to the receiver variable.
+                if let Some(var_name) = receiver_var {
+                    if let Some(mutated_self) = self.last_method_self.take() {
+                        for frame in self.frames.iter_mut().rev() {
+                            if frame.contains_key(var_name.as_str()) {
+                                frame.insert(var_name, mutated_self);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Ok(result)
             }
 
             Expr::BinOp { op, left, right } => {
@@ -355,6 +455,169 @@ impl Interpreter {
                 }
             }
 
+            Expr::For {
+                binding,
+                iter_expr,
+                body,
+            } => {
+                // 1. Evaluate the iterable expression.
+                let iterable = self.eval_value(iter_expr, out)?;
+
+                // 2. Call .to_iter() on it.
+                let to_iter_method = {
+                    let tid = iterable.type_id();
+                    let method_table = self.methods.get(&tid).ok_or_else(|| {
+                        format!(
+                            "'{}' is not iterable (no methods)",
+                            self.types.display_name(tid)
+                        )
+                    })?;
+                    method_table
+                        .get("to_iter")
+                        .ok_or_else(|| {
+                            format!(
+                                "'{}' is not iterable (no 'to_iter' method)",
+                                self.types.display_name(tid)
+                            )
+                        })?
+                        .clone()
+                };
+
+                let Value::Func {
+                    params: to_iter_params,
+                    ret_type: to_iter_ret,
+                    body: to_iter_body,
+                } = to_iter_method
+                else {
+                    return Err("to_iter is not a function".to_string());
+                };
+
+                // Call to_iter: bind self = iterable, execute body.
+                let iter_val = {
+                    let bound = Value::BoundMethod {
+                        receiver: Box::new(iterable),
+                        params: to_iter_params,
+                        ret_type: to_iter_ret,
+                        body: to_iter_body,
+                    };
+                    match self.eval_call(bound, &[], out)? {
+                        Flow::Next(v) => v,
+                        _ => return Err("to_iter returned abnormal flow".to_string()),
+                    }
+                };
+
+                // Store the iterator in a temp variable for mutable self write-back.
+                let iter_var = "__iter".to_string();
+                self.push_scope();
+                self.set(iter_var.clone(), iter_val);
+
+                // 3. Loop: call .next() on the iterator.
+                loop {
+                    // Look up .next() method on the iterator's type.
+                    let next_method = {
+                        let current_iter = self.get(&iter_var).cloned().ok_or_else(|| {
+                            "internal error: iterator variable missing".to_string()
+                        })?;
+                        let tid = current_iter.type_id();
+                        let method_table = self.methods.get(&tid).ok_or_else(|| {
+                            format!(
+                                "iterator '{}' has no methods (missing 'next')",
+                                self.types.display_name(tid)
+                            )
+                        })?;
+                        method_table
+                            .get("next")
+                            .ok_or_else(|| {
+                                format!(
+                                    "iterator '{}' has no 'next' method",
+                                    self.types.display_name(tid)
+                                )
+                            })?
+                            .clone()
+                    };
+
+                    let Value::Func {
+                        params: next_params,
+                        ret_type: next_ret,
+                        body: next_body,
+                    } = next_method
+                    else {
+                        return Err("next is not a function".to_string());
+                    };
+
+                    let current_iter = self.get(&iter_var).cloned().unwrap();
+
+                    // Build a BoundMethod to call .next() and get copy-out.
+                    let bound = Value::BoundMethod {
+                        receiver: Box::new(current_iter),
+                        params: next_params,
+                        ret_type: next_ret,
+                        body: next_body,
+                    };
+
+                    let next_result = match self.eval_call(bound, &[], out)? {
+                        Flow::Next(v) => v,
+                        _ => break,
+                    };
+
+                    // Copy-out: write mutated self back to __iter.
+                    if let Some(mutated_self) = self.last_method_self.take() {
+                        for frame in self.frames.iter_mut().rev() {
+                            if frame.contains_key(iter_var.as_str()) {
+                                frame.insert(iter_var.clone(), mutated_self);
+                                break;
+                            }
+                        }
+                    }
+
+                    // 4. Check if result is Opt.None.
+                    let Value::Enum {
+                        variant_idx,
+                        fields,
+                        ..
+                    } = &next_result
+                    else {
+                        return Err("iterator .next() must return an Opt value".to_string());
+                    };
+
+                    // variant_idx 1 is None (Opt has Some=0, None=1).
+                    if *variant_idx == 1 {
+                        break;
+                    }
+
+                    // 5. Extract the value from Some(val).
+                    let val = fields
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| "Opt.Some has no field".to_string())?;
+
+                    // Bind loop variable and execute body.
+                    self.push_scope();
+                    self.set(binding.clone(), val);
+
+                    match self.exec_block(body, out)? {
+                        Flow::Next(_) => {}
+                        Flow::Continue => {
+                            self.pop_scope();
+                            continue;
+                        }
+                        Flow::Break => {
+                            self.pop_scope();
+                            break;
+                        }
+                        ret @ Flow::Return(_) => {
+                            self.pop_scope();
+                            self.pop_scope(); // pop the __iter scope too
+                            return Ok(ret);
+                        }
+                    }
+                    self.pop_scope();
+                }
+
+                self.pop_scope(); // pop __iter scope
+                Ok(Flow::Next(Value::Nil))
+            }
+
             Expr::While { cond, body } => {
                 loop {
                     let cv = self.eval_value(cond, out)?;
@@ -364,6 +627,14 @@ impl Interpreter {
                     self.push_scope();
                     match self.exec_block(body, out)? {
                         Flow::Next(_) => {}
+                        Flow::Continue => {
+                            self.pop_scope();
+                            continue;
+                        }
+                        Flow::Break => {
+                            self.pop_scope();
+                            break;
+                        }
                         ret @ Flow::Return(_) => {
                             self.pop_scope();
                             return Ok(ret);
@@ -450,6 +721,7 @@ impl Interpreter {
     fn eval_value(&mut self, expr: &Spanned<Expr>, out: &mut impl Write) -> Result<Value, String> {
         match self.eval_expr(expr, out)? {
             Flow::Next(v) | Flow::Return(v) => Ok(v),
+            Flow::Break | Flow::Continue => Ok(Value::Nil),
         }
     }
 
@@ -499,6 +771,137 @@ impl Interpreter {
             .register_struct(name.to_string(), type_params.to_vec(), fields);
 
         self.set(name.to_string(), Value::Type(type_id));
+        Ok(())
+    }
+
+    // ── Interface registration ─────────────────────────────────────
+
+    fn register_interface(
+        &mut self,
+        name: &str,
+        type_params: &[String],
+        methods: &[MethodSig],
+    ) -> Result<(), String> {
+        self.interfaces.insert(
+            name.to_string(),
+            InterfaceDef {
+                type_params: type_params.to_vec(),
+                methods: methods.to_vec(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Check that a type's method table satisfies an interface.
+    fn check_conformance(&self, type_name: &str, iface_expr: &Expr) -> Result<(), String> {
+        // Resolve the interface name (ignoring type args for now).
+        let iface_name = match iface_expr {
+            Expr::Name(n) => n.as_str(),
+            Expr::Item { object, .. } => {
+                if let Expr::Name(n) = &object.node {
+                    n.as_str()
+                } else {
+                    return Err("invalid interface expression".to_string());
+                }
+            }
+            _ => return Err("invalid interface expression".to_string()),
+        };
+
+        let iface = self
+            .interfaces
+            .get(iface_name)
+            .ok_or_else(|| format!("undefined interface '{iface_name}'"))?
+            .clone();
+
+        let type_id = self.resolve_type(type_name)?;
+        let method_table = self
+            .methods
+            .get(&type_id)
+            .ok_or_else(|| format!("'{type_name}' has no methods"))?;
+
+        for sig in &iface.methods {
+            let func = method_table.get(&sig.name).ok_or_else(|| {
+                format!(
+                    "'{type_name}' does not implement '{iface_name}': missing method '{}'",
+                    sig.name
+                )
+            })?;
+
+            // Verify param count matches (including self).
+            if let Value::Func { params, .. } = func {
+                if params.len() != sig.params.len() {
+                    return Err(format!(
+                        "'{type_name}' does not implement '{iface_name}': method '{}' expects {} param(s), got {}",
+                        sig.name,
+                        sig.params.len(),
+                        params.len()
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // ── Impl registration ────────────────────────────────────────────
+
+    fn register_impl(
+        &mut self,
+        type_name: &str,
+        method_stmts: &[Spanned<Stmt>],
+        _out: &mut impl Write,
+    ) -> Result<(), String> {
+        let type_id = self.resolve_type(type_name)?;
+
+        for method_stmt in method_stmts {
+            let Stmt::FuncDef {
+                name,
+                params,
+                ret_type,
+                body,
+            } = &method_stmt.node
+            else {
+                return Err("impl blocks may only contain func definitions".to_string());
+            };
+
+            if params.is_empty() || params[0].name != "self" {
+                return Err(format!(
+                    "method '{name}' must have 'self' as first parameter"
+                ));
+            }
+
+            let func_params: Vec<FuncParam> = params
+                .iter()
+                .map(|p| {
+                    let tid = p
+                        .type_ann
+                        .as_ref()
+                        .map(|ann| self.resolve_type_expr(&ann.node))
+                        .transpose()?;
+                    Ok(FuncParam {
+                        name: p.name.clone(),
+                        type_id: tid,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+
+            let ret_tid = ret_type
+                .as_ref()
+                .map(|ann| self.resolve_type_expr(&ann.node))
+                .transpose()?;
+
+            let func = Value::Func {
+                params: func_params,
+                ret_type: ret_tid,
+                body: body.clone(),
+            };
+
+            self.methods
+                .entry(type_id)
+                .or_insert_with(IndexMap::new)
+                .insert(name.clone(), func);
+        }
+
         Ok(())
     }
 
@@ -613,15 +1016,35 @@ impl Interpreter {
                     )),
                 }
             }
-            // Struct field access — p.x
+            // Struct field access — p.x, with method fallback
             Value::Struct { type_id, fields } => {
-                let val = fields.get(name).ok_or_else(|| {
-                    format!(
-                        "'{}' has no field '{name}'",
-                        self.types.display_name(*type_id)
-                    )
-                })?;
-                Ok(Flow::Next(val.clone()))
+                // Field access first.
+                if let Some(val) = fields.get(name) {
+                    return Ok(Flow::Next(val.clone()));
+                }
+                // Method lookup.
+                if let Some(method_table) = self.methods.get(type_id) {
+                    if let Some(func) = method_table.get(name) {
+                        let Value::Func {
+                            params,
+                            ret_type,
+                            body,
+                        } = func.clone()
+                        else {
+                            unreachable!();
+                        };
+                        return Ok(Flow::Next(Value::BoundMethod {
+                            receiver: Box::new(object.clone()),
+                            params,
+                            ret_type,
+                            body,
+                        }));
+                    }
+                }
+                Err(format!(
+                    "'{}' has no field or method '{name}'",
+                    self.types.display_name(*type_id)
+                ))
             }
             // Namespace.child — e.g., std.ops, std.ops.add
             Value::Namespace(ns) => {
@@ -634,10 +1057,33 @@ impl Interpreter {
                 }
             }
 
-            other => Err(format!(
-                "cannot access '.{name}' on {}",
-                self.types.display_name(other.type_id())
-            )),
+            other => {
+                // Check method table for any value type.
+                let tid = other.type_id();
+                if let Some(method_table) = self.methods.get(&tid) {
+                    if let Some(func) = method_table.get(name) {
+                        // Return a bound method: a Func that captures `self` as first arg.
+                        let Value::Func {
+                            params,
+                            ret_type,
+                            body,
+                        } = func.clone()
+                        else {
+                            unreachable!("method table should only contain Func values");
+                        };
+                        return Ok(Flow::Next(Value::BoundMethod {
+                            receiver: Box::new(other.clone()),
+                            params,
+                            ret_type,
+                            body,
+                        }));
+                    }
+                }
+                Err(format!(
+                    "cannot access '.{name}' on {}",
+                    self.types.display_name(tid)
+                ))
+            }
         }
     }
 
@@ -714,6 +1160,14 @@ impl Interpreter {
                 let result = match self.exec_block(&body, out)? {
                     Flow::Next(v) => v,
                     Flow::Return(v) => v,
+                    Flow::Break => {
+                        self.pop_scope();
+                        return Err("break outside of loop".to_string());
+                    }
+                    Flow::Continue => {
+                        self.pop_scope();
+                        return Err("continue outside of loop".to_string());
+                    }
                 };
 
                 self.pop_scope();
@@ -750,6 +1204,64 @@ impl Interpreter {
                     variant_idx,
                     fields: args.to_vec(),
                 }))
+            }
+
+            Value::BoundMethod {
+                receiver,
+                params,
+                ret_type,
+                body,
+            } => {
+                // BoundMethod has `self` as first param. The caller does NOT
+                // pass `self` — it's pre-bound. So user-visible args match
+                // params[1..].
+                let method_params = &params[1..];
+                if args.len() != method_params.len() {
+                    return Err(format!(
+                        "method expects {} argument(s), got {}",
+                        method_params.len(),
+                        args.len()
+                    ));
+                }
+
+                // Type-check explicit args.
+                for (param, val) in method_params.iter().zip(args.iter()) {
+                    if let Some(expected) = param.type_id {
+                        self.check_type(val, expected)?;
+                    }
+                }
+
+                // Push scope, bind self + params.
+                self.push_scope();
+                self.set("self".to_string(), *receiver);
+                for (param, val) in method_params.iter().zip(args.iter()) {
+                    self.set(param.name.clone(), val.clone());
+                }
+
+                let result = match self.exec_block(&body, out)? {
+                    Flow::Next(v) => v,
+                    Flow::Return(v) => v,
+                    Flow::Break => {
+                        self.pop_scope();
+                        return Err("break outside of loop".to_string());
+                    }
+                    Flow::Continue => {
+                        self.pop_scope();
+                        return Err("continue outside of loop".to_string());
+                    }
+                };
+
+                // Capture mutated self before popping scope (copy-out).
+                self.last_method_self = self.get("self").cloned();
+
+                self.pop_scope();
+
+                // Type-check return.
+                if let Some(expected_ret) = ret_type {
+                    self.check_type(&result, expected_ret)?;
+                }
+
+                Ok(Flow::Next(result))
             }
 
             Value::BuiltinFn(name) => self.call_builtin_fn(&name, args),
