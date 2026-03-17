@@ -7,26 +7,30 @@ use chumsky::{
 use logos::Logos;
 use tracing::{debug, info};
 
-use super::ast::{AstVariantDef, BinOp, Expr, Param, Program, Spanned, Stmt, UnaryOp};
+use super::ast::{
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, Param, Program, Spanned, Stmt, UnaryOp,
+};
 use super::lexer::Token;
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program    = stmt*
 //   stmt       = 'enum' IDENT type_params? '{' variant_list '}'      -- enum def
+//              | 'type' IDENT type_params? '{' field_list '}'         -- type def
 //              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}' -- function def
 //              | 'let' IDENT '=' expr ';'?                            -- variable binding
-//              | IDENT '=' expr ';'?                                    -- assignment
 //              | 'ret' expr ';'?                                       -- explicit return
-//              | expr ';'?
+//              | expr_or_assign ';'?                                   -- expr or assignment
 //   type_params = '[' IDENT (',' IDENT)* ']'
 //   variant_list = variant (',' variant)* ','?
-//   variant    = IDENT '(' IDENT (',' IDENT)* ')'  -- data variant
+//   variant    = IDENT '(' expr (',' expr)* ')'    -- data variant (type exprs)
 //              | IDENT                               -- unit variant
+//   field_list = field (',' field)* ','?
+//   field      = IDENT ':' expr                     -- type annotation is a full expression
 //   params     = param (',' param)*
-//   param      = IDENT ':' IDENT                    -- typed param
+//   param      = IDENT ':' expr                     -- typed param (type ann is expr)
 //              | IDENT                               -- untyped param
-//   ret_ann    = ':' IDENT                           -- return type annotation
+//   ret_ann    = ':' expr                            -- return type annotation (expr)
 //   expr       = with_expr | if_expr | while_expr | op_expr
 //   while_expr = 'while' expr '{' stmt* '}'
 //   with_expr  = 'with' (binding (',' binding)*)? '{' stmt* '}'
@@ -36,7 +40,9 @@ use super::lexer::Token;
 //   binop      = '+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>='
 //              | '&&' | '||'
 //   unary      = ('-' | '!') unary | postfix
-//   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')')*
+//   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}')*
+//   field_init = IDENT ':' expr
+//   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
 //   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
 
 fn span(s: &SimpleSpan) -> (usize, usize) {
@@ -189,6 +195,7 @@ where
                 Attr(String),
                 Item(Vec<Spanned<Expr>>),
                 Call(Vec<Spanned<Expr>>),
+                Construct(Vec<(String, Spanned<Expr>)>),
             }
 
             let attr = just(Token::Dot)
@@ -211,7 +218,18 @@ where
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .map(Postfix::Call);
 
-            let postfix = attr.or(item).or(call);
+            let field_init = select! { Token::Ident(name) => name }
+                .then_ignore(just(Token::Colon))
+                .then(expr.clone());
+
+            let construct = field_init
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace))
+                .map(Postfix::Construct);
+
+            let postfix = attr.or(item).or(call).or(construct);
 
             let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
                 let s = lhs.span;
@@ -234,6 +252,13 @@ where
                         Expr::Call {
                             callee: Box::new(lhs),
                             args,
+                        },
+                        s,
+                    ),
+                    Postfix::Construct(fields) => Spanned::new(
+                        Expr::Construct {
+                            type_expr: Box::new(lhs),
+                            fields,
                         },
                         s,
                     ),
@@ -334,10 +359,10 @@ where
 
         // ── statement parser ─────────────────────────────────────────────
 
-        // variant = IDENT '(' IDENT (',' IDENT)* ')' | IDENT
+        // variant = IDENT '(' expr (',' expr)* ')' | IDENT
         let variant_def = select! { Token::Ident(name) => name }
             .then(
-                select! { Token::Ident(name) => name }
+                expr.clone()
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
@@ -349,16 +374,17 @@ where
                 fields: fields.unwrap_or_default(),
             });
 
-        // enum_def = 'enum' IDENT type_params? '{' variant_list '}'
-        let enum_type_params = select! { Token::Ident(name) => name }
+        // type_params = '[' IDENT (',' IDENT)* ']'
+        let type_params = select! { Token::Ident(name) => name }
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LBracket), just(Token::RBracket));
 
+        // enum_def = 'enum' IDENT type_params? '{' variant_list '}'
         let enum_def = just(Token::Enum)
             .ignore_then(select! { Token::Ident(name) => name })
-            .then(enum_type_params.or_not())
+            .then(type_params.clone().or_not())
             .then(
                 variant_def
                     .separated_by(just(Token::Comma))
@@ -377,17 +403,40 @@ where
                 )
             });
 
-        // param = IDENT ':' IDENT | IDENT
-        let param = select! { Token::Ident(name) => name }
-            .then(
-                just(Token::Colon)
-                    .ignore_then(select! { Token::Ident(name) => name })
-                    .or_not(),
-            )
-            .map(|(name, type_name)| Param { name, type_name });
+        // type_def = 'type' IDENT type_params? '{' field_list '}'
+        let field_def = select! { Token::Ident(name) => name }
+            .then_ignore(just(Token::Colon))
+            .then(expr.clone())
+            .map(|(name, type_ann)| AstFieldDef { name, type_ann });
 
-        // ret_ann = ':' IDENT
-        let ret_ann = just(Token::Colon).ignore_then(select! { Token::Ident(name) => name });
+        let type_def = just(Token::Type)
+            .ignore_then(select! { Token::Ident(name) => name })
+            .then(type_params.or_not())
+            .then(
+                field_def
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )
+            .map_with(|((name, type_params), fields), ex| {
+                Spanned::new(
+                    Stmt::TypeDef {
+                        name,
+                        type_params: type_params.unwrap_or_default(),
+                        fields,
+                    },
+                    span(&ex.span()),
+                )
+            });
+
+        // param = IDENT ':' expr | IDENT
+        let param = select! { Token::Ident(name) => name }
+            .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
+            .map(|(name, type_ann)| Param { name, type_ann });
+
+        // ret_ann = ':' expr
+        let ret_ann = just(Token::Colon).ignore_then(expr.clone());
 
         let func_def = just(Token::Func)
             .ignore_then(select! { Token::Ident(name) => name })
@@ -431,24 +480,39 @@ where
             .then_ignore(just(Token::Semicolon).or_not())
             .map_with(|expr, ex| Spanned::new(Stmt::Ret(expr), span(&ex.span())));
 
-        let assign_stmt = select! { Token::Ident(name) => name }
-            .then_ignore(just(Token::Eq))
-            .then(expr.clone())
+        // expr_or_assign: parse expr, then optionally '=' expr for assignment.
+        // If '=' follows, convert lhs to AssignTarget.
+        let expr_or_assign = expr
+            .clone()
+            .then(just(Token::Eq).ignore_then(expr).or_not())
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|(name, value), ex| {
-                Spanned::new(Stmt::Assign { name, value }, span(&ex.span()))
+            .validate(|(lhs, rhs), extra, emitter| {
+                let s = span(&extra.span());
+                match rhs {
+                    None => Spanned::new(Stmt::Expr(lhs), s),
+                    Some(value) => {
+                        let target = match lhs.node {
+                            Expr::Name(name) => AssignTarget::Name(name),
+                            Expr::Attr { object, name } => {
+                                AssignTarget::Attr { object, attr: name }
+                            }
+                            _ => {
+                                emitter
+                                    .emit(Rich::custom(extra.span(), "invalid assignment target"));
+                                AssignTarget::Name("<invalid>".into())
+                            }
+                        };
+                        Spanned::new(Stmt::Assign { target, value }, s)
+                    }
+                }
             });
 
-        let expr_stmt = expr
-            .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|expr, ex| Spanned::new(Stmt::Expr(expr), span(&ex.span())));
-
         enum_def
+            .or(type_def)
             .or(func_def)
             .or(let_stmt)
-            .or(assign_stmt)
             .or(ret_stmt)
-            .or(expr_stmt)
+            .or(expr_or_assign)
     })
 }
 

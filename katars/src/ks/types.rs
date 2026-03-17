@@ -50,6 +50,21 @@ pub enum TypeDef {
         type_args: Vec<TypeId>,
         variants: IndexMap<String, ResolvedVariantDef>,
     },
+
+    /// A generic struct definition: `type Pair[A, B] { fst: A, snd: B }`
+    Struct {
+        name: String,
+        type_params: Vec<String>,
+        fields: IndexMap<String, TypeExpr>,
+    },
+
+    /// A concrete instantiation of a struct: `Pair[Int, Str]`.
+    /// Also used for non-generic structs (type_args is empty).
+    StructInstance {
+        base: TypeId,
+        type_args: Vec<TypeId>,
+        fields: IndexMap<String, TypeId>,
+    },
 }
 
 impl TypeDef {
@@ -57,7 +72,8 @@ impl TypeDef {
         match self {
             TypeDef::Prim { name } => name,
             TypeDef::Enum { name, .. } => name,
-            TypeDef::EnumInstance { .. } => "", // use display_name instead
+            TypeDef::Struct { name, .. } => name,
+            TypeDef::EnumInstance { .. } | TypeDef::StructInstance { .. } => "", // use display_name instead
         }
     }
 }
@@ -130,13 +146,58 @@ impl TypeRegistry {
         reg
     }
 
-    fn register_prim(&mut self, name: &str) -> TypeId {
+    /// Allocate a new TypeId and push a definition.
+    fn push_def(&mut self, def: TypeDef) -> TypeId {
         let id = TypeId(self.defs.len() as u32);
-        self.defs.push(TypeDef::Prim {
+        self.defs.push(def);
+        id
+    }
+
+    fn register_prim(&mut self, name: &str) -> TypeId {
+        let id = self.push_def(TypeDef::Prim {
             name: name.to_string(),
         });
         self.names.insert(name.to_string(), id);
         id
+    }
+
+    /// Resolve a TypeExpr that must be concrete (non-generic context).
+    fn resolve_concrete(texpr: TypeExpr, context: &str) -> TypeId {
+        match texpr {
+            TypeExpr::Concrete(tid) => tid,
+            TypeExpr::Param(p) => panic!("non-generic {context} has type param {p}"),
+        }
+    }
+
+    /// Check cache, validate arity, build param map.
+    /// Returns Ok(None) for cache hit, Ok(Some(map)) for cache miss.
+    fn prepare_instantiation<'a>(
+        &self,
+        base_id: TypeId,
+        type_args: &[TypeId],
+        type_params: &'a [String],
+        name: &str,
+    ) -> Result<Option<HashMap<&'a str, TypeId>>, String> {
+        let key = (base_id, type_args.to_vec());
+        if self.instances.contains_key(&key) {
+            return Ok(None);
+        }
+
+        if type_args.len() != type_params.len() {
+            return Err(format!(
+                "'{name}' expects {} type argument(s), got {}",
+                type_params.len(),
+                type_args.len()
+            ));
+        }
+
+        let param_map: HashMap<&str, TypeId> = type_params
+            .iter()
+            .zip(type_args.iter())
+            .map(|(p, &t)| (p.as_str(), t))
+            .collect();
+
+        Ok(Some(param_map))
     }
 
     /// Register a generic enum definition. Returns the TypeId for the
@@ -147,37 +208,28 @@ impl TypeRegistry {
         type_params: Vec<String>,
         variants: IndexMap<String, VariantDef>,
     ) -> TypeId {
-        let id = TypeId(self.defs.len() as u32);
-        // For non-generic enums, also create an instance immediately.
-        if type_params.is_empty() {
-            // Register the base definition.
-            self.defs.push(TypeDef::Enum {
-                name: name.clone(),
-                type_params: vec![],
-                variants: variants.clone(),
-            });
-            self.names.insert(name.clone(), id);
+        let id = self.push_def(TypeDef::Enum {
+            name: name.clone(),
+            type_params: type_params.clone(),
+            variants: variants.clone(),
+        });
+        self.names.insert(name.clone(), id);
 
-            // Auto-instantiate (no type args to resolve).
+        // For non-generic enums, auto-instantiate immediately.
+        if type_params.is_empty() {
             let resolved_variants = variants
                 .into_iter()
                 .map(|(vname, vdef)| {
                     let fields = vdef
                         .fields
                         .into_iter()
-                        .map(|f| match f {
-                            TypeExpr::Concrete(tid) => tid,
-                            TypeExpr::Param(p) => {
-                                panic!("non-generic enum has type param {p}")
-                            }
-                        })
+                        .map(|f| Self::resolve_concrete(f, "enum"))
                         .collect();
                     (vname, ResolvedVariantDef { fields })
                 })
                 .collect();
 
-            let inst_id = TypeId(self.defs.len() as u32);
-            self.defs.push(TypeDef::EnumInstance {
+            let inst_id = self.push_def(TypeDef::EnumInstance {
                 base: id,
                 type_args: vec![],
                 variants: resolved_variants,
@@ -189,12 +241,6 @@ impl TypeRegistry {
             return inst_id;
         }
 
-        self.defs.push(TypeDef::Enum {
-            name: name.clone(),
-            type_params,
-            variants,
-        });
-        self.names.insert(name, id);
         id
     }
 
@@ -205,12 +251,6 @@ impl TypeRegistry {
         base_id: TypeId,
         type_args: Vec<TypeId>,
     ) -> Result<TypeId, String> {
-        // Check cache.
-        let key = (base_id, type_args.clone());
-        if let Some(&cached) = self.instances.get(&key) {
-            return Ok(cached);
-        }
-
         // Look up the base enum definition.
         let base_def = self.defs[base_id.0 as usize].clone();
         let TypeDef::Enum {
@@ -225,20 +265,11 @@ impl TypeRegistry {
             ));
         };
 
-        if type_args.len() != type_params.len() {
-            return Err(format!(
-                "'{name}' expects {} type argument(s), got {}",
-                type_params.len(),
-                type_args.len()
-            ));
-        }
-
-        // Build param → TypeId mapping.
-        let param_map: HashMap<&str, TypeId> = type_params
-            .iter()
-            .zip(type_args.iter())
-            .map(|(p, &t)| (p.as_str(), t))
-            .collect();
+        let Some(param_map) =
+            self.prepare_instantiation(base_id, &type_args, &type_params, &name)?
+        else {
+            return Ok(*self.instances.get(&(base_id, type_args)).unwrap());
+        };
 
         // Resolve all variant fields.
         let resolved_variants = variants
@@ -260,8 +291,7 @@ impl TypeRegistry {
             })
             .collect::<Result<IndexMap<_, _>, String>>()?;
 
-        let inst_id = TypeId(self.defs.len() as u32);
-        self.defs.push(TypeDef::EnumInstance {
+        let inst_id = self.push_def(TypeDef::EnumInstance {
             base: base_id,
             type_args: type_args.clone(),
             variants: resolved_variants,
@@ -285,8 +315,11 @@ impl TypeRegistry {
     pub fn display_name(&self, id: TypeId) -> String {
         match &self.defs[id.0 as usize] {
             TypeDef::Prim { name } => name.clone(),
-            TypeDef::Enum { name, .. } => name.clone(),
+            TypeDef::Enum { name, .. } | TypeDef::Struct { name, .. } => name.clone(),
             TypeDef::EnumInstance {
+                base, type_args, ..
+            }
+            | TypeDef::StructInstance {
                 base, type_args, ..
             } => {
                 let base_name = self.display_name(*base);
@@ -321,6 +354,100 @@ impl TypeRegistry {
             )
         })?;
         Ok((idx as u32, vdef))
+    }
+
+    /// Register a struct type definition.
+    /// Non-generic structs are auto-instantiated (like non-generic enums).
+    pub fn register_struct(
+        &mut self,
+        name: String,
+        type_params: Vec<String>,
+        fields: IndexMap<String, TypeExpr>,
+    ) -> TypeId {
+        let id = self.push_def(TypeDef::Struct {
+            name: name.clone(),
+            type_params: type_params.clone(),
+            fields: fields.clone(),
+        });
+        self.names.insert(name.clone(), id);
+
+        // For non-generic structs, auto-instantiate immediately.
+        if type_params.is_empty() {
+            let resolved_fields = fields
+                .into_iter()
+                .map(|(fname, texpr)| (fname, Self::resolve_concrete(texpr, "struct")))
+                .collect();
+
+            let inst_id = self.push_def(TypeDef::StructInstance {
+                base: id,
+                type_args: vec![],
+                fields: resolved_fields,
+            });
+            self.instances.insert((id, vec![]), inst_id);
+            self.names.insert(name, inst_id);
+            return inst_id;
+        }
+
+        id
+    }
+
+    /// Instantiate a generic struct with concrete type arguments.
+    pub fn instantiate_struct(
+        &mut self,
+        base_id: TypeId,
+        type_args: Vec<TypeId>,
+    ) -> Result<TypeId, String> {
+        let base_def = self.defs[base_id.0 as usize].clone();
+        let TypeDef::Struct {
+            name,
+            type_params,
+            fields,
+        } = base_def
+        else {
+            return Err(format!(
+                "'{}' is not a generic struct",
+                self.display_name(base_id)
+            ));
+        };
+
+        let Some(param_map) =
+            self.prepare_instantiation(base_id, &type_args, &type_params, &name)?
+        else {
+            return Ok(*self.instances.get(&(base_id, type_args)).unwrap());
+        };
+
+        let resolved_fields = fields
+            .into_iter()
+            .map(|(fname, texpr)| {
+                let tid = match texpr {
+                    TypeExpr::Concrete(tid) => Ok(tid),
+                    TypeExpr::Param(ref p) => param_map
+                        .get(p.as_str())
+                        .copied()
+                        .ok_or_else(|| format!("unknown type parameter '{p}' in field '{fname}'")),
+                }?;
+                Ok((fname, tid))
+            })
+            .collect::<Result<IndexMap<_, _>, String>>()?;
+
+        let inst_id = self.push_def(TypeDef::StructInstance {
+            base: base_id,
+            type_args: type_args.clone(),
+            fields: resolved_fields,
+        });
+        self.instances.insert((base_id, type_args), inst_id);
+        Ok(inst_id)
+    }
+
+    /// Get the field definitions for an instantiated struct.
+    pub fn get_struct_fields(&self, type_id: TypeId) -> Result<&IndexMap<String, TypeId>, String> {
+        match self.get(type_id) {
+            TypeDef::StructInstance { fields, .. } => Ok(fields),
+            _ => Err(format!(
+                "'{}' is not a struct type",
+                self.display_name(type_id)
+            )),
+        }
     }
 
     /// Get the variant name by index for an instantiated enum.

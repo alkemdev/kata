@@ -1,5 +1,6 @@
 use std::fmt;
 
+use indexmap::IndexMap;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,11 @@ pub enum Value {
         variant_idx: u32,
         field_types: Vec<TypeId>,
     },
+    /// A struct value — e.g., `Point { x: 1.0, y: 2.0 }`.
+    Struct {
+        type_id: TypeId,
+        fields: IndexMap<String, Value>,
+    },
     /// A namespace value — e.g., `std`, `std.ops`.
     Namespace(String),
     /// A built-in function — e.g., `std.ops.add`.
@@ -60,6 +66,7 @@ impl Value {
             Value::Bin(_) => prim::BIN,
             Value::Func { .. } => prim::FUNC,
             Value::Enum { type_id, .. } => *type_id,
+            Value::Struct { type_id, .. } => *type_id,
             Value::Type(_) => prim::TYPE,
             Value::VariantConstructor { .. } => prim::FUNC,
             Value::Namespace(_) => prim::NIL,
@@ -91,6 +98,18 @@ impl Value {
                 } else {
                     let inner: Vec<String> = fields.iter().map(|v| v.display(types)).collect();
                     format!("{variant_name}({})", inner.join(", "))
+                }
+            }
+            Value::Struct { type_id, fields } => {
+                let type_name = types.display_name(*type_id);
+                if fields.is_empty() {
+                    format!("{type_name} {{}}")
+                } else {
+                    let inner: Vec<String> = fields
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {}", v.display(types)))
+                        .collect();
+                    format!("{type_name} {{ {} }}", inner.join(", "))
                 }
             }
             Value::Type(tid) => types.display_name(*tid),
@@ -131,6 +150,16 @@ impl PartialEq for Value {
                     fields: f2,
                 },
             ) => t1 == t2 && v1 == v2 && f1 == f2,
+            (
+                Value::Struct {
+                    type_id: t1,
+                    fields: f1,
+                },
+                Value::Struct {
+                    type_id: t2,
+                    fields: f2,
+                },
+            ) => t1 == t2 && f1 == f2,
             (Value::Func { .. }, Value::Func { .. }) => false,
             (Value::VariantConstructor { .. }, Value::VariantConstructor { .. }) => false,
             (Value::Namespace(a), Value::Namespace(b)) => a == b,
@@ -165,6 +194,10 @@ impl fmt::Display for Value {
                     let inner: Vec<String> = fields.iter().map(|v| v.to_string()).collect();
                     write!(f, "<variant:{variant_idx}>({})", inner.join(", "))
                 }
+            }
+            Value::Struct { type_id, fields } => {
+                let inner: Vec<String> = fields.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+                write!(f, "<struct:{type_id} {{ {} }}>", inner.join(", "))
             }
             Value::Type(tid) => write!(f, "<type:{tid}>"),
             Value::VariantConstructor { variant_idx, .. } => {

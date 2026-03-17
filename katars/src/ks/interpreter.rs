@@ -5,7 +5,9 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use tracing::{debug, trace};
 
-use super::ast::{AstVariantDef, BinOp, Expr, Program, Spanned, Stmt, UnaryOp};
+use super::ast::{
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, Program, Spanned, Stmt, UnaryOp,
+};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncParam, Value};
 
@@ -99,6 +101,14 @@ impl Interpreter {
             .ok_or_else(|| format!("undefined type '{name}'"))
     }
 
+    /// Resolve a type annotation expression (non-parameterized context) to a TypeId.
+    fn resolve_type_expr(&self, expr: &Expr) -> Result<TypeId, String> {
+        match expr {
+            Expr::Name(n) => self.resolve_type(n),
+            _ => Err("complex type annotations not yet supported".to_string()),
+        }
+    }
+
     /// Check that a value conforms to an expected type.
     fn check_type(&self, value: &Value, expected: TypeId) -> Result<(), String> {
         let actual = value.type_id();
@@ -157,6 +167,15 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
+            Stmt::TypeDef {
+                name,
+                type_params,
+                fields,
+            } => {
+                self.register_struct(name, type_params, fields)?;
+                Ok(Flow::Next(Value::Nil))
+            }
+
             Stmt::FuncDef {
                 name,
                 params,
@@ -167,9 +186,9 @@ impl Interpreter {
                     .iter()
                     .map(|p| {
                         let type_id = p
-                            .type_name
+                            .type_ann
                             .as_ref()
-                            .map(|tn| self.resolve_type(tn))
+                            .map(|ann| self.resolve_type_expr(&ann.node))
                             .transpose()?;
                         Ok(FuncParam {
                             name: p.name.clone(),
@@ -180,7 +199,7 @@ impl Interpreter {
 
                 let ret_tid = ret_type
                     .as_ref()
-                    .map(|rt| self.resolve_type(rt))
+                    .map(|ann| self.resolve_type_expr(&ann.node))
                     .transpose()?;
 
                 let func = Value::Func {
@@ -198,16 +217,20 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::Assign { name, value } => {
-                // Find the frame that has this variable and update it.
+            Stmt::Assign { target, value } => {
                 let val = self.eval_value(value, out)?;
-                for frame in self.frames.iter_mut().rev() {
-                    if frame.contains_key(name.as_str()) {
-                        frame.insert(name.clone(), val);
-                        return Ok(Flow::Next(Value::Nil));
+                match target {
+                    AssignTarget::Name(name) => {
+                        for frame in self.frames.iter_mut().rev() {
+                            if frame.contains_key(name.as_str()) {
+                                frame.insert(name.clone(), val);
+                                return Ok(Flow::Next(Value::Nil));
+                            }
+                        }
+                        Err(format!("undefined variable '{name}'"))
                     }
+                    AssignTarget::Attr { object, attr } => self.exec_attr_assign(object, attr, val),
                 }
-                Err(format!("undefined variable '{name}'"))
             }
 
             Stmt::Ret(expr) => {
@@ -374,6 +397,52 @@ impl Interpreter {
                 let result = Self::eval_unaryop(*op, &val)?;
                 Ok(Flow::Next(result))
             }
+
+            Expr::Construct { type_expr, fields } => {
+                let type_val = self.eval_value(type_expr, out)?;
+                let Value::Type(type_id) = type_val else {
+                    return Err(format!(
+                        "cannot construct '{}' — not a type",
+                        self.types.display_name(type_val.type_id())
+                    ));
+                };
+
+                let expected_fields = self.types.get_struct_fields(type_id)?.clone();
+
+                // Check for extra fields.
+                for (fname, _) in fields {
+                    if !expected_fields.contains_key(fname.as_str()) {
+                        return Err(format!(
+                            "'{}' has no field '{fname}'",
+                            self.types.display_name(type_id)
+                        ));
+                    }
+                }
+
+                // Check for missing fields and build in definition order.
+                let mut provided: IndexMap<String, Value> = IndexMap::new();
+                for (fname, fexpr) in fields {
+                    let val = self.eval_value(fexpr, out)?;
+                    provided.insert(fname.clone(), val);
+                }
+
+                let mut result_fields = IndexMap::new();
+                for (fname, expected_tid) in &expected_fields {
+                    let val = provided.shift_remove(fname.as_str()).ok_or_else(|| {
+                        format!(
+                            "missing field '{fname}' in '{}' construction",
+                            self.types.display_name(type_id)
+                        )
+                    })?;
+                    self.check_type(&val, *expected_tid)?;
+                    result_fields.insert(fname.clone(), val);
+                }
+
+                Ok(Flow::Next(Value::Struct {
+                    type_id,
+                    fields: result_fields,
+                }))
+            }
         }
     }
 
@@ -397,19 +466,8 @@ impl Interpreter {
             let fields = v
                 .fields
                 .iter()
-                .map(|f| {
-                    // If the field name matches a type param, it's a Param reference.
-                    // Otherwise, try to resolve it as a concrete type.
-                    if type_params.contains(f) {
-                        TypeExpr::Param(f.clone())
-                    } else {
-                        match self.resolve_type(f) {
-                            Ok(tid) => TypeExpr::Concrete(tid),
-                            Err(_) => TypeExpr::Param(f.clone()), // treat as param
-                        }
-                    }
-                })
-                .collect();
+                .map(|f| self.resolve_type_ann(&f.node, type_params))
+                .collect::<Result<Vec<_>, _>>()?;
             variants.insert(v.name.clone(), VariantDef { fields });
         }
 
@@ -420,6 +478,95 @@ impl Interpreter {
         // Put the type in scope as a Value::Type.
         self.set(name.to_string(), Value::Type(type_id));
         Ok(())
+    }
+
+    // ── Struct registration ────────────────────────────────────────────
+
+    fn register_struct(
+        &mut self,
+        name: &str,
+        type_params: &[String],
+        ast_fields: &[AstFieldDef],
+    ) -> Result<(), String> {
+        let mut fields = IndexMap::new();
+        for f in ast_fields {
+            let texpr = self.resolve_type_ann(&f.type_ann.node, type_params)?;
+            fields.insert(f.name.clone(), texpr);
+        }
+
+        let type_id = self
+            .types
+            .register_struct(name.to_string(), type_params.to_vec(), fields);
+
+        self.set(name.to_string(), Value::Type(type_id));
+        Ok(())
+    }
+
+    /// Convert an expression used as a type annotation to a TypeExpr.
+    fn resolve_type_ann(&self, expr: &Expr, type_params: &[String]) -> Result<TypeExpr, String> {
+        match expr {
+            Expr::Name(n) => {
+                if type_params.contains(n) {
+                    Ok(TypeExpr::Param(n.clone()))
+                } else {
+                    Ok(TypeExpr::Concrete(self.resolve_type(n)?))
+                }
+            }
+            _ => Err("complex type annotations not yet supported".to_string()),
+        }
+    }
+
+    // ── Attr assignment: a.b = v ─────────────────────────────────────
+
+    fn exec_attr_assign(
+        &mut self,
+        object: &Spanned<Expr>,
+        attr: &str,
+        val: Value,
+    ) -> Result<Flow, String> {
+        // Only handle Expr::Name(var).attr = val for now.
+        let Expr::Name(var_name) = &object.node else {
+            return Err("nested attr assignment not yet supported".to_string());
+        };
+
+        // Phase 1: read the struct, validate types.
+        let (type_id, expected_tid) = {
+            let current = self
+                .get(var_name)
+                .ok_or_else(|| format!("undefined variable '{var_name}'"))?;
+            let Value::Struct { type_id, .. } = current else {
+                return Err(format!(
+                    "cannot assign to field '.{attr}' on {}",
+                    self.types.display_name(current.type_id())
+                ));
+            };
+            let struct_fields = self.types.get_struct_fields(*type_id)?;
+            let expected_tid = struct_fields.get(attr).copied().ok_or_else(|| {
+                format!(
+                    "'{}' has no field '{attr}'",
+                    self.types.display_name(*type_id)
+                )
+            })?;
+            (*type_id, expected_tid)
+        };
+
+        self.check_type(&val, expected_tid)?;
+
+        // Phase 2: mutate the struct field in scope.
+        for frame in self.frames.iter_mut().rev() {
+            if let Some(entry) = frame.get_mut(var_name) {
+                if let Value::Struct {
+                    type_id: tid,
+                    fields,
+                } = entry
+                {
+                    debug_assert_eq!(*tid, type_id);
+                    fields.insert(attr.to_string(), val);
+                    return Ok(Flow::Next(Value::Nil));
+                }
+            }
+        }
+        Err(format!("undefined variable '{var_name}'"))
     }
 
     // ── Attr: a.b ─────────────────────────────────────────────────────
@@ -455,11 +602,26 @@ impl Interpreter {
                             }))
                         }
                     }
+                    TypeDef::StructInstance { .. } => Err(format!(
+                        "'{}' is a struct type — construct with `{} {{ ... }}`",
+                        self.types.display_name(*type_id),
+                        self.types.display_name(*type_id),
+                    )),
                     _ => Err(format!(
                         "cannot access '.{name}' on type '{}'",
                         self.types.display_name(*type_id)
                     )),
                 }
+            }
+            // Struct field access — p.x
+            Value::Struct { type_id, fields } => {
+                let val = fields.get(name).ok_or_else(|| {
+                    format!(
+                        "'{}' has no field '{name}'",
+                        self.types.display_name(*type_id)
+                    )
+                })?;
+                Ok(Flow::Next(val.clone()))
             }
             // Namespace.child — e.g., std.ops, std.ops.add
             Value::Namespace(ns) => {
@@ -483,7 +645,7 @@ impl Interpreter {
 
     fn eval_item(&mut self, object: &Value, args: &[Value]) -> Result<Flow, String> {
         match object {
-            // Type[Args] — generic enum instantiation
+            // Type[Args] — generic instantiation (enum or struct)
             Value::Type(base_id) => {
                 let type_args: Vec<TypeId> = args
                     .iter()
@@ -495,7 +657,16 @@ impl Interpreter {
                         )),
                     })
                     .collect::<Result<_, _>>()?;
-                let instance_id = self.types.instantiate_enum(*base_id, type_args)?;
+                let instance_id = match self.types.get(*base_id) {
+                    TypeDef::Enum { .. } => self.types.instantiate_enum(*base_id, type_args)?,
+                    TypeDef::Struct { .. } => self.types.instantiate_struct(*base_id, type_args)?,
+                    _ => {
+                        return Err(format!(
+                            "'{}' is not a generic type",
+                            self.types.display_name(*base_id)
+                        ))
+                    }
+                };
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
             other => Err(format!(

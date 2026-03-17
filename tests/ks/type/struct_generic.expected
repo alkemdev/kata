@@ -1,0 +1,3 @@
+Pair[Int, Str] { fst: 42, snd: hello }
+42
+hello

@@ -44,6 +44,8 @@ pub enum Token {
     While,
     #[token("with")]
     With,
+    #[token("type")]
+    Type,
     #[token("ret")]
     Ret,
 
@@ -123,6 +125,7 @@ impl fmt::Display for Token {
             Token::Enum => write!(f, "enum"),
             Token::While => write!(f, "while"),
             Token::With => write!(f, "with"),
+            Token::Type => write!(f, "type"),
             Token::Ret => write!(f, "ret"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
@@ -242,6 +245,7 @@ mod tests {
         assert_eq!(one("enum"), Token::Enum);
         assert_eq!(one("while"), Token::While);
         assert_eq!(one("with"), Token::With);
+        assert_eq!(one("type"), Token::Type);
         assert_eq!(one("ret"), Token::Ret);
     }
 

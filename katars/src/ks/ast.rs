@@ -30,7 +30,7 @@ pub enum Stmt {
     FuncDef {
         name: String,
         params: Vec<Param>,
-        ret_type: Option<String>,
+        ret_type: Option<Spanned<Expr>>,
         body: Vec<Spanned<Stmt>>,
     },
     /// `enum Name[T] { Variant(T), Unit }` — enum type definition.
@@ -39,8 +39,17 @@ pub enum Stmt {
         type_params: Vec<String>,
         variants: Vec<AstVariantDef>,
     },
-    /// `name = expr` — reassign an existing variable.
-    Assign { name: String, value: Spanned<Expr> },
+    /// `type Name[T] { field: Type, ... }` — product type definition.
+    TypeDef {
+        name: String,
+        type_params: Vec<String>,
+        fields: Vec<AstFieldDef>,
+    },
+    /// `target = expr` — reassign an existing variable or field.
+    Assign {
+        target: AssignTarget,
+        value: Spanned<Expr>,
+    },
     /// `ret <expr>` — explicit return from the enclosing function.
     Ret(Spanned<Expr>),
 }
@@ -49,16 +58,34 @@ pub enum Stmt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Param {
     pub name: String,
-    /// Type annotation as written in source, e.g., "Int", "Str".
-    pub type_name: Option<String>,
+    /// Type annotation — a full expression AST (e.g., `Int`, `List[T]`).
+    pub type_ann: Option<Spanned<Expr>>,
 }
 
 /// A single variant in an enum definition (AST level).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AstVariantDef {
     pub name: String,
-    /// Field type names (e.g., `["T"]` for `Some(T)`). Empty for unit variants.
-    pub fields: Vec<String>,
+    /// Field type annotations as full expression ASTs. Empty for unit variants.
+    pub fields: Vec<Spanned<Expr>>,
+}
+
+/// A field in a type definition. Type annotation is a full expression AST,
+/// not a string — supports `x: Int`, `items: List[T]`, `key: Map[Str, V]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AstFieldDef {
+    pub name: String,
+    pub type_ann: Spanned<Expr>,
+}
+
+/// Assignment target. Object is a full expression — supports `a.b.c = v`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssignTarget {
+    Name(String),
+    Attr {
+        object: Box<Spanned<Expr>>,
+        attr: String,
+    },
 }
 
 // ── Operators ─────────────────────────────────────────────────────────────────
@@ -200,6 +227,11 @@ pub enum Expr {
     Or {
         left: Box<Spanned<Expr>>,
         right: Box<Spanned<Expr>>,
+    },
+    /// Struct construction: `Point { x: 1.0, y: 2.0 }`
+    Construct {
+        type_expr: Box<Spanned<Expr>>,
+        fields: Vec<(String, Spanned<Expr>)>,
     },
 }
 

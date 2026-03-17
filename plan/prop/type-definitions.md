@@ -1,8 +1,8 @@
 # Decision: product types (type definitions)
 **ID:** type-definitions
-**Status:** open
+**Status:** done
 **Date opened:** 2026-03-16
-**Date done:** —
+**Date done:** 2026-03-16
 **Affects:** lexer, parser, eval, syntax, stdlib
 
 ## Question
@@ -107,7 +107,16 @@ And a corresponding `TypeDef::StructInstance` for concrete instantiations (paral
 - Can a `type` be empty? `type Unit {}` — yes, it's a zero-field product type.
 
 ## Decision
-<!-- blank while open -->
+**Chosen:** Option A — named fields only (record style)
+**Rationale:** Enum variants already cover positional fields. Product types should add named, self-documenting fields. One construction syntax (`Type { field: value }`) avoids ambiguity with function calls and enum variant construction. Positional field support may be added later as a separate extension.
+**Consequences:**
+- `type Point { x: Float, y: Float }` syntax; `type` keyword added to lexer
+- Construction: `Point { x: 1.0, y: 2.0 }` — all fields required, no defaults
+- Field access: `p.x` via existing `Expr::Attr`
+- Field mutation: `p.x = 3.0` follows existing reassignment semantics (binding must be reassignable)
+- Generics supported: `type Pair[A, B] { fst: A, snd: B }` — reuses `TypeRegistry` instantiation
+- Empty types allowed: `type Unit {}`
+- Deferred: default field values, destructuring (lands with `match`), positional construction sugar, visibility/privacy
 
 ## References
 - [prop: type-system](type-system.md) — two-layer type architecture, `type` keyword reserved
