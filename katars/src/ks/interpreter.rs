@@ -358,7 +358,7 @@ impl Interpreter {
             Expr::Str(s) => Ok(Flow::Next(Value::Str(s.clone()))),
 
             Expr::Name(name) => self.get(name).cloned().map(Flow::Next).ok_or_else(|| {
-                RuntimeError::new(format!("undefined variable '{name}'")).at(expr.span)
+                RuntimeError::from(format!("undefined variable '{name}'")).at(expr.span)
             }),
 
             Expr::With { bindings, body } => {
@@ -507,10 +507,10 @@ impl Interpreter {
                         fields,
                     } = &next_result
                     else {
-                        return Err(
-                            RuntimeError::new("iterator .next() must return an Opt value")
-                                .at(expr.span),
-                        );
+                        return Err(RuntimeError::from(
+                            "iterator .next() must return an Opt value".to_string(),
+                        )
+                        .at(expr.span));
                     };
 
                     if self.types.variant_name(*opt_tid, *variant_idx) == VARIANT_NONE {
@@ -518,10 +518,9 @@ impl Interpreter {
                     }
 
                     // 5. Extract the value from Some(val).
-                    let val = fields
-                        .first()
-                        .cloned()
-                        .ok_or_else(|| RuntimeError::new("Opt.Some has no field").at(expr.span))?;
+                    let val = fields.first().cloned().ok_or_else(|| {
+                        RuntimeError::from("Opt.Some has no field".to_string()).at(expr.span)
+                    })?;
 
                     // Bind loop variable and execute body.
                     self.push_scope();
@@ -579,7 +578,7 @@ impl Interpreter {
             Expr::Construct { type_expr, fields } => {
                 let type_val = self.eval_value(type_expr, out)?;
                 let Value::Type(type_id) = type_val else {
-                    return Err(RuntimeError::new(format!(
+                    return Err(RuntimeError::from(format!(
                         "cannot construct '{}' — not a type",
                         self.types.display_name(type_val.type_id())
                     ))
@@ -595,7 +594,7 @@ impl Interpreter {
                 // Check for extra fields.
                 for (fname, _) in fields {
                     if !expected_fields.contains_key(fname.as_str()) {
-                        return Err(RuntimeError::new(format!(
+                        return Err(RuntimeError::from(format!(
                             "'{}' has no field '{fname}'",
                             self.types.display_name(type_id)
                         ))
@@ -613,7 +612,7 @@ impl Interpreter {
                 let mut result_fields = IndexMap::new();
                 for (fname, expected_tid) in &expected_fields {
                     let val = provided.shift_remove(fname.as_str()).ok_or_else(|| {
-                        RuntimeError::new(format!(
+                        RuntimeError::from(format!(
                             "missing field '{fname}' in '{}' construction",
                             self.types.display_name(type_id)
                         ))
@@ -640,8 +639,12 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match self.eval_expr(expr, out)? {
             Flow::Next(v) | Flow::Return(v) => Ok(v),
-            Flow::Break => Err(RuntimeError::new("break outside of loop").at(expr.span)),
-            Flow::Continue => Err(RuntimeError::new("continue outside of loop").at(expr.span)),
+            Flow::Break => {
+                Err(RuntimeError::from("break outside of loop".to_string()).at(expr.span))
+            }
+            Flow::Continue => {
+                Err(RuntimeError::from("continue outside of loop".to_string()).at(expr.span))
+            }
         }
     }
 
@@ -1064,7 +1067,9 @@ impl Interpreter {
                     ));
                 }
 
-                let result = self.call_func_body(&params, args, ret_type, &body, false, out)?;
+                let result = self
+                    .call_func_body(&params, args, ret_type, &body, false, out)
+                    .map_err(|e| e.to_string())?;
                 Ok(Flow::Next(result))
             }
 
@@ -1119,8 +1124,9 @@ impl Interpreter {
                 full_args.push(*receiver);
                 full_args.extend_from_slice(args);
 
-                let result =
-                    self.call_func_body(&params, &full_args, ret_type, &body, true, out)?;
+                let result = self
+                    .call_func_body(&params, &full_args, ret_type, &body, true, out)
+                    .map_err(|e| e.to_string())?;
                 Ok(Flow::Next(result))
             }
 
@@ -1389,11 +1395,17 @@ impl Interpreter {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(_) => {}
                 Flow::Return(_) => {
-                    return Err(RuntimeError::new(format!("ret {context}")).at(stmt.span))
+                    return Err(RuntimeError::from(format!("ret {context}")).at(stmt.span))
                 }
-                Flow::Break => return Err(RuntimeError::new("break outside of loop").at(stmt.span)),
+                Flow::Break => {
+                    return Err(
+                        RuntimeError::from("break outside of loop".to_string()).at(stmt.span)
+                    )
+                }
                 Flow::Continue => {
-                    return Err(RuntimeError::new("continue outside of loop").at(stmt.span))
+                    return Err(
+                        RuntimeError::from("continue outside of loop".to_string()).at(stmt.span)
+                    )
                 }
             }
         }
@@ -1413,10 +1425,10 @@ impl Interpreter {
         body: &[Spanned<Stmt>],
         is_method: bool,
         out: &mut impl Write,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, RuntimeError> {
         for (param, val) in params.iter().zip(args.iter()) {
             if let Some(expected) = param.type_id {
-                self.check_type(val, expected)?;
+                self.check_type(val, expected).map_err(RuntimeError::from)?;
             }
         }
 
@@ -1429,15 +1441,15 @@ impl Interpreter {
             Ok(Flow::Next(v) | Flow::Return(v)) => v,
             Ok(Flow::Break) => {
                 self.pop_scope();
-                return Err("break outside of loop".to_string());
+                return Err(RuntimeError::from("break outside of loop".to_string()));
             }
             Ok(Flow::Continue) => {
                 self.pop_scope();
-                return Err("continue outside of loop".to_string());
+                return Err(RuntimeError::from("continue outside of loop".to_string()));
             }
             Err(e) => {
                 self.pop_scope();
-                return Err(e.message);
+                return Err(e);
             }
         };
 
@@ -1448,7 +1460,8 @@ impl Interpreter {
         self.pop_scope();
 
         if let Some(expected_ret) = ret_type {
-            self.check_type(&result, expected_ret)?;
+            self.check_type(&result, expected_ret)
+                .map_err(RuntimeError::from)?;
         }
 
         Ok(result)
@@ -1555,9 +1568,10 @@ mod tests {
         let err = interp
             .exec_program(&prog, None, &mut Vec::new())
             .unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.message.contains("undefined variable"),
-            "unexpected error: {err}"
+            msg.contains("undefined variable"),
+            "unexpected error: {msg}"
         );
     }
 
@@ -1576,9 +1590,10 @@ mod tests {
         let err = interp
             .exec_program(&prog, None, &mut Vec::new())
             .unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.message.contains("ret outside of function"),
-            "unexpected error: {err}"
+            msg.contains("ret outside of function"),
+            "unexpected error: {msg}"
         );
     }
 

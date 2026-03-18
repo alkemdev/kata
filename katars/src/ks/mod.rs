@@ -12,6 +12,7 @@ pub use lexer::SpannedToken;
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use error::RuntimeError;
+use types::TypeRegistry;
 
 /// Lex `source` into a token stream. Always succeeds; lex errors appear as
 /// `Token::Error` entries in the result.
@@ -40,26 +41,27 @@ pub fn run(source: &str, filename: &str) -> Result<(), ()> {
         .exec_program(&prelude, None, &mut std::io::stdout())
         .map_err(|e| {
             // Prelude errors are developer bugs — render against PRELUDE_SRC.
-            render_error(&e, PRELUDE_SRC, "<prelude>");
+            render_error(&e, &interp.types, PRELUDE_SRC, "<prelude>");
         })?;
 
     // Run the user program.
     interp
         .exec_program(&program, None, &mut std::io::stdout())
         .map_err(|e| {
-            render_error(&e, source, filename);
+            render_error(&e, &interp.types, source, filename);
         })
 }
 
 /// Render a RuntimeError to stderr using ariadne (if span is available)
 /// or as a plain message (if span-less).
-fn render_error(err: &RuntimeError, source: &str, filename: &str) {
+fn render_error(err: &RuntimeError, types: &TypeRegistry, source: &str, filename: &str) {
+    let message = err.kind.format_with(types);
     if let Some(span) = err.span {
         let mut report = Report::build(ReportKind::Error, filename, span.0)
-            .with_message(&err.message)
+            .with_message(&message)
             .with_label(
                 Label::new((filename, span.0..span.1))
-                    .with_message(&err.message)
+                    .with_message(&message)
                     .with_color(Color::Red),
             );
 
@@ -76,6 +78,6 @@ fn render_error(err: &RuntimeError, source: &str, filename: &str) {
             .eprint((filename, Source::from(source)))
             .unwrap();
     } else {
-        eprintln!("runtime error: {}", err.message);
+        eprintln!("runtime error: {message}");
     }
 }
