@@ -10,7 +10,10 @@ use super::ast::{
     AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, MethodSig, Param, Program,
     Spanned, Stmt, UnaryOp,
 };
-use super::error::RuntimeError;
+use super::error::{
+    AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
+    RuntimeError, TypeKindExpectation,
+};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncParam, Value};
 
@@ -119,20 +122,24 @@ impl Interpreter {
     }
 
     /// Update an existing variable in the nearest enclosing scope that contains it.
-    fn update_in_scope(&mut self, name: &str, value: Value) -> Result<(), String> {
+    fn update_in_scope(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
         for frame in self.frames.iter_mut().rev() {
             if frame.contains_key(name) {
                 frame.insert(name.to_string(), value);
                 return Ok(());
             }
         }
-        Err(format!("undefined variable '{name}'"))
+        Err(ErrorKind::Undefined {
+            kind: NameKind::Variable,
+            name: name.to_string(),
+        }
+        .into())
     }
 
     // ── Type resolution ──────────────────────────────────────────────────
 
     /// Resolve a type name string (from source code) to a TypeId.
-    fn resolve_type(&self, name: &str) -> Result<TypeId, String> {
+    fn resolve_type(&self, name: &str) -> Result<TypeId, RuntimeError> {
         // Check if it's a value in scope that holds a Type.
         if let Some(val) = self.get(name) {
             if let Value::Type(tid) = val {
@@ -140,14 +147,18 @@ impl Interpreter {
             }
         }
         // Check the type registry directly.
-        self.types
-            .lookup(name)
-            .ok_or_else(|| format!("undefined type '{name}'"))
+        self.types.lookup(name).ok_or_else(|| {
+            ErrorKind::Undefined {
+                kind: NameKind::Type,
+                name: name.to_string(),
+            }
+            .into()
+        })
     }
 
     /// Resolve a type annotation expression to a TypeId.
     /// Handles bare names (`Int`) and parameterized types (`Opt[Int]`).
-    fn resolve_type_expr(&mut self, expr: &Expr) -> Result<TypeId, String> {
+    fn resolve_type_expr(&mut self, expr: &Expr) -> Result<TypeId, RuntimeError> {
         match expr {
             Expr::Name(n) => self.resolve_type(n),
             Expr::Item { object, args } => {
@@ -157,27 +168,30 @@ impl Interpreter {
                     type_args.push(self.resolve_type_expr(&a.node)?);
                 }
                 match self.types.get(base_id) {
-                    TypeDef::Enum { .. } => self.types.instantiate_enum(base_id, type_args),
-                    TypeDef::Struct { .. } => self.types.instantiate_struct(base_id, type_args),
-                    _ => Err(format!(
-                        "'{}' is not a generic type",
-                        self.types.display_name(base_id)
-                    )),
+                    TypeDef::Enum { .. } => self
+                        .types
+                        .instantiate_enum(base_id, type_args)
+                        .map_err(Into::into),
+                    TypeDef::Struct { .. } => self
+                        .types
+                        .instantiate_struct(base_id, type_args)
+                        .map_err(Into::into),
+                    _ => Err(ErrorKind::WrongTypeKind {
+                        type_id: base_id,
+                        expected: TypeKindExpectation::GenericType,
+                    }
+                    .into()),
                 }
             }
-            _ => Err("unsupported type annotation expression".to_string()),
+            _ => Err(ErrorKind::Unsupported("unsupported type annotation expression").into()),
         }
     }
 
     /// Check that a value conforms to an expected type.
-    fn check_type(&self, value: &Value, expected: TypeId) -> Result<(), String> {
+    fn check_type(&self, value: &Value, expected: TypeId) -> Result<(), RuntimeError> {
         let actual = value.type_id();
         if actual != expected {
-            return Err(format!(
-                "type mismatch: expected {}, got {}",
-                self.types.display_name(expected),
-                self.types.display_name(actual),
-            ));
+            return Err(ErrorKind::TypeMismatch { expected, actual }.into());
         }
         Ok(())
     }
@@ -218,7 +232,7 @@ impl Interpreter {
                 variants,
             } => {
                 self.register_enum(name, type_params, variants)
-                    .map_err(|e| RuntimeError::from(e).at(stmt.span))?;
+                    .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -228,7 +242,7 @@ impl Interpreter {
                 fields,
             } => {
                 self.register_struct(name, type_params, fields)
-                    .map_err(|e| RuntimeError::from(e).at(stmt.span))?;
+                    .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -238,7 +252,7 @@ impl Interpreter {
                 methods,
             } => {
                 self.register_interface(name, type_params, methods)
-                    .map_err(|e| RuntimeError::from(e).at(stmt.span))?;
+                    .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -248,10 +262,10 @@ impl Interpreter {
                 methods,
             } => {
                 self.register_impl(type_name, methods, out)
-                    .map_err(|e| RuntimeError::from(e).at(stmt.span))?;
+                    .map_err(|e| e.at(stmt.span))?;
                 if let Some(iface_expr) = as_type {
                     self.check_conformance(type_name, &iface_expr.node)
-                        .map_err(|e| RuntimeError::from(e).at(iface_expr.span))?;
+                        .map_err(|e| e.at(iface_expr.span))?;
                 }
                 Ok(Flow::Next(Value::Nil))
             }
@@ -262,15 +276,13 @@ impl Interpreter {
                 ret_type,
                 body,
             }) => {
-                let func_params = self
-                    .resolve_params(params)
-                    .map_err(|e| RuntimeError::from(e).at(stmt.span))?;
+                let func_params = self.resolve_params(params).map_err(|e| e.at(stmt.span))?;
 
                 let ret_tid = ret_type
                     .as_ref()
                     .map(|ann| {
                         self.resolve_type_expr(&ann.node)
-                            .map_err(|e| RuntimeError::from(e).at(ann.span))
+                            .map_err(|e| e.at(ann.span))
                     })
                     .transpose()?;
 
@@ -294,12 +306,12 @@ impl Interpreter {
                 match target {
                     AssignTarget::Name(name) => {
                         self.update_in_scope(name, val)
-                            .map_err(|e| RuntimeError::from(e).at(stmt.span))?;
+                            .map_err(|e| e.at(stmt.span))?;
                         Ok(Flow::Next(Value::Nil))
                     }
                     AssignTarget::Attr { object, attr } => self
                         .exec_attr_assign(object, attr, val)
-                        .map_err(|e| RuntimeError::from(e).at(stmt.span)),
+                        .map_err(|e| e.at(stmt.span)),
                 }
             }
 
@@ -342,23 +354,35 @@ impl Interpreter {
             Expr::Nil => Ok(Flow::Next(Value::Nil)),
             Expr::Bool(b) => Ok(Flow::Next(Value::Bool(*b))),
             Expr::Int(s) => {
-                let n: BigInt = s
-                    .parse()
-                    .map_err(|e| format!("invalid integer literal '{s}': {e}"))
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                let n: BigInt = s.parse().map_err(|e: num_bigint::ParseBigIntError| {
+                    RuntimeError::new(ErrorKind::InvalidLiteral {
+                        kind: "integer",
+                        text: s.clone(),
+                        reason: e.to_string(),
+                    })
+                    .at(expr.span)
+                })?;
                 Ok(Flow::Next(Value::Int(n)))
             }
             Expr::Float(s) => {
-                let n: f64 = s
-                    .parse()
-                    .map_err(|e| format!("invalid float literal '{s}': {e}"))
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                let n: f64 = s.parse().map_err(|e: std::num::ParseFloatError| {
+                    RuntimeError::new(ErrorKind::InvalidLiteral {
+                        kind: "float",
+                        text: s.clone(),
+                        reason: e.to_string(),
+                    })
+                    .at(expr.span)
+                })?;
                 Ok(Flow::Next(Value::Float(n)))
             }
             Expr::Str(s) => Ok(Flow::Next(Value::Str(s.clone()))),
 
             Expr::Name(name) => self.get(name).cloned().map(Flow::Next).ok_or_else(|| {
-                RuntimeError::from(format!("undefined variable '{name}'")).at(expr.span)
+                RuntimeError::new(ErrorKind::Undefined {
+                    kind: NameKind::Variable,
+                    name: name.clone(),
+                })
+                .at(expr.span)
             }),
 
             Expr::With { bindings, body } => {
@@ -375,7 +399,7 @@ impl Interpreter {
             Expr::Attr { object, name } => {
                 let obj = self.eval_value(object, out)?;
                 self.eval_attr(&obj, name)
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))
+                    .map_err(|e: RuntimeError| e.at(expr.span))
             }
 
             Expr::Item { object, args } => {
@@ -385,7 +409,7 @@ impl Interpreter {
                     arg_vals.push(self.eval_value(a, out)?);
                 }
                 self.eval_item(&obj, &arg_vals)
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))
+                    .map_err(|e: RuntimeError| e.at(expr.span))
             }
 
             Expr::Call { callee, args } => {
@@ -399,7 +423,7 @@ impl Interpreter {
                 if let Expr::Name(name) = &callee.node {
                     if let Some(result) = self
                         .call_builtin(name, &arg_vals, out)
-                        .map_err(|e| RuntimeError::from(e).at(expr.span))?
+                        .map_err(|e: RuntimeError| e.at(expr.span))?
                     {
                         return Ok(result);
                     }
@@ -425,13 +449,13 @@ impl Interpreter {
 
                 let result = self
                     .eval_call(func, &arg_vals, out)
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                    .map_err(|e: RuntimeError| e.at(expr.span))?;
 
                 // Copy-in copy-out: write mutated self back to the receiver variable.
                 if let Some(var_name) = receiver_var {
                     if let Some(mutated_self) = self.last_method_self.take() {
                         self.update_in_scope(&var_name, mutated_self)
-                            .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                            .map_err(|e: RuntimeError| e.at(expr.span))?;
                     }
                 }
 
@@ -478,7 +502,7 @@ impl Interpreter {
                 // 2. Call .to_iter() on it.
                 let iter_val = self
                     .call_method(&iterable, METHOD_TO_ITER, &[], out)
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                    .map_err(|e: RuntimeError| e.at(expr.span))?;
 
                 // 3. Loop: call .next() on the iterator.
                 // The iterator lives as a Rust local — no synthetic variable in scope.
@@ -486,10 +510,10 @@ impl Interpreter {
                 loop {
                     let bound = self
                         .resolve_method(&iterator, METHOD_NEXT)
-                        .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                        .map_err(|e: RuntimeError| e.at(expr.span))?;
                     let next_result = match self
                         .eval_call(bound, &[], out)
-                        .map_err(|e| RuntimeError::from(e).at(expr.span))?
+                        .map_err(|e: RuntimeError| e.at(expr.span))?
                     {
                         Flow::Next(v) => v,
                         _ => break,
@@ -507,9 +531,9 @@ impl Interpreter {
                         fields,
                     } = &next_result
                     else {
-                        return Err(RuntimeError::from(
-                            "iterator .next() must return an Opt value".to_string(),
-                        )
+                        return Err(RuntimeError::new(ErrorKind::IteratorProtocol(
+                            "iterator .next() must return an Opt value",
+                        ))
                         .at(expr.span));
                     };
 
@@ -519,7 +543,8 @@ impl Interpreter {
 
                     // 5. Extract the value from Some(val).
                     let val = fields.first().cloned().ok_or_else(|| {
-                        RuntimeError::from("Opt.Some has no field".to_string()).at(expr.span)
+                        RuntimeError::new(ErrorKind::IteratorProtocol("Opt.Some has no field"))
+                            .at(expr.span)
                     })?;
 
                     // Bind loop variable and execute body.
@@ -578,10 +603,10 @@ impl Interpreter {
             Expr::Construct { type_expr, fields } => {
                 let type_val = self.eval_value(type_expr, out)?;
                 let Value::Type(type_id) = type_val else {
-                    return Err(RuntimeError::from(format!(
-                        "cannot construct '{}' — not a type",
-                        self.types.display_name(type_val.type_id())
-                    ))
+                    return Err(RuntimeError::new(ErrorKind::WrongTypeKind {
+                        type_id: type_val.type_id(),
+                        expected: TypeKindExpectation::Constructible,
+                    })
                     .at(expr.span));
                 };
 
@@ -594,10 +619,11 @@ impl Interpreter {
                 // Check for extra fields.
                 for (fname, _) in fields {
                     if !expected_fields.contains_key(fname.as_str()) {
-                        return Err(RuntimeError::from(format!(
-                            "'{}' has no field '{fname}'",
-                            self.types.display_name(type_id)
-                        ))
+                        return Err(RuntimeError::new(ErrorKind::NoAttr {
+                            type_id,
+                            attr: fname.clone(),
+                            access: AccessKind::Field,
+                        })
                         .at(expr.span));
                     }
                 }
@@ -612,14 +638,14 @@ impl Interpreter {
                 let mut result_fields = IndexMap::new();
                 for (fname, expected_tid) in &expected_fields {
                     let val = provided.shift_remove(fname.as_str()).ok_or_else(|| {
-                        RuntimeError::from(format!(
-                            "missing field '{fname}' in '{}' construction",
-                            self.types.display_name(type_id)
-                        ))
+                        RuntimeError::new(ErrorKind::MissingField {
+                            type_id,
+                            field: fname.clone(),
+                        })
                         .at(expr.span)
                     })?;
                     self.check_type(&val, *expected_tid)
-                        .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                        .map_err(|e| e.at(expr.span))?;
                     result_fields.insert(fname.clone(), val);
                 }
 
@@ -639,12 +665,14 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match self.eval_expr(expr, out)? {
             Flow::Next(v) | Flow::Return(v) => Ok(v),
-            Flow::Break => {
-                Err(RuntimeError::from("break outside of loop".to_string()).at(expr.span))
-            }
-            Flow::Continue => {
-                Err(RuntimeError::from("continue outside of loop".to_string()).at(expr.span))
-            }
+            Flow::Break => Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                FlowMisuse::BreakOutsideLoop,
+            ))
+            .at(expr.span)),
+            Flow::Continue => Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                FlowMisuse::ContinueOutsideLoop,
+            ))
+            .at(expr.span)),
         }
     }
 
@@ -655,7 +683,7 @@ impl Interpreter {
         name: &str,
         type_params: &[String],
         ast_variants: &[AstVariantDef],
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeError> {
         let mut variants = IndexMap::new();
         for v in ast_variants {
             let fields = v
@@ -670,7 +698,6 @@ impl Interpreter {
             .types
             .register_enum(name.to_string(), type_params.to_vec(), variants);
 
-        // Put the type in scope as a Value::Type.
         self.set(name.to_string(), Value::Type(type_id));
         Ok(())
     }
@@ -682,7 +709,7 @@ impl Interpreter {
         name: &str,
         type_params: &[String],
         ast_fields: &[AstFieldDef],
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeError> {
         let mut fields = IndexMap::new();
         for f in ast_fields {
             let texpr = self.resolve_type_ann(&f.type_ann.node, type_params)?;
@@ -704,7 +731,7 @@ impl Interpreter {
         name: &str,
         type_params: &[String],
         methods: &[MethodSig],
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeError> {
         self.interfaces.insert(
             name.to_string(),
             InterfaceDef {
@@ -716,49 +743,65 @@ impl Interpreter {
     }
 
     /// Check that a type's method table satisfies an interface.
-    fn check_conformance(&self, type_name: &str, iface_expr: &Expr) -> Result<(), String> {
-        // Resolve the interface name (ignoring type args for now).
+    fn check_conformance(&self, type_name: &str, iface_expr: &Expr) -> Result<(), RuntimeError> {
         let iface_name = match iface_expr {
             Expr::Name(n) => n.as_str(),
             Expr::Item { object, .. } => {
                 if let Expr::Name(n) = &object.node {
                     n.as_str()
                 } else {
-                    return Err("invalid interface expression".to_string());
+                    return Err(ErrorKind::Unsupported("invalid interface expression").into());
                 }
             }
-            _ => return Err("invalid interface expression".to_string()),
+            _ => return Err(ErrorKind::Unsupported("invalid interface expression").into()),
         };
 
         let iface = self
             .interfaces
             .get(iface_name)
-            .ok_or_else(|| format!("undefined interface '{iface_name}'"))?
+            .ok_or_else(|| -> RuntimeError {
+                ErrorKind::Undefined {
+                    kind: NameKind::Interface,
+                    name: iface_name.to_string(),
+                }
+                .into()
+            })?
             .clone();
 
         let type_id = self.resolve_type(type_name)?;
-        let method_table = self
-            .methods
-            .get(&type_id)
-            .ok_or_else(|| format!("'{type_name}' has no methods"))?;
+        let method_table = self.methods.get(&type_id).ok_or_else(|| -> RuntimeError {
+            ErrorKind::ConformanceFailure {
+                type_name: type_name.to_string(),
+                iface_name: iface_name.to_string(),
+                detail: ConformanceError::TypeHasNoMethods,
+            }
+            .into()
+        })?;
 
         for sig in &iface.methods {
-            let func = method_table.get(&sig.name).ok_or_else(|| {
-                format!(
-                    "'{type_name}' does not implement '{iface_name}': missing method '{}'",
-                    sig.name
-                )
+            let func = method_table.get(&sig.name).ok_or_else(|| -> RuntimeError {
+                ErrorKind::ConformanceFailure {
+                    type_name: type_name.to_string(),
+                    iface_name: iface_name.to_string(),
+                    detail: ConformanceError::MissingMethod {
+                        method: sig.name.clone(),
+                    },
+                }
+                .into()
             })?;
 
-            // Verify param count matches (including self).
             if let Value::Func { params, .. } = func {
                 if params.len() != sig.params.len() {
-                    return Err(format!(
-                        "'{type_name}' does not implement '{iface_name}': method '{}' expects {} param(s), got {}",
-                        sig.name,
-                        sig.params.len(),
-                        params.len()
-                    ));
+                    return Err(ErrorKind::ConformanceFailure {
+                        type_name: type_name.to_string(),
+                        iface_name: iface_name.to_string(),
+                        detail: ConformanceError::ParamCountMismatch {
+                            method: sig.name.clone(),
+                            expected: sig.params.len(),
+                            actual: params.len(),
+                        },
+                    }
+                    .into());
                 }
             }
         }
@@ -773,7 +816,7 @@ impl Interpreter {
         type_name: &str,
         methods: &[Spanned<FuncDef>],
         _out: &mut impl Write,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeError> {
         let type_id = self.resolve_type(type_name)?;
 
         for method in methods {
@@ -785,9 +828,11 @@ impl Interpreter {
             } = &method.node;
 
             if params.is_empty() || params[0].name != SELF_PARAM {
-                return Err(format!(
-                    "method '{name}' must have 'self' as first parameter"
-                ));
+                return Err(ErrorKind::MethodDef {
+                    method: name.clone(),
+                    detail: MethodDefError::MissingSelf,
+                }
+                .into());
             }
 
             let func_params = self.resolve_params(params)?;
@@ -813,7 +858,11 @@ impl Interpreter {
     }
 
     /// Convert an expression used as a type annotation to a TypeExpr.
-    fn resolve_type_ann(&self, expr: &Expr, type_params: &[String]) -> Result<TypeExpr, String> {
+    fn resolve_type_ann(
+        &self,
+        expr: &Expr,
+        type_params: &[String],
+    ) -> Result<TypeExpr, RuntimeError> {
         match expr {
             Expr::Name(n) => {
                 if type_params.contains(n) {
@@ -822,7 +871,7 @@ impl Interpreter {
                     Ok(TypeExpr::Concrete(self.resolve_type(n)?))
                 }
             }
-            _ => Err("complex type annotations not yet supported".to_string()),
+            _ => Err(ErrorKind::Unsupported("complex type annotations not yet supported").into()),
         }
     }
 
@@ -833,36 +882,48 @@ impl Interpreter {
         object: &Spanned<Expr>,
         attr: &str,
         val: Value,
-    ) -> Result<Flow, String> {
-        // Only handle Expr::Name(var).attr = val for now.
+    ) -> Result<Flow, RuntimeError> {
         let Expr::Name(var_name) = &object.node else {
-            return Err("nested attr assignment not yet supported".to_string());
+            return Err(ErrorKind::Unsupported("nested attr assignment not yet supported").into());
         };
 
-        // Phase 1: read the struct, validate types.
         let (type_id, expected_tid) = {
-            let current = self
-                .get(var_name)
-                .ok_or_else(|| format!("undefined variable '{var_name}'"))?;
-            let Value::Struct { type_id, .. } = current else {
-                return Err(format!(
-                    "cannot assign to field '.{attr}' on {}",
-                    self.types.display_name(current.type_id())
-                ));
-            };
-            let struct_fields = self.types.get_struct_fields(*type_id)?;
-            let expected_tid = struct_fields.get(attr).copied().ok_or_else(|| {
-                format!(
-                    "'{}' has no field '{attr}'",
-                    self.types.display_name(*type_id)
-                )
+            let current = self.get(var_name).ok_or_else(|| -> RuntimeError {
+                ErrorKind::Undefined {
+                    kind: NameKind::Variable,
+                    name: var_name.clone(),
+                }
+                .into()
             })?;
+            let Value::Struct { type_id, .. } = current else {
+                return Err(ErrorKind::NoAttr {
+                    type_id: current.type_id(),
+                    attr: attr.to_string(),
+                    access: AccessKind::Field,
+                }
+                .into());
+            };
+            let struct_fields = self
+                .types
+                .get_struct_fields(*type_id)
+                .map_err(RuntimeError::from)?;
+            let expected_tid =
+                struct_fields
+                    .get(attr)
+                    .copied()
+                    .ok_or_else(|| -> RuntimeError {
+                        ErrorKind::NoAttr {
+                            type_id: *type_id,
+                            attr: attr.to_string(),
+                            access: AccessKind::Field,
+                        }
+                        .into()
+                    })?;
             (*type_id, expected_tid)
         };
 
         self.check_type(&val, expected_tid)?;
 
-        // Phase 2: mutate the struct field in scope.
         for frame in self.frames.iter_mut().rev() {
             if let Some(entry) = frame.get_mut(var_name) {
                 if let Value::Struct {
@@ -876,7 +937,11 @@ impl Interpreter {
                 }
             }
         }
-        Err(format!("undefined variable '{var_name}'"))
+        Err(ErrorKind::Undefined {
+            kind: NameKind::Variable,
+            name: var_name.clone(),
+        }
+        .into())
     }
 
     // ── Method helpers ────────────────────────────────────────────────
@@ -890,12 +955,14 @@ impl Interpreter {
     }
 
     /// Wrap a Func value as a BoundMethod with the given receiver.
-    fn bind_method(&self, receiver: Value, method: Value, name: &str) -> Result<Value, String> {
+    fn bind_method(
+        &self,
+        receiver: Value,
+        method: Value,
+        _name: &str,
+    ) -> Result<Value, RuntimeError> {
         if !matches!(method, Value::Func { .. }) {
-            return Err(format!(
-                "method table entry '{name}' on '{}' is not a function",
-                self.types.display_name(receiver.type_id())
-            ));
+            return Err(ErrorKind::Other("bound method does not wrap a Func".to_string()).into());
         }
         Ok(Value::BoundMethod {
             receiver: Box::new(receiver),
@@ -904,11 +971,18 @@ impl Interpreter {
     }
 
     /// Look up and bind a method, ready to call.
-    fn resolve_method(&self, receiver: &Value, name: &str) -> Result<Value, String> {
+    fn resolve_method(&self, receiver: &Value, name: &str) -> Result<Value, RuntimeError> {
         let tid = receiver.type_id();
         let func = self
             .lookup_method(tid, name)
-            .ok_or_else(|| format!("'{}' has no method '{name}'", self.types.display_name(tid)))?;
+            .ok_or_else(|| -> RuntimeError {
+                ErrorKind::NoAttr {
+                    type_id: tid,
+                    attr: name.to_string(),
+                    access: AccessKind::Method,
+                }
+                .into()
+            })?;
         self.bind_method(receiver.clone(), func, name)
     }
 
@@ -919,40 +993,40 @@ impl Interpreter {
         name: &str,
         args: &[Value],
         out: &mut impl Write,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, RuntimeError> {
         let bound = self.resolve_method(receiver, name)?;
         match self.eval_call(bound, args, out)? {
             Flow::Next(v) | Flow::Return(v) => Ok(v),
-            _ => Err(format!("method '{name}' returned abnormal flow")),
+            _ => Err(ErrorKind::Other(format!("method '{name}' returned abnormal flow")).into()),
         }
     }
 
     // ── Attr: a.b ─────────────────────────────────────────────────────
 
-    fn eval_attr(&self, object: &Value, name: &str) -> Result<Flow, String> {
+    fn eval_attr(&self, object: &Value, name: &str) -> Result<Flow, RuntimeError> {
         match object {
-            // Type.Variant — enum variant access
             Value::Type(type_id) => {
                 let def = self.types.get(*type_id);
                 match def {
                     TypeDef::EnumInstance { variants, .. } => {
-                        let (idx, _, vdef) = variants.get_full(name).ok_or_else(|| {
-                            format!(
-                                "'{}' has no variant '{name}'",
-                                self.types.display_name(*type_id)
-                            )
-                        })?;
+                        let (idx, _, vdef) =
+                            variants.get_full(name).ok_or_else(|| -> RuntimeError {
+                                ErrorKind::NoAttr {
+                                    type_id: *type_id,
+                                    attr: name.to_string(),
+                                    access: AccessKind::Variant,
+                                }
+                                .into()
+                            })?;
                         let variant_idx = idx as u32;
 
                         if vdef.fields.is_empty() {
-                            // Unit variant — return the enum value directly.
                             Ok(Flow::Next(Value::Enum {
                                 type_id: *type_id,
                                 variant_idx,
                                 fields: vec![],
                             }))
                         } else {
-                            // Data variant — return a constructor.
                             Ok(Flow::Next(Value::VariantConstructor {
                                 type_id: *type_id,
                                 variant_idx,
@@ -960,88 +1034,92 @@ impl Interpreter {
                             }))
                         }
                     }
-                    TypeDef::StructInstance { .. } => Err(format!(
-                        "'{}' is a struct type — construct with `{} {{ ... }}`",
-                        self.types.display_name(*type_id),
-                        self.types.display_name(*type_id),
-                    )),
-                    _ => Err(format!(
-                        "cannot access '.{name}' on type '{}'",
-                        self.types.display_name(*type_id)
-                    )),
+                    TypeDef::StructInstance { .. } => Err(ErrorKind::WrongTypeKind {
+                        type_id: *type_id,
+                        expected: TypeKindExpectation::ExpectedEnum,
+                    }
+                    .into()),
+                    _ => Err(ErrorKind::NoAttr {
+                        type_id: *type_id,
+                        attr: name.to_string(),
+                        access: AccessKind::Attr,
+                    }
+                    .into()),
                 }
             }
-            // Struct field access — p.x, with method fallback
             Value::Struct { type_id, fields } => {
-                // Field access first.
                 if let Some(val) = fields.get(name) {
                     return Ok(Flow::Next(val.clone()));
                 }
-                // Method lookup.
                 if let Ok(bound) = self.resolve_method(object, name) {
                     return Ok(Flow::Next(bound));
                 }
-                Err(format!(
-                    "'{}' has no field or method '{name}'",
-                    self.types.display_name(*type_id)
-                ))
+                Err(ErrorKind::NoAttr {
+                    type_id: *type_id,
+                    attr: name.to_string(),
+                    access: AccessKind::FieldOrMethod,
+                }
+                .into())
             }
-            // Namespace.child — e.g., std.ops, std.ops.add
             Value::Namespace(ns) => {
                 let qualified = format!("{ns}.{name}");
-                // Known sub-namespaces return another Namespace;
-                // everything else is a builtin function.
                 match qualified.as_str() {
                     "std.ops" => Ok(Flow::Next(Value::Namespace(qualified))),
                     _ => Ok(Flow::Next(Value::BuiltinFn(qualified))),
                 }
             }
-
             other => {
-                // Check method table for any value type.
                 if let Ok(bound) = self.resolve_method(other, name) {
                     return Ok(Flow::Next(bound));
                 }
-                Err(format!(
-                    "cannot access '.{name}' on {}",
-                    self.types.display_name(other.type_id())
-                ))
+                Err(ErrorKind::NoAttr {
+                    type_id: other.type_id(),
+                    attr: name.to_string(),
+                    access: AccessKind::Attr,
+                }
+                .into())
             }
         }
     }
 
     // ── Item: a[b] ───────────────────────────────────────────────────────
 
-    fn eval_item(&mut self, object: &Value, args: &[Value]) -> Result<Flow, String> {
+    fn eval_item(&mut self, object: &Value, args: &[Value]) -> Result<Flow, RuntimeError> {
         match object {
-            // Type[Args] — generic instantiation (enum or struct)
             Value::Type(base_id) => {
                 let type_args: Vec<TypeId> = args
                     .iter()
                     .map(|v| match v {
                         Value::Type(tid) => Ok(*tid),
-                        other => Err(format!(
-                            "expected a type argument, got {}",
-                            self.types.display_name(other.type_id())
-                        )),
+                        other => Err(RuntimeError::from(ErrorKind::ExpectedType {
+                            actual: other.type_id(),
+                        })),
                     })
                     .collect::<Result<_, _>>()?;
                 let instance_id = match self.types.get(*base_id) {
-                    TypeDef::Enum { .. } => self.types.instantiate_enum(*base_id, type_args)?,
-                    TypeDef::Struct { .. } => self.types.instantiate_struct(*base_id, type_args)?,
+                    TypeDef::Enum { .. } => self
+                        .types
+                        .instantiate_enum(*base_id, type_args)
+                        .map_err(RuntimeError::from)?,
+                    TypeDef::Struct { .. } => self
+                        .types
+                        .instantiate_struct(*base_id, type_args)
+                        .map_err(RuntimeError::from)?,
                     _ => {
-                        return Err(format!(
-                            "'{}' is not a generic type",
-                            self.types.display_name(*base_id)
-                        ))
+                        return Err(ErrorKind::WrongTypeKind {
+                            type_id: *base_id,
+                            expected: TypeKindExpectation::GenericType,
+                        }
+                        .into())
                     }
                 };
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
-            other => Err(format!(
-                "cannot index into {}",
-                self.types.display_name(other.type_id())
-            )),
+            other => Err(ErrorKind::WrongTypeKind {
+                type_id: other.type_id(),
+                expected: TypeKindExpectation::Indexable,
+            }
+            .into()),
         }
     }
 
@@ -1052,7 +1130,7 @@ impl Interpreter {
         func: Value,
         args: &[Value],
         out: &mut impl Write,
-    ) -> Result<Flow, String> {
+    ) -> Result<Flow, RuntimeError> {
         match func {
             Value::Func {
                 params,
@@ -1060,16 +1138,15 @@ impl Interpreter {
                 body,
             } => {
                 if args.len() != params.len() {
-                    return Err(format!(
-                        "function expects {} argument(s), got {}",
-                        params.len(),
-                        args.len()
-                    ));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Function,
+                        expected: params.len(),
+                        actual: args.len(),
+                    }
+                    .into());
                 }
 
-                let result = self
-                    .call_func_body(&params, args, ret_type, &body, false, out)
-                    .map_err(|e| e.to_string())?;
+                let result = self.call_func_body(&params, args, ret_type, &body, false, out)?;
                 Ok(Flow::Next(result))
             }
 
@@ -1080,14 +1157,16 @@ impl Interpreter {
             } => {
                 if args.len() != field_types.len() {
                     let variant_name = self.types.variant_name(type_id, variant_idx);
-                    return Err(format!(
-                        "'{variant_name}' expects {} argument(s), got {}",
-                        field_types.len(),
-                        args.len()
-                    ));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Variant {
+                            name: variant_name.to_string(),
+                        },
+                        expected: field_types.len(),
+                        actual: args.len(),
+                    }
+                    .into());
                 }
 
-                // Type-check each field.
                 for (val, &expected) in args.iter().zip(field_types.iter()) {
                     self.check_type(val, expected)?;
                 }
@@ -1106,36 +1185,37 @@ impl Interpreter {
                     body,
                 } = *func
                 else {
-                    return Err("bound method does not wrap a Func".to_string());
+                    return Err(
+                        ErrorKind::Other("bound method does not wrap a Func".to_string()).into(),
+                    );
                 };
 
-                // params[0] is self (pre-bound); user-visible args match params[1..].
                 let method_params = &params[1..];
                 if args.len() != method_params.len() {
-                    return Err(format!(
-                        "method expects {} argument(s), got {}",
-                        method_params.len(),
-                        args.len()
-                    ));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Method,
+                        expected: method_params.len(),
+                        actual: args.len(),
+                    }
+                    .into());
                 }
 
-                // Build full arg list: [self] + user args.
                 let mut full_args = Vec::with_capacity(params.len());
                 full_args.push(*receiver);
                 full_args.extend_from_slice(args);
 
-                let result = self
-                    .call_func_body(&params, &full_args, ret_type, &body, true, out)
-                    .map_err(|e| e.to_string())?;
+                let result =
+                    self.call_func_body(&params, &full_args, ret_type, &body, true, out)?;
                 Ok(Flow::Next(result))
             }
 
             Value::BuiltinFn(name) => self.call_builtin_fn(&name, args),
 
-            other => Err(format!(
-                "'{}' is not callable",
-                self.types.display_name(other.type_id())
-            )),
+            other => Err(ErrorKind::WrongTypeKind {
+                type_id: other.type_id(),
+                expected: TypeKindExpectation::Callable,
+            }
+            .into()),
         }
     }
 
@@ -1153,36 +1233,36 @@ impl Interpreter {
         }
     }
 
-    fn eval_unaryop(op: UnaryOp, val: &Value) -> Result<Value, String> {
+    fn eval_unaryop(op: UnaryOp, val: &Value) -> Result<Value, ErrorKind> {
         match op {
             UnaryOp::Neg => match val {
                 Value::Int(n) => Ok(Value::Int(-n)),
                 Value::Float(n) => Ok(Value::Float(-n)),
-                other => Err(format!(
-                    "cannot negate {}",
-                    other.type_id().display_static()
-                )),
+                other => Err(ErrorKind::UnaryOpType {
+                    op,
+                    operand: other.type_id(),
+                }),
             },
             UnaryOp::Not => Ok(Value::Bool(!Self::truth(val))),
         }
     }
 
-    fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, String> {
+    fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
         match op {
             BinOp::Add => Self::op_add(left, right),
-            BinOp::Sub => Self::op_arith(left, right, "sub", |a, b| a - b, |a, b| a - b),
-            BinOp::Mul => Self::op_arith(left, right, "mul", |a, b| a * b, |a, b| a * b),
+            BinOp::Sub => Self::op_arith(left, right, BinOp::Sub, |a, b| a - b, |a, b| a - b),
+            BinOp::Mul => Self::op_arith(left, right, BinOp::Mul, |a, b| a * b, |a, b| a * b),
             BinOp::Div => Self::op_div(left, right),
             BinOp::Eq => Ok(Value::Bool(left == right || Self::cross_eq(left, right))),
             BinOp::Ne => Ok(Value::Bool(left != right && !Self::cross_eq(left, right))),
-            BinOp::Lt => Self::op_cmp(left, right, "lt", |o| o.is_lt()),
-            BinOp::Gt => Self::op_cmp(left, right, "gt", |o| o.is_gt()),
-            BinOp::Le => Self::op_cmp(left, right, "le", |o| !o.is_gt()),
-            BinOp::Ge => Self::op_cmp(left, right, "ge", |o| !o.is_lt()),
+            BinOp::Lt => Self::op_cmp(left, right, BinOp::Lt, |o| o.is_lt()),
+            BinOp::Gt => Self::op_cmp(left, right, BinOp::Gt, |o| o.is_gt()),
+            BinOp::Le => Self::op_cmp(left, right, BinOp::Le, |o| !o.is_gt()),
+            BinOp::Ge => Self::op_cmp(left, right, BinOp::Ge, |o| !o.is_lt()),
         }
     }
 
-    fn op_add(left: &Value, right: &Value) -> Result<Value, String> {
+    fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
         match (left, right) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
@@ -1193,21 +1273,21 @@ impl Interpreter {
                 Ok(Value::Float(a + b.to_f64().unwrap_or(f64::NAN)))
             }
             (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
-            _ => Err(format!(
-                "cannot add {} and {}",
-                left.type_id().display_static(),
-                right.type_id().display_static(),
-            )),
+            _ => Err(ErrorKind::BinOpType {
+                op: BinOp::Add,
+                left: left.type_id(),
+                right: right.type_id(),
+            }),
         }
     }
 
     fn op_arith(
         left: &Value,
         right: &Value,
-        name: &str,
+        op: BinOp,
         int_op: impl Fn(&BigInt, &BigInt) -> BigInt,
         float_op: impl Fn(f64, f64) -> f64,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ErrorKind> {
         match (left, right) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(a, b))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
@@ -1217,19 +1297,17 @@ impl Interpreter {
             (Value::Float(a), Value::Int(b)) => {
                 Ok(Value::Float(float_op(*a, b.to_f64().unwrap_or(f64::NAN))))
             }
-            _ => Err(format!(
-                "cannot {name} {} and {}",
-                left.type_id().display_static(),
-                right.type_id().display_static(),
-            )),
+            _ => Err(ErrorKind::BinOpType {
+                op,
+                left: left.type_id(),
+                right: right.type_id(),
+            }),
         }
     }
 
-    fn op_div(left: &Value, right: &Value) -> Result<Value, String> {
+    fn op_div(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
         match (left, right) {
-            (Value::Int(_), Value::Int(b)) if *b == BigInt::ZERO => {
-                Err("division by zero".to_string())
-            }
+            (Value::Int(_), Value::Int(b)) if *b == BigInt::ZERO => Err(ErrorKind::DivisionByZero),
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
             (Value::Int(a), Value::Float(b)) => {
@@ -1238,11 +1316,11 @@ impl Interpreter {
             (Value::Float(a), Value::Int(b)) => {
                 Ok(Value::Float(a / b.to_f64().unwrap_or(f64::NAN)))
             }
-            _ => Err(format!(
-                "cannot div {} and {}",
-                left.type_id().display_static(),
-                right.type_id().display_static(),
-            )),
+            _ => Err(ErrorKind::BinOpType {
+                op: BinOp::Div,
+                left: left.type_id(),
+                right: right.type_id(),
+            }),
         }
     }
 
@@ -1258,43 +1336,46 @@ impl Interpreter {
     fn op_cmp(
         left: &Value,
         right: &Value,
-        name: &str,
+        op: BinOp,
         pred: impl Fn(std::cmp::Ordering) -> bool,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ErrorKind> {
         let ord = match (left, right) {
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::Float(a), Value::Float(b)) => a
-                .partial_cmp(b)
-                .ok_or_else(|| "cannot compare NaN".to_string())?,
+            (Value::Float(a), Value::Float(b)) => {
+                a.partial_cmp(b).ok_or(ErrorKind::NanComparison)?
+            }
             (Value::Int(a), Value::Float(b)) => {
                 let af = a.to_f64().unwrap_or(f64::NAN);
-                af.partial_cmp(b)
-                    .ok_or_else(|| "cannot compare NaN".to_string())?
+                af.partial_cmp(b).ok_or(ErrorKind::NanComparison)?
             }
             (Value::Float(a), Value::Int(b)) => {
                 let bf = b.to_f64().unwrap_or(f64::NAN);
-                a.partial_cmp(&bf)
-                    .ok_or_else(|| "cannot compare NaN".to_string())?
+                a.partial_cmp(&bf).ok_or(ErrorKind::NanComparison)?
             }
             (Value::Str(a), Value::Str(b)) => a.cmp(b),
             _ => {
-                return Err(format!(
-                    "cannot {name} {} and {}",
-                    left.type_id().display_static(),
-                    right.type_id().display_static(),
-                ))
+                return Err(ErrorKind::BinOpType {
+                    op,
+                    left: left.type_id(),
+                    right: right.type_id(),
+                })
             }
         };
         Ok(Value::Bool(pred(ord)))
     }
 
     /// Dispatch a named builtin function (from `std.ops.*` namespace).
-    fn call_builtin_fn(&self, name: &str, args: &[Value]) -> Result<Flow, String> {
+    fn call_builtin_fn(&self, name: &str, args: &[Value]) -> Result<Flow, RuntimeError> {
         let suffix = name
             .strip_prefix("std.ops.")
-            .ok_or_else(|| format!("unknown builtin function '{name}'"))?;
+            .ok_or_else(|| -> RuntimeError {
+                ErrorKind::Undefined {
+                    kind: NameKind::Variable,
+                    name: name.to_string(),
+                }
+                .into()
+            })?;
 
-        // Binary ops: match suffix against BinOp::method_name().
         const BINOPS: [BinOp; 10] = [
             BinOp::Add,
             BinOp::Sub,
@@ -1310,32 +1391,60 @@ impl Interpreter {
         for op in BINOPS {
             if suffix == op.method_name() {
                 if args.len() != 2 {
-                    return Err(format!("{name} expects 2 arguments, got {}", args.len()));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Builtin {
+                            name: name.to_string(),
+                        },
+                        expected: 2,
+                        actual: args.len(),
+                    }
+                    .into());
                 }
-                return Ok(Flow::Next(Self::eval_binop(op, &args[0], &args[1])?));
+                return Ok(Flow::Next(
+                    Self::eval_binop(op, &args[0], &args[1]).map_err(RuntimeError::from)?,
+                ));
             }
         }
 
-        // Unary ops and special functions.
         match suffix {
             "neg" | "not" => {
                 if args.len() != 1 {
-                    return Err(format!("{name} expects 1 argument, got {}", args.len()));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Builtin {
+                            name: name.to_string(),
+                        },
+                        expected: 1,
+                        actual: args.len(),
+                    }
+                    .into());
                 }
                 let op = if suffix == "neg" {
                     UnaryOp::Neg
                 } else {
                     UnaryOp::Not
                 };
-                Ok(Flow::Next(Self::eval_unaryop(op, &args[0])?))
+                Ok(Flow::Next(
+                    Self::eval_unaryop(op, &args[0]).map_err(RuntimeError::from)?,
+                ))
             }
             "truth" => {
                 if args.len() != 1 {
-                    return Err(format!("{name} expects 1 argument, got {}", args.len()));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Builtin {
+                            name: name.to_string(),
+                        },
+                        expected: 1,
+                        actual: args.len(),
+                    }
+                    .into());
                 }
                 Ok(Flow::Next(Value::Bool(Self::truth(&args[0]))))
             }
-            _ => Err(format!("unknown builtin function '{name}'")),
+            _ => Err(ErrorKind::Undefined {
+                kind: NameKind::Variable,
+                name: name.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -1346,16 +1455,24 @@ impl Interpreter {
         name: &str,
         args: &[Value],
         out: &mut impl Write,
-    ) -> Result<Option<Flow>, String> {
+    ) -> Result<Option<Flow>, RuntimeError> {
         match name {
             "print" => {
                 let parts: Vec<String> = args.iter().map(|v| v.display(&self.types)).collect();
-                writeln!(out, "{}", parts.join(" ")).map_err(|e| e.to_string())?;
+                writeln!(out, "{}", parts.join(" "))
+                    .map_err(|e| ErrorKind::Other(e.to_string()))?;
                 Ok(Some(Flow::Next(Value::Nil)))
             }
             "typeof" => {
                 if args.len() != 1 {
-                    return Err(format!("typeof expects 1 argument, got {}", args.len()));
+                    return Err(ErrorKind::ArityMismatch {
+                        target: ArityTarget::Builtin {
+                            name: "typeof".to_string(),
+                        },
+                        expected: 1,
+                        actual: args.len(),
+                    }
+                    .into());
                 }
                 let tid = args[0].type_id();
                 Ok(Some(Flow::Next(Value::Type(tid))))
@@ -1367,7 +1484,7 @@ impl Interpreter {
     // ── Shared helpers ──────────────────────────────────────────────────
 
     /// Resolve AST params to FuncParam values.
-    fn resolve_params(&mut self, params: &[Param]) -> Result<Vec<FuncParam>, String> {
+    fn resolve_params(&mut self, params: &[Param]) -> Result<Vec<FuncParam>, RuntimeError> {
         params
             .iter()
             .map(|p| {
@@ -1395,17 +1512,24 @@ impl Interpreter {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(_) => {}
                 Flow::Return(_) => {
-                    return Err(RuntimeError::from(format!("ret {context}")).at(stmt.span))
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::RetOutsideFunction {
+                            context: context.to_string(),
+                        },
+                    ))
+                    .at(stmt.span))
                 }
                 Flow::Break => {
-                    return Err(
-                        RuntimeError::from("break outside of loop".to_string()).at(stmt.span)
-                    )
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::BreakOutsideLoop,
+                    ))
+                    .at(stmt.span))
                 }
                 Flow::Continue => {
-                    return Err(
-                        RuntimeError::from("continue outside of loop".to_string()).at(stmt.span)
-                    )
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::ContinueOutsideLoop,
+                    ))
+                    .at(stmt.span))
                 }
             }
         }
@@ -1428,7 +1552,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         for (param, val) in params.iter().zip(args.iter()) {
             if let Some(expected) = param.type_id {
-                self.check_type(val, expected).map_err(RuntimeError::from)?;
+                self.check_type(val, expected)?;
             }
         }
 
@@ -1441,11 +1565,11 @@ impl Interpreter {
             Ok(Flow::Next(v) | Flow::Return(v)) => v,
             Ok(Flow::Break) => {
                 self.pop_scope();
-                return Err(RuntimeError::from("break outside of loop".to_string()));
+                return Err(ErrorKind::FlowMisuse(FlowMisuse::BreakOutsideLoop).into());
             }
             Ok(Flow::Continue) => {
                 self.pop_scope();
-                return Err(RuntimeError::from("continue outside of loop".to_string()));
+                return Err(ErrorKind::FlowMisuse(FlowMisuse::ContinueOutsideLoop).into());
             }
             Err(e) => {
                 self.pop_scope();
@@ -1460,8 +1584,7 @@ impl Interpreter {
         self.pop_scope();
 
         if let Some(expected_ret) = ret_type {
-            self.check_type(&result, expected_ret)
-                .map_err(RuntimeError::from)?;
+            self.check_type(&result, expected_ret)?;
         }
 
         Ok(result)
@@ -1568,10 +1691,16 @@ mod tests {
         let err = interp
             .exec_program(&prog, None, &mut Vec::new())
             .unwrap_err();
-        let msg = err.to_string();
         assert!(
-            msg.contains("undefined variable"),
-            "unexpected error: {msg}"
+            matches!(
+                err.kind,
+                ErrorKind::Undefined {
+                    kind: NameKind::Variable,
+                    ..
+                }
+            ),
+            "unexpected error: {:?}",
+            err.kind
         );
     }
 
@@ -1590,10 +1719,13 @@ mod tests {
         let err = interp
             .exec_program(&prog, None, &mut Vec::new())
             .unwrap_err();
-        let msg = err.to_string();
         assert!(
-            msg.contains("ret outside of function"),
-            "unexpected error: {msg}"
+            matches!(
+                err.kind,
+                ErrorKind::FlowMisuse(FlowMisuse::RetOutsideFunction { .. })
+            ),
+            "unexpected error: {:?}",
+            err.kind
         );
     }
 

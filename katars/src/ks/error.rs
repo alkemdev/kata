@@ -8,7 +8,6 @@ use super::types::{TypeId, TypeRegistry};
 /// Structured runtime error kind. Carries raw data; formatting is deferred
 /// to `format_with(&TypeRegistry)` at render time.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Variants are infrastructure for Phase 2 conversion.
 pub enum ErrorKind {
     Undefined {
         kind: NameKind,
@@ -27,10 +26,17 @@ pub enum ErrorKind {
         type_id: TypeId,
         expected: TypeKindExpectation,
     },
-    NoMember {
+    NoAttr {
         type_id: TypeId,
-        member: String,
-        access: MemberAccess,
+        attr: String,
+        access: AccessKind,
+    },
+    MissingField {
+        type_id: TypeId,
+        field: String,
+    },
+    ExpectedType {
+        actual: TypeId,
     },
     BinOpType {
         op: BinOp,
@@ -65,7 +71,7 @@ pub enum ErrorKind {
         context_kind: &'static str,
         context_name: String,
     },
-    /// Migration bridge — wraps bare String errors from inner methods.
+    /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
 }
 
@@ -99,8 +105,7 @@ impl ErrorKind {
                     ArityTarget::Variant { name } => format!("'{name}'"),
                     ArityTarget::TypeArgs { name } => {
                         return format!(
-                            "'{name}' expects {} type argument(s), got {actual}",
-                            expected,
+                            "'{name}' expects {expected} type argument(s), got {actual}",
                         );
                     }
                     ArityTarget::Builtin { name } => format!("'{name}'"),
@@ -121,30 +126,41 @@ impl ErrorKind {
                     TypeKindExpectation::StructType => format!("'{name}' is not a struct type"),
                     TypeKindExpectation::Callable => format!("'{name}' is not callable"),
                     TypeKindExpectation::Constructible => {
-                        format!("'{name}' is not constructible")
+                        format!("cannot construct '{name}' — not a type")
                     }
-                    TypeKindExpectation::NotStructType => {
-                        format!("'{name}' is not a struct type")
+                    TypeKindExpectation::Indexable => format!("cannot index into {name}"),
+                    TypeKindExpectation::ExpectedEnum => {
+                        format!("'{name}' is a struct type — construct with `{name} {{ ... }}`")
                     }
                 }
             }
-            ErrorKind::NoMember {
+            ErrorKind::NoAttr {
                 type_id,
-                member,
+                attr,
                 access,
             } => {
                 let name = types.display_name(*type_id);
                 match access {
-                    MemberAccess::Variant => format!("'{name}' has no variant '{member}'"),
-                    MemberAccess::FieldOrMethod => {
-                        format!("'{name}' has no field or method '{member}'")
+                    AccessKind::Variant => format!("'{name}' has no variant '{attr}'"),
+                    AccessKind::FieldOrMethod => {
+                        format!("'{name}' has no field or method '{attr}'")
                     }
-                    MemberAccess::Field => format!("'{name}' has no field '{member}'"),
-                    MemberAccess::Attr => {
-                        format!("cannot access '.{member}' on {name}")
-                    }
-                    MemberAccess::Method => format!("'{name}' has no method '{member}'"),
+                    AccessKind::Field => format!("'{name}' has no field '{attr}'"),
+                    AccessKind::Attr => format!("cannot access '.{attr}' on {name}"),
+                    AccessKind::Method => format!("'{name}' has no method '{attr}'"),
                 }
+            }
+            ErrorKind::MissingField { type_id, field } => {
+                format!(
+                    "missing field '{field}' in '{}' construction",
+                    types.display_name(*type_id),
+                )
+            }
+            ErrorKind::ExpectedType { actual } => {
+                format!(
+                    "expected a type argument, got {}",
+                    types.display_name(*actual),
+                )
             }
             ErrorKind::BinOpType { op, left, right } => {
                 format!(
@@ -165,7 +181,7 @@ impl ErrorKind {
             ErrorKind::NanComparison => "NaN comparison".to_string(),
             ErrorKind::MethodDef { method, detail } => match detail {
                 MethodDefError::MissingSelf => {
-                    format!("method '{method}' must take 'self' as first parameter")
+                    format!("method '{method}' must have 'self' as first parameter")
                 }
                 MethodDefError::NotAFunction { type_id } => {
                     format!(
@@ -181,7 +197,7 @@ impl ErrorKind {
             } => match detail {
                 ConformanceError::MissingMethod { method } => {
                     format!(
-                        "type '{type_name}' does not implement '{iface_name}': missing method '{method}'"
+                        "'{type_name}' does not implement '{iface_name}': missing method '{method}'"
                     )
                 }
                 ConformanceError::ParamCountMismatch {
@@ -190,19 +206,17 @@ impl ErrorKind {
                     actual,
                 } => {
                     format!(
-                        "type '{type_name}' does not implement '{iface_name}': method '{method}' expects {expected} param(s), got {actual}"
+                        "'{type_name}' does not implement '{iface_name}': method '{method}' expects {expected} param(s), got {actual}"
                     )
                 }
-                ConformanceError::NoMethods => {
-                    format!("interface '{iface_name}' has no methods")
+                ConformanceError::TypeHasNoMethods => {
+                    format!("'{type_name}' has no methods")
                 }
             },
             ErrorKind::FlowMisuse(misuse) => match misuse {
                 FlowMisuse::BreakOutsideLoop => "break outside of loop".to_string(),
                 FlowMisuse::ContinueOutsideLoop => "continue outside of loop".to_string(),
-                FlowMisuse::RetOutsideFunction { context } => {
-                    format!("ret {context}")
-                }
+                FlowMisuse::RetOutsideFunction { context } => format!("ret {context}"),
             },
             ErrorKind::Unsupported(msg) => msg.to_string(),
             ErrorKind::IteratorProtocol(msg) => msg.to_string(),
@@ -224,7 +238,6 @@ impl ErrorKind {
 // ── Supporting enums ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum NameKind {
     Variable,
     Type,
@@ -232,7 +245,6 @@ pub enum NameKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ArityTarget {
     Function,
     Method,
@@ -251,12 +263,12 @@ pub enum TypeKindExpectation {
     StructType,
     Callable,
     Constructible,
-    NotStructType,
+    Indexable,
+    ExpectedEnum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum MemberAccess {
+pub enum AccessKind {
     Variant,
     FieldOrMethod,
     Field,
@@ -272,7 +284,6 @@ pub enum MethodDefError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ConformanceError {
     MissingMethod {
         method: String,
@@ -282,11 +293,10 @@ pub enum ConformanceError {
         expected: usize,
         actual: usize,
     },
-    NoMethods,
+    TypeHasNoMethods,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum FlowMisuse {
     BreakOutsideLoop,
     ContinueOutsideLoop,
@@ -335,10 +345,24 @@ impl RuntimeError {
     }
 }
 
+/// Auto-convert `ErrorKind` into a span-less RuntimeError.
+impl From<ErrorKind> for RuntimeError {
+    fn from(kind: ErrorKind) -> Self {
+        Self::new(kind)
+    }
+}
+
 /// Migration bridge: auto-convert bare `String` errors into `ErrorKind::Other`.
 impl From<String> for RuntimeError {
     fn from(message: String) -> Self {
         Self::new(ErrorKind::Other(message))
+    }
+}
+
+/// Convenience: auto-convert `&str` into `ErrorKind::Other`.
+impl From<&str> for RuntimeError {
+    fn from(message: &str) -> Self {
+        Self::new(ErrorKind::Other(message.to_string()))
     }
 }
 

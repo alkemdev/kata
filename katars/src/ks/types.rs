@@ -4,6 +4,8 @@ use std::fmt;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use super::error::{AccessKind, ArityTarget, ErrorKind, TypeKindExpectation};
+
 // ── TypeId ───────────────────────────────────────────────────────────────────
 
 /// Handle to a registered type. Cheap to copy, compare, store.
@@ -12,6 +14,7 @@ pub struct TypeId(pub u32);
 
 impl TypeId {
     /// Display name for primitive types without needing a registry reference.
+    #[allow(dead_code)]
     pub fn display_static(self) -> &'static str {
         match self {
             prim::NIL => "Nil",
@@ -177,18 +180,20 @@ impl TypeRegistry {
         type_args: &[TypeId],
         type_params: &'a [String],
         name: &str,
-    ) -> Result<Option<HashMap<&'a str, TypeId>>, String> {
+    ) -> Result<Option<HashMap<&'a str, TypeId>>, ErrorKind> {
         let key = (base_id, type_args.to_vec());
         if self.instances.contains_key(&key) {
             return Ok(None);
         }
 
         if type_args.len() != type_params.len() {
-            return Err(format!(
-                "'{name}' expects {} type argument(s), got {}",
-                type_params.len(),
-                type_args.len()
-            ));
+            return Err(ErrorKind::ArityMismatch {
+                target: ArityTarget::TypeArgs {
+                    name: name.to_string(),
+                },
+                expected: type_params.len(),
+                actual: type_args.len(),
+            });
         }
 
         let param_map: HashMap<&str, TypeId> = type_params
@@ -250,7 +255,7 @@ impl TypeRegistry {
         &mut self,
         base_id: TypeId,
         type_args: Vec<TypeId>,
-    ) -> Result<TypeId, String> {
+    ) -> Result<TypeId, ErrorKind> {
         // Look up the base enum definition.
         let base_def = self.defs[base_id.0 as usize].clone();
         let TypeDef::Enum {
@@ -259,10 +264,10 @@ impl TypeRegistry {
             variants,
         } = base_def
         else {
-            return Err(format!(
-                "'{}' is not a generic enum",
-                self.display_name(base_id)
-            ));
+            return Err(ErrorKind::WrongTypeKind {
+                type_id: base_id,
+                expected: TypeKindExpectation::GenericEnum,
+            });
         };
 
         let Some(param_map) =
@@ -275,21 +280,24 @@ impl TypeRegistry {
         let resolved_variants = variants
             .into_iter()
             .map(|(vname, vdef)| {
-                let fields = vdef
-                    .fields
-                    .into_iter()
-                    .map(|f| match f {
-                        TypeExpr::Concrete(tid) => Ok(tid),
-                        TypeExpr::Param(ref p) => {
-                            param_map.get(p.as_str()).copied().ok_or_else(|| {
-                                format!("unknown type parameter '{p}' in variant '{vname}'")
-                            })
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let fields =
+                    vdef.fields
+                        .into_iter()
+                        .map(|f| match f {
+                            TypeExpr::Concrete(tid) => Ok(tid),
+                            TypeExpr::Param(ref p) => param_map
+                                .get(p.as_str())
+                                .copied()
+                                .ok_or_else(|| ErrorKind::UnknownTypeParam {
+                                    param: p.clone(),
+                                    context_kind: "variant",
+                                    context_name: vname.clone(),
+                                }),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
                 Ok((vname, ResolvedVariantDef { fields }))
             })
-            .collect::<Result<IndexMap<_, _>, String>>()?;
+            .collect::<Result<IndexMap<_, _>, ErrorKind>>()?;
 
         let inst_id = self.push_def(TypeDef::EnumInstance {
             base: base_id,
@@ -339,20 +347,21 @@ impl TypeRegistry {
         &self,
         type_id: TypeId,
         variant_name: &str,
-    ) -> Result<(u32, &ResolvedVariantDef), String> {
+    ) -> Result<(u32, &ResolvedVariantDef), ErrorKind> {
         let def = self.get(type_id);
         let TypeDef::EnumInstance { variants, .. } = def else {
-            return Err(format!(
-                "'{}' is not an instantiated enum type",
-                self.display_name(type_id)
-            ));
+            return Err(ErrorKind::WrongTypeKind {
+                type_id,
+                expected: TypeKindExpectation::InstantiatedEnum,
+            });
         };
-        let (idx, _, vdef) = variants.get_full(variant_name).ok_or_else(|| {
-            format!(
-                "'{}' has no variant '{variant_name}'",
-                self.display_name(type_id)
-            )
-        })?;
+        let (idx, _, vdef) = variants
+            .get_full(variant_name)
+            .ok_or_else(|| ErrorKind::NoAttr {
+                type_id,
+                attr: variant_name.to_string(),
+                access: AccessKind::Variant,
+            })?;
         Ok((idx as u32, vdef))
     }
 
@@ -396,7 +405,7 @@ impl TypeRegistry {
         &mut self,
         base_id: TypeId,
         type_args: Vec<TypeId>,
-    ) -> Result<TypeId, String> {
+    ) -> Result<TypeId, ErrorKind> {
         let base_def = self.defs[base_id.0 as usize].clone();
         let TypeDef::Struct {
             name,
@@ -404,10 +413,10 @@ impl TypeRegistry {
             fields,
         } = base_def
         else {
-            return Err(format!(
-                "'{}' is not a generic struct",
-                self.display_name(base_id)
-            ));
+            return Err(ErrorKind::WrongTypeKind {
+                type_id: base_id,
+                expected: TypeKindExpectation::GenericStruct,
+            });
         };
 
         let Some(param_map) =
@@ -421,14 +430,17 @@ impl TypeRegistry {
             .map(|(fname, texpr)| {
                 let tid = match texpr {
                     TypeExpr::Concrete(tid) => Ok(tid),
-                    TypeExpr::Param(ref p) => param_map
-                        .get(p.as_str())
-                        .copied()
-                        .ok_or_else(|| format!("unknown type parameter '{p}' in field '{fname}'")),
+                    TypeExpr::Param(ref p) => param_map.get(p.as_str()).copied().ok_or_else(|| {
+                        ErrorKind::UnknownTypeParam {
+                            param: p.clone(),
+                            context_kind: "field",
+                            context_name: fname.clone(),
+                        }
+                    }),
                 }?;
                 Ok((fname, tid))
             })
-            .collect::<Result<IndexMap<_, _>, String>>()?;
+            .collect::<Result<IndexMap<_, _>, ErrorKind>>()?;
 
         let inst_id = self.push_def(TypeDef::StructInstance {
             base: base_id,
@@ -440,13 +452,16 @@ impl TypeRegistry {
     }
 
     /// Get the field definitions for an instantiated struct.
-    pub fn get_struct_fields(&self, type_id: TypeId) -> Result<&IndexMap<String, TypeId>, String> {
+    pub fn get_struct_fields(
+        &self,
+        type_id: TypeId,
+    ) -> Result<&IndexMap<String, TypeId>, ErrorKind> {
         match self.get(type_id) {
             TypeDef::StructInstance { fields, .. } => Ok(fields),
-            _ => Err(format!(
-                "'{}' is not a struct type",
-                self.display_name(type_id)
-            )),
+            _ => Err(ErrorKind::WrongTypeKind {
+                type_id,
+                expected: TypeKindExpectation::StructType,
+            }),
         }
     }
 
