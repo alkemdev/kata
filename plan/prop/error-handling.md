@@ -61,7 +61,7 @@ Worth noting: if KataScript gets `kind`-based structural typing, the distinction
 <!-- blank while open -->
 
 ## References
-- [prop: type-system](type-system.md) — overall type architecture
+- [spec: type-system](../../docs/spec/type-system.md) — overall type architecture
 - [prop: nil-option](nil-option.md) — related design question on absence
 - Rust `Result<T, E>` + `?` operator
 - Python exceptions — `try/except/raise`

@@ -1,8 +1,8 @@
 # Decision: method dispatch
 **ID:** method-dispatch
-**Status:** open
+**Status:** decided
 **Date opened:** 2026-03-16
-**Date done:** —
+**Date done:** 2026-03-17
 **Affects:** parser, eval, syntax
 
 ## Question
@@ -14,7 +14,7 @@ KataScript has dot access (`Expr::Attr`) and function calls (`Expr::Call`), so `
 - Namespaces: `std.ops` resolves sub-namespaces and builtins
 
 Method dispatch is needed for:
-- **Iteration** ([prop: iteration](iteration.md)) — types need `.iter()`, `.next()` methods
+- **Iteration** ([spec: iteration](iteration.md)) — types need `.to_iter()`, `.next()` methods
 - **Operator overloading** ([prop: operator-overloading](operator-overloading.md)) — the `kind`-based approach (Option C) requires associating operator functions with types
 - **Stdlib ergonomics** — `opt.unwrap()`, `list.len()`, `str.split(",")` (see [stdlib plan](../phil/stdlib.md))
 - **Product types** ([prop: type-definitions](type-definitions.md)) — types need associated functions, not just data
@@ -142,15 +142,19 @@ Option 2 is cleanest — the interpreter registers methods for prim types the sa
 - Can methods be reassigned? Probably not — methods are bound at definition time, not mutable slots.
 
 ## Decision
-<!-- blank while open -->
+**Chosen: Option A — `impl` blocks (Rust model).**
+
+Methods are defined in `impl Type { func method(self, ...) { ... } }` blocks. `self` is an explicit first parameter. Multiple `impl` blocks per type are allowed. Dispatch looks up the method in a per-`TypeId` method table stored in the `Interpreter` (not `TypeRegistry`, avoiding the `Value` ↔ `TypeDef` dependency cycle).
+
+Mutation uses copy-in copy-out semantics: the interpreter snapshots `self` before the call, executes the body, then writes the final `self` value back to the receiver variable. This only works for simple `var.method()` receivers (not nested attribute chains).
+
+Conformance: `impl Kind as Type { ... }` declares that `Kind` satisfies an abstract `Type` interface. The interpreter checks that all required methods exist with matching parameter counts.
+
+UFCS (Option D) was deferred — it's tractable as a future extension but adds dispatch complexity that isn't needed yet.
 
 ## References
-- [prop: type-definitions](type-definitions.md) — product types that methods attach to
-- [prop: type-system](type-system.md) — `type` for abstract interfaces, `kind` for concrete product types
-- [prop: operator-overloading](operator-overloading.md) — operator dispatch as a special case of method dispatch
-- [prop: iteration](iteration.md) — iteration protocol needs `.iter()`, `.next()`
-- [phil: stdlib](../phil/stdlib.md) — prim method ergonomics (`.unwrap()`, `.len()`)
-- Rust `impl` blocks + traits
-- Python `self` parameter convention
-- D/Nim UFCS — any `f(x, y)` callable as `x.f(y)`
-- Lua metatables — `__index` for method lookup
+- `katars/src/ks/interpreter.rs` — `register_impl`, `resolve_method`, `call_func_body` (copy-in copy-out)
+- [spec: type-system](type-system.md) — `type` for abstract interfaces, `kind` for concrete product types
+- [prop: operator-overloading](../../plan/prop/operator-overloading.md) — operator dispatch as a special case of method dispatch
+- [spec: iteration](iteration.md) — iteration protocol needs `.to_iter()`, `.next()`
+- [phil: stdlib](../phil/stdlib.md) — prim method ergonomics

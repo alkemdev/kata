@@ -20,11 +20,12 @@
 - [x] `while`
 - [x] `enum` (sum types, generics, prelude Opt/Res)
 - [x] `kind` (product types, generics, field access/mutation)
-- [ ] `impl` blocks + method dispatch
-- [ ] Mutable self (copy-in copy-out)
-- [ ] `break`/`continue`
-- [ ] `type` interfaces + `impl K as T` conformance
-- [ ] `for` loops + iteration protocol
+- [x] `impl` blocks + method dispatch
+- [x] Mutable self (copy-in copy-out)
+- [x] `break`/`continue`
+- [x] `type` interfaces + `impl K as T` conformance
+- [x] `for` loops + iteration protocol
+- [x] Structured runtime errors (`ErrorKind` enum)
 - [x] Functions (`func`, closures, first-class)
 - [ ] Strings with interpolation
 - [ ] Lists and maps

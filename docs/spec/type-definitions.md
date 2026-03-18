@@ -9,7 +9,7 @@
 How should KataScript define product types (structs) — syntax, field access, construction, and mutability?
 
 ## Context
-KataScript has sum types (`enum`) but no product types. The `kind` keyword defines concrete product types in the keyword family (`func`/`kind`/`enum`/`type`/`impl`/`with`). Product types are a prerequisite for method dispatch ([prop: method-dispatch](../../plan/prop/method-dispatch.md)) and iteration ([prop: iteration](../../plan/prop/iteration.md)) — an iterator needs to carry state (position, collection reference), and methods need a `self` that has named fields.
+KataScript has sum types (`enum`) but no product types. The `kind` keyword defines concrete product types in the keyword family (`func`/`kind`/`enum`/`type`/`impl`/`with`). Product types are a prerequisite for method dispatch ([spec: method-dispatch](method-dispatch.md)) and iteration ([spec: iteration](iteration.md)) — an iterator needs to carry state (position, collection reference), and methods need a `self` that has named fields.
 
 Currently, the only composite data in KataScript is enum variants, which carry positional fields. There's no way to define a type with named fields, construct it, or access those fields. This blocks:
 - Iterator state objects
@@ -119,9 +119,9 @@ And a corresponding `TypeDef::StructInstance` for concrete instantiations (paral
 - Deferred: default field values, destructuring (lands with `match`), positional construction sugar, visibility/privacy
 
 ## References
-- [prop: type-system](../../plan/prop/type-system.md) — two-layer type architecture
-- [prop: method-dispatch](../../plan/prop/method-dispatch.md) — methods need receiver types with structure
-- [prop: iteration](../../plan/prop/iteration.md) — iterators need state-carrying types
+- [spec: type-system](type-system.md) — two-layer type architecture
+- [spec: method-dispatch](method-dispatch.md) — methods need receiver types with structure
+- [spec: iteration](iteration.md) — iterators need state-carrying types
 - [spec: block-syntax](block-syntax.md) — `{ k: v }` reserved for maps; `Type { k: v }` for construction
 - [spec: func-vs-fn](func-vs-fn.md) — keyword family
 - Rust structs — named fields, positional tuple-structs, `impl` blocks

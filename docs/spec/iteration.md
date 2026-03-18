@@ -1,8 +1,8 @@
 # Decision: iteration protocol and `for` loops
 **ID:** iteration
-**Status:** open
+**Status:** decided
 **Date opened:** 2026-03-16
-**Date done:** —
+**Date done:** 2026-03-17
 **Affects:** lexer, parser, eval, syntax, stdlib
 
 ## Question
@@ -14,7 +14,7 @@ KataScript has `while` loops but no `for` loop and no iteration protocol. Implem
 2. An iterator protocol needs method dispatch (`.next()` on an iterator object)
 3. Method dispatch needs product types (iterator state is a struct with fields)
 
-This proposal defines the iteration end-state. It depends on [prop: type-definitions](type-definitions.md) for product types and [prop: method-dispatch](method-dispatch.md) for `.next()` dispatch. It informs the design of `Range`, `List`, and other iterable builtin types.
+This proposal defines the iteration end-state. It depends on [spec: type-definitions](type-definitions.md) for product types and [spec: method-dispatch](method-dispatch.md) for `.next()` dispatch. It informs the design of `Range`, `List`, and other iterable builtin types.
 
 The [type-system proposal](type-system.md) lists `Range` as a builtin type. The [stdlib plan](../phil/stdlib.md) envisions `List`, `Map`, `Set` as KS-defined types. All of these need an iteration story.
 
@@ -175,15 +175,19 @@ Option C (built-in for-range first, protocol later) is the pragmatic middle grou
 Operators went through a similar evolution: hardcoded prim dispatch now, user-defined dispatch later via `std.ops.def` or `kind`. Iteration can follow the same pattern: hardcoded Range iteration now, protocol-based iteration later.
 
 ## Decision
-<!-- blank while open -->
+**Chosen: Option A — external iterator protocol.**
+
+`for x in expr { body }` desugars to: call `.to_iter()` on the iterable, then loop calling `.next()` on the iterator. `.next()` returns `Opt[T]` — `Some(value)` continues, `None` breaks.
+
+The prelude defines abstract interfaces `Iter[T]` and `ToIter[T]`. Types opt in by implementing these via `impl`. `break` and `continue` work inside `for` loops via `Flow::Break`/`Flow::Continue` signals in the interpreter.
+
+The iterator object lives as a Rust-local variable (not a KS scope variable). Copy-out semantics apply: after each `.next()` call, the mutated iterator self is written back to the local. This enables stateful iterators (e.g., a counter struct whose `next` increments a field).
+
+`Range` type is deferred — no `..` syntax or `range()` builtin yet. Custom iterators work today via `kind` + `impl` (see `tests/ks/iter/custom_iter.ks`).
 
 ## References
-- [prop: type-definitions](type-definitions.md) — product types for iterator state
-- [prop: method-dispatch](method-dispatch.md) — `.iter()`, `.next()` dispatch
-- [prop: type-system](type-system.md) — Range as builtin type, `kind` for protocols
-- [prop: operator-overloading](operator-overloading.md) — precedent for hardcoded-now, protocol-later
+- `katars/src/ks/interpreter.rs` — `Expr::For` handler (lines ~494-561)
+- `std/prelude.ks` — `Iter[T]`, `ToIter[T]` abstract types
+- [spec: method-dispatch](method-dispatch.md) — `.to_iter()`, `.next()` dispatch
+- [spec: type-system](type-system.md) — `type` for abstract interfaces
 - [phil: stdlib](../phil/stdlib.md) — collections need iteration
-- Rust `Iterator` trait — `next() -> Option<T>`, lazy, composable
-- Python iterator protocol — `__iter__`, `__next__`, `StopIteration`
-- Ruby `Enumerable` — internal iteration via blocks
-- Lua generic `for` — iterator function + state + control variable

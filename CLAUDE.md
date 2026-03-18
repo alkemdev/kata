@@ -34,12 +34,12 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Types are first-class values** — `print(Int)` works; types flow through the same `Value` enum as data.
 - **Real type checking** — enum/struct construction, typed function params, and returns are validated at runtime via `TypeId`.
 - **`TypeId` handles, not strings** — type identity is a registry index, not a name comparison.
-- **No panics in the interpreter** — return `Err(String)` for all runtime errors.
+- **No panics in the interpreter** — return `Err(RuntimeError)` with a structured `ErrorKind` for all runtime errors. `ErrorKind::Other(String)` exists as a migration bridge but should not be used in new code.
 - **Serde on all AST types** — `Expr`, `Stmt`, `Program` must derive `Serialize`/`Deserialize` so `--dump-ast | jq .` works.
 - **BNF comment in `parser.rs` stays current** — update it before writing parser code.
 - **One behavior per conformance test** — each `.ks` + `.expected` pair tests exactly one thing.
 - **Rich data models over string hacks** — use the Rust type system to model domain concepts. Don't use `String` when a structured type (enum, newtype, AST node) would enforce correctness at compile time. One representation per concept.
-- **All type annotations in the AST are `Spanned<Expr>`** — covers `Param.type_ann`, `AstFieldDef.type_ann`, `FuncDef.ret_type`, etc. Never revert to string-based type annotations.
+- **All type annotations in the AST are `Spanned<Expr>`** — never revert to string-based type annotations.
 
 ## Design decisions
 
@@ -58,7 +58,7 @@ Work tracking (`plan/`):
 
 ## Type system reference
 
-See [prop: type-system](plan/prop/type-system.md) for the canonical type design. Three keywords for defining types: `kind` (concrete product type), `enum` (concrete sum type), `type` (abstract interface). Conformance declared via `impl Kind as Type { ... }`. Two-layer architecture: prim types (runtime-handled) and builtin types (self-hostable in KS). See `docs/phil/stdlib.md` for the division. Type names are PascalCase; they remain Ident tokens in the lexer.
+See [spec: type-system](docs/spec/type-system.md) for the canonical type design. Three keywords for defining types: `kind` (concrete product type), `enum` (concrete sum type), `type` (abstract interface). Conformance declared via `impl Kind as Type { ... }`. Two-layer architecture: prim types (runtime-handled) and builtin types (self-hostable in KS). See `docs/phil/stdlib.md` for the division. Type names are PascalCase; they remain Ident tokens in the lexer.
 
 ## Running tests
 
@@ -88,7 +88,13 @@ Three tiers depending on design complexity:
 
 ## Keeping docs current
 
-After a feature commits, update the **Language status** section above.
+After a feature commits:
+- Update the **Language status** section above (move items off "Not yet" as they land)
+- Close relevant `plan/prop/` proposals — fill in the Decision section and move to `docs/spec/`
+- Update `plan/roadmap.md` checkboxes
+- Delete completed `plan/todo/` items (the commit + spec capture the result)
+
+**Conformance runner contract:** the runner matches `*.ks` to sibling `*.expected` (stdout) or `*.expected_err` (stderr substring) by name, runs the script via `cargo run -- ks`, and diffs output. One behavior per test file.
 
 ## Extending the lexer (`lexer.rs`)
 
@@ -109,6 +115,7 @@ The interpreter is split across three files in `katars/src/ks/`:
 
 - **`types.rs`** — `TypeRegistry` manages `TypeDef`s keyed by `TypeId`. All type identity is handle-based.
 - **`value.rs`** — `Value` enum: the runtime representation of all KataScript values.
+- **`error.rs`** — `ErrorKind` enum: structured runtime errors with raw data (TypeIds, names, counts). Formatting deferred to `format_with(&TypeRegistry)` at render time.
 - **`interpreter.rs`** — `Interpreter` struct owns the `TypeRegistry` and a stack of lexical scope frames. All `exec_stmt`/`eval_expr` logic lives here.
 
 Key patterns to understand by reading the code:

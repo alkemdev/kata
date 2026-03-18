@@ -54,7 +54,7 @@ Key tension: KataScript wants to be a scripting language (simple, dynamic) AND a
 <!-- blank while open -->
 
 ## References
-- [prop: type-system](type-system.md) — overall type architecture
+- [spec: type-system](../../docs/spec/type-system.md) — overall type architecture
 - Hoare, "Null References: The Billion Dollar Mistake" (2009)
 - Dart null safety: https://dart.dev/null-safety
 - Rust `Option<T>` — no null, explicit absence

@@ -1,8 +1,8 @@
 # Decision: type system architecture
 **ID:** type-system
-**Status:** open
+**Status:** decided
 **Date opened:** 2026-03-14
-**Date done:** —
+**Date done:** 2026-03-17
 **Affects:** lexer, parser, eval, syntax, stdlib
 
 ## Question
@@ -116,12 +116,19 @@ Open sub-questions:
 - Exact method set on prim types (e.g., does `Int` have `.to_f64()`?)
 
 ## Decision
-<!-- blank while open -->
+**Chosen: Option B — two-layer architecture (prim + builtin).**
+
+Prim types (`Nil`, `Bool`, `Int`, `Float`, `Str`, `Bin`, `Func`, `Type`) are runtime-handled via `Value` enum variants. Builtin types (`Opt[T]`, `Res[T,E]`) live in the prelude and are defined using the language's own `enum`/`kind`/`type` keywords. User-defined types use `kind` (product), `enum` (sum), and `type` (abstract interface), with conformance via `impl Kind as Type { ... }`.
+
+`Int` is arbitrary-precision (BigInt). `Float` is f64. Fixed-width numerics (`I8`..`U256`, `F16`..`F128`) are deferred until there's a concrete use case. `TypeId` handles (not strings) identify types in a central `TypeRegistry`.
+
+The open sub-questions (coercion rules, nil vs Option, error handling, prim method sets) remain open as separate proposals.
 
 ## References
-- `katars/src/ks/eval.rs:10-17` — current `Value` enum
-- [spec: func-vs-fn](../spec/func-vs-fn.md) — 4-char keyword family precedent
-- [prop: nil-option](nil-option.md) — nil vs Option
-- [prop: error-handling](error-handling.md) — Result vs exceptions
+- `katars/src/ks/types.rs` — `TypeRegistry`, `TypeDef`, `TypeId`
+- `katars/src/ks/value.rs` — `Value` enum
+- [spec: func-vs-fn](func-vs-fn.md) — 4-char keyword family precedent
+- [prop: nil-option](../../plan/prop/nil-option.md) — nil vs Option
+- [prop: error-handling](../../plan/prop/error-handling.md) — Result vs exceptions
 - Python numeric tower (int/float/complex)
 - Rust primitive vs std library type distinction

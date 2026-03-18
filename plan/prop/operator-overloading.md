@@ -58,7 +58,7 @@ Open sub-questions:
 <!-- blank while open -->
 
 ## References
-- [prop: type-system](type-system.md) — `type` for abstract interfaces (future)
+- [spec: type-system](../../docs/spec/type-system.md) — `type` for abstract interfaces
 - Python data model: `__add__`, `__radd__` for reverse dispatch
 - Rust `std::ops::Add` trait
 - Julia multiple dispatch — dispatches on all argument types
