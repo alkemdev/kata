@@ -56,7 +56,7 @@ impl ReplState {
                 let mut buf = Vec::new();
                 match interp.exec_program(&program, None, &mut buf) {
                     Ok(()) => Ok(String::from_utf8_lossy(&buf).into_owned()),
-                    Err(e) => Err(e),
+                    Err(e) => Err(e.to_string()),
                 }
             }
         };

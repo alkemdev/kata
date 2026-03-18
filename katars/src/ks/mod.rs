@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod error;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;
@@ -8,6 +9,9 @@ pub mod value;
 pub use ast::Program;
 pub use interpreter::Interpreter;
 pub use lexer::SpannedToken;
+
+use ariadne::{Color, Label, Report, ReportKind, Source};
+use error::RuntimeError;
 
 /// Lex `source` into a token stream. Always succeeds; lex errors appear as
 /// `Token::Error` entries in the result.
@@ -30,7 +34,48 @@ pub fn run(source: &str, filename: &str) -> Result<(), ()> {
     })?;
     let program = parse(source, filename)?;
     let mut interp = Interpreter::new();
+
+    // Run the prelude.
     interp
-        .exec_program(&program, Some(&prelude), &mut std::io::stdout())
-        .map_err(|e| eprintln!("runtime error: {e}"))
+        .exec_program(&prelude, None, &mut std::io::stdout())
+        .map_err(|e| {
+            // Prelude errors are developer bugs — render against PRELUDE_SRC.
+            render_error(&e, PRELUDE_SRC, "<prelude>");
+        })?;
+
+    // Run the user program.
+    interp
+        .exec_program(&program, None, &mut std::io::stdout())
+        .map_err(|e| {
+            render_error(&e, source, filename);
+        })
+}
+
+/// Render a RuntimeError to stderr using ariadne (if span is available)
+/// or as a plain message (if span-less).
+fn render_error(err: &RuntimeError, source: &str, filename: &str) {
+    if let Some(span) = err.span {
+        let mut report = Report::build(ReportKind::Error, filename, span.0)
+            .with_message(&err.message)
+            .with_label(
+                Label::new((filename, span.0..span.1))
+                    .with_message(&err.message)
+                    .with_color(Color::Red),
+            );
+
+        for (label_span, label_msg) in &err.labels {
+            report = report.with_label(
+                Label::new((filename, label_span.0..label_span.1))
+                    .with_message(label_msg)
+                    .with_color(Color::Yellow),
+            );
+        }
+
+        report
+            .finish()
+            .eprint((filename, Source::from(source)))
+            .unwrap();
+    } else {
+        eprintln!("runtime error: {}", err.message);
+    }
 }
