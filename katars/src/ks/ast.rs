@@ -117,6 +117,15 @@ pub enum AssignTarget {
     },
 }
 
+/// A segment of a string interpolation expression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InterpPart {
+    /// Literal text segment.
+    Lit(String),
+    /// A parsed expression to evaluate and stringify.
+    Expr(Spanned<Expr>),
+}
+
 // ── Operators ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +204,8 @@ impl UnaryOp {
 pub enum Expr {
     /// String literal.
     Str(String),
+    /// String interpolation: `"hello {name}, {1+2}"` — parts evaluated and concatenated.
+    Interp { parts: Vec<InterpPart> },
     /// Integer literal (arbitrary precision, stored as raw string for lossless parsing).
     Int(String),
     /// Float literal (stored as raw string for lossless parsing).

@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tracing::debug;
 
+/// A segment of a string literal — either literal text or an interpolation expression.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StringPart {
+    /// Literal text segment (escape sequences already resolved).
+    Lit(String),
+    /// Raw source text of an interpolated expression: `{expr}`.
+    Interp(String),
+}
+
 /// The complete KataScript token set.
 ///
 /// Whitespace and line comments are silently skipped by the lexer.
@@ -13,9 +22,11 @@ use tracing::debug;
 #[logos(skip(r"//[^\n]*", allow_greedy = true))]
 pub enum Token {
     // ── literals ─────────────────────────────────────────────────────────
-    /// A double-quoted string with no escape processing yet.
-    #[regex(r#""[^"]*""#, |lex| lex.slice()[1..lex.slice().len()-1].to_string())]
-    Str(String),
+    /// A string literal. Double-quoted strings support `{expr}` interpolation;
+    /// single-quoted strings are literal (no interpolation). Both process escapes.
+    #[token("\"", lex_double_string)]
+    #[token("'", lex_single_string)]
+    Str(Vec<StringPart>),
 
     /// An integer or decimal number (stored as raw text for lossless round-trip).
     #[regex(r"[0-9]+(\.[0-9]+)?", |lex| lex.slice().to_string())]
@@ -122,10 +133,172 @@ pub enum Token {
     Error,
 }
 
+/// Shared string body scanner. Processes escape sequences and optionally `{expr}`
+/// interpolation. Returns `(bytes_consumed_including_close_quote, parts)` or `None`
+/// for unterminated strings.
+///
+/// - `close_quote`: `b'"'` or `b'\''`
+/// - `interpolate`: whether `{` triggers interpolation (double-quoted only)
+///
+/// All special characters (`\`, `{`, `}`, `"`, `'`) are ASCII, so byte-level
+/// checks are safe even in multi-byte UTF-8 — continuation bytes (0x80..0xBF)
+/// never collide with ASCII. Literal characters are decoded via `str::chars()`
+/// to preserve multi-byte codepoints.
+fn scan_string_body(
+    rest: &str,
+    close_quote: u8,
+    interpolate: bool,
+) -> Option<(usize, Vec<StringPart>)> {
+    let bytes = rest.as_bytes();
+    let mut parts: Vec<StringPart> = Vec::new();
+    let mut lit = String::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Closing quote — flush accumulated literal and return.
+        if bytes[i] == close_quote {
+            if !lit.is_empty() {
+                parts.push(StringPart::Lit(lit));
+            }
+            return Some((i + 1, parts));
+        }
+
+        // Escape sequence.
+        if bytes[i] == b'\\' {
+            i += 1;
+            if i >= bytes.len() {
+                return None;
+            }
+            match bytes[i] {
+                b'n' => {
+                    lit.push('\n');
+                    i += 1;
+                }
+                b't' => {
+                    lit.push('\t');
+                    i += 1;
+                }
+                b'\\' => {
+                    lit.push('\\');
+                    i += 1;
+                }
+                b'\'' => {
+                    lit.push('\'');
+                    i += 1;
+                }
+                b'"' => {
+                    lit.push('"');
+                    i += 1;
+                }
+                b'{' if interpolate => {
+                    lit.push('{');
+                    i += 1;
+                }
+                b'}' if interpolate => {
+                    lit.push('}');
+                    i += 1;
+                }
+                _ => {
+                    // Unknown escape — pass through literally. Decode full char.
+                    lit.push('\\');
+                    let ch = rest[i..].chars().next()?;
+                    lit.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+            continue;
+        }
+
+        // Interpolation start — flush literal, scan for matching `}`.
+        if bytes[i] == b'{' && interpolate {
+            if !lit.is_empty() {
+                parts.push(StringPart::Lit(std::mem::take(&mut lit)));
+            }
+            i += 1;
+            let start = i;
+            let mut depth = 1u32;
+            while i < bytes.len() && depth > 0 {
+                match bytes[i] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    b'"' => {
+                        // Skip nested double-quoted string inside interpolation.
+                        i += 1;
+                        while i < bytes.len() {
+                            match bytes[i] {
+                                b'"' => break,
+                                b'\\' => i += 1, // skip escaped char
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                    }
+                    b'\'' => {
+                        // Skip nested single-quoted string inside interpolation.
+                        i += 1;
+                        while i < bytes.len() {
+                            match bytes[i] {
+                                b'\'' => break,
+                                b'\\' => i += 1, // skip escaped char
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            if depth != 0 {
+                return None; // Unclosed interpolation brace.
+            }
+            // i is one past the closing '}'. Expression text is [start..i-1].
+            let expr_text = std::str::from_utf8(&bytes[start..i - 1]).ok()?;
+            parts.push(StringPart::Interp(expr_text.to_string()));
+            continue;
+        }
+
+        // Literal character — decode full UTF-8 codepoint.
+        let ch = rest[i..].chars().next()?;
+        lit.push(ch);
+        i += ch.len_utf8();
+    }
+
+    // Reached end of input without closing quote.
+    None
+}
+
+/// Logos callback for single-quoted strings. Processes escape sequences but
+/// treats `{` as a literal character (no interpolation).
+fn lex_single_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
+    let rest = lex.remainder();
+    let (consumed, parts) = scan_string_body(rest, b'\'', false)?;
+    lex.bump(consumed);
+    Some(parts)
+}
+
+/// Logos callback for double-quoted strings. Processes escape sequences and
+/// `{expr}` interpolation boundaries.
+fn lex_double_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
+    let rest = lex.remainder();
+    let (consumed, parts) = scan_string_body(rest, b'"', true)?;
+    lex.bump(consumed);
+    Some(parts)
+}
+
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Token::Str(s) => write!(f, "\"{s}\""),
+            Token::Str(parts) => {
+                write!(f, "\"")?;
+                for part in parts {
+                    match part {
+                        StringPart::Lit(s) => write!(f, "{s}")?,
+                        StringPart::Interp(s) => write!(f, "{{{s}}}")?,
+                    }
+                }
+                write!(f, "\"")
+            }
             Token::Num(n) => write!(f, "{n}"),
             Token::Ident(s) => write!(f, "{s}"),
             Token::True => write!(f, "true"),
@@ -230,16 +403,21 @@ mod tests {
         toks.into_iter().next().unwrap()
     }
 
+    /// Shorthand for a plain string token (single Lit part).
+    fn str_tok(s: &str) -> Token {
+        Token::Str(vec![StringPart::Lit(s.into())])
+    }
+
     // ── literals ─────────────────────────────────────────────────────────────
 
     #[test]
     fn lex_string() {
-        assert_eq!(one(r#""hello, world""#), Token::Str("hello, world".into()));
+        assert_eq!(one(r#""hello, world""#), str_tok("hello, world"));
     }
 
     #[test]
     fn lex_string_empty() {
-        assert_eq!(one(r#""""#), Token::Str(String::new()));
+        assert_eq!(one(r#""""#), Token::Str(vec![]));
     }
 
     #[test]
@@ -377,7 +555,193 @@ mod tests {
     #[test]
     fn display_ident_and_literals() {
         assert_eq!(Token::Ident("foo".into()).to_string(), "foo");
-        assert_eq!(Token::Str("hi".into()).to_string(), "\"hi\"");
+        assert_eq!(str_tok("hi").to_string(), "\"hi\"");
         assert_eq!(Token::Num("3.14".into()).to_string(), "3.14");
+    }
+
+    // ── escape sequences ──────────────────────────────────────────────────────
+
+    #[test]
+    fn lex_escape_newline() {
+        assert_eq!(one(r#""\n""#), str_tok("\n"));
+    }
+
+    #[test]
+    fn lex_escape_tab() {
+        assert_eq!(one(r#""\t""#), str_tok("\t"));
+    }
+
+    #[test]
+    fn lex_escape_backslash() {
+        assert_eq!(one(r#""\\""#), str_tok("\\"));
+    }
+
+    #[test]
+    fn lex_escape_quote() {
+        assert_eq!(one(r#""\"""#), str_tok("\""));
+    }
+
+    #[test]
+    fn lex_escape_brace() {
+        assert_eq!(one(r#""\{""#), str_tok("{"));
+        assert_eq!(one(r#""\}""#), str_tok("}"));
+    }
+
+    #[test]
+    fn lex_escape_mixed() {
+        assert_eq!(one(r#""a\tb\nc""#), str_tok("a\tb\nc"));
+    }
+
+    #[test]
+    fn lex_string_with_embedded_quote() {
+        assert_eq!(one(r#""say \"hi\"""#), str_tok("say \"hi\""));
+    }
+
+    // ── single-quoted strings ───────────────────────────────────────────────────
+
+    #[test]
+    fn lex_single_quote_basic() {
+        assert_eq!(one("'hello'"), str_tok("hello"));
+    }
+
+    #[test]
+    fn lex_single_quote_empty() {
+        assert_eq!(one("''"), Token::Str(vec![]));
+    }
+
+    #[test]
+    fn lex_single_quote_escapes() {
+        assert_eq!(one(r"'\n'"), str_tok("\n"));
+        assert_eq!(one(r"'\t'"), str_tok("\t"));
+        assert_eq!(one(r"'\\'"), str_tok("\\"));
+        assert_eq!(one(r"'\''"), str_tok("'"));
+    }
+
+    #[test]
+    fn lex_single_quote_no_interpolation() {
+        // `{` is literal in single-quoted strings — no Interp parts.
+        assert_eq!(one("'{hello}'"), str_tok("{hello}"));
+    }
+
+    // ── interpolation (double-quoted) ─────────────────────────────────────────
+
+    #[test]
+    fn lex_interp_simple() {
+        assert_eq!(
+            one(r#""hello {name}""#),
+            Token::Str(vec![
+                StringPart::Lit("hello ".into()),
+                StringPart::Interp("name".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn lex_interp_expr() {
+        assert_eq!(
+            one(r#""1+1={1+1}""#),
+            Token::Str(vec![
+                StringPart::Lit("1+1=".into()),
+                StringPart::Interp("1+1".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn lex_interp_nested_braces() {
+        // Expression containing braces: {Point { x: 1 }}
+        assert_eq!(
+            one(r#""{Point { x: 1 }}""#),
+            Token::Str(vec![StringPart::Interp("Point { x: 1 }".into()),])
+        );
+    }
+
+    #[test]
+    fn lex_interp_nested_string() {
+        // Nested string inside interpolation: {"inner"}
+        assert_eq!(
+            one(r#""outer {"inner"}""#),
+            Token::Str(vec![
+                StringPart::Lit("outer ".into()),
+                StringPart::Interp("\"inner\"".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn lex_interp_multiple() {
+        assert_eq!(
+            one(r#""{a} and {b}""#),
+            Token::Str(vec![
+                StringPart::Interp("a".into()),
+                StringPart::Lit(" and ".into()),
+                StringPart::Interp("b".into()),
+            ])
+        );
+    }
+
+    // ── UTF-8 ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn lex_utf8_double_string() {
+        assert_eq!(one("\"héllo 世界\""), str_tok("héllo 世界"));
+    }
+
+    #[test]
+    fn lex_utf8_single_string() {
+        assert_eq!(one("'héllo 世界'"), str_tok("héllo 世界"));
+    }
+
+    // ── interpolation edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn lex_interp_empty() {
+        // `"{}"` — empty interpolation expression.
+        assert_eq!(
+            one(r#""{}""#),
+            Token::Str(vec![StringPart::Interp("".into())])
+        );
+    }
+
+    #[test]
+    fn lex_interp_single_quote_inside() {
+        // Single-quoted string inside interpolation — scanner must track `'...'`.
+        assert_eq!(
+            one(r#""{'hello'}""#),
+            Token::Str(vec![StringPart::Interp("'hello'".into())])
+        );
+    }
+
+    #[test]
+    fn lex_interp_single_quote_with_brace() {
+        // `}` inside a single-quoted string inside interpolation must not close the interp.
+        assert_eq!(
+            one(r#""{func('it}s')}""#),
+            Token::Str(vec![StringPart::Interp("func('it}s')".into())])
+        );
+    }
+
+    #[test]
+    fn lex_escaped_backslash_before_brace() {
+        // `\\{x}` — escaped backslash followed by real interpolation.
+        assert_eq!(
+            one(r#""\\{x}""#),
+            Token::Str(vec![
+                StringPart::Lit("\\".into()),
+                StringPart::Interp("x".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn lex_interp_consecutive() {
+        // Two interpolations with no literal between them.
+        assert_eq!(
+            one(r#""{a}{b}""#),
+            Token::Str(vec![
+                StringPart::Interp("a".into()),
+                StringPart::Interp("b".into()),
+            ])
+        );
     }
 }

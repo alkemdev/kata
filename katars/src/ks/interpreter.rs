@@ -7,8 +7,8 @@ use num_traits::ToPrimitive;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, MethodSig, Param, Program,
-    Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MethodSig, Param,
+    Program, Spanned, Stmt, UnaryOp,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -376,6 +376,26 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Float(n)))
             }
             Expr::Str(s) => Ok(Flow::Next(Value::Str(s.clone()))),
+
+            Expr::Interp { parts } => {
+                let mut result = String::new();
+                for part in parts {
+                    match part {
+                        InterpPart::Lit(s) => result.push_str(s),
+                        InterpPart::Expr(inner) => {
+                            let flow = self.eval_expr(inner, out)?;
+                            let val = match flow {
+                                Flow::Next(v) => v,
+                                Flow::Return(v) => return Ok(Flow::Return(v)),
+                                Flow::Break => return Ok(Flow::Break),
+                                Flow::Continue => return Ok(Flow::Continue),
+                            };
+                            result.push_str(&val.display(&self.types));
+                        }
+                    }
+                }
+                Ok(Flow::Next(Value::Str(result)))
+            }
 
             Expr::Name(name) => self.get(name).cloned().map(Flow::Next).ok_or_else(|| {
                 RuntimeError::new(ErrorKind::Undefined {

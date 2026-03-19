@@ -8,10 +8,10 @@ use logos::Logos;
 use tracing::{debug, info};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, MethodSig, Param, Program,
-    Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MethodSig, Param,
+    Program, Spanned, Stmt, UnaryOp,
 };
-use super::lexer::Token;
+use super::lexer::{StringPart, Token};
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
@@ -50,6 +50,8 @@ use super::lexer::Token;
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
 //   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
+//   str        = '"' (text | escape | '{' expr '}')* '"'
+//   escape     = '\n' | '\t' | '\\' | '\"' | '\{' | '\}'
 
 fn span(s: &SimpleSpan) -> (usize, usize) {
     (s.start, s.end)
@@ -60,6 +62,37 @@ fn span(s: &SimpleSpan) -> (usize, usize) {
 // `with` bodies contain statements, and statements contain expressions, so the
 // two are mutually recursive. We use `recursive` at the statement level and
 // build the expression parser inline.
+
+/// Parse a KataScript expression from a source fragment (used for string interpolation).
+/// Returns `None` if the fragment fails to parse.
+fn parse_fragment(source: &str) -> Option<Spanned<Expr>> {
+    let token_iter =
+        Token::lexer(source)
+            .spanned()
+            .map(|(result, span): (_, std::ops::Range<usize>)| {
+                let tok = result.unwrap_or(Token::Error);
+                (tok, SimpleSpan::from(span))
+            });
+
+    let token_stream = Stream::from_iter(token_iter).map(
+        SimpleSpan::from(source.len()..source.len()),
+        |(t, s): (_, _)| (t, s),
+    );
+
+    // We need an expression parser. Re-use stmt_parser and expect a single expr statement.
+    let parser = stmt_parser().then_ignore(end());
+    let (ast, errors) = parser.parse(token_stream).into_output_errors();
+
+    if !errors.is_empty() {
+        return None;
+    }
+
+    let stmt = ast?;
+    match stmt.node {
+        Stmt::Expr(expr) => Some(expr),
+        _ => None,
+    }
+}
 
 fn stmt_parser<'tokens, I>(
 ) -> impl Parser<'tokens, I, Spanned<Stmt>, extra::Err<Rich<'tokens, Token>>>
@@ -72,7 +105,46 @@ where
         let expr = recursive(|expr| {
             // ── atoms ────────────────────────────────────────────────
 
-            let str_lit = select! { Token::Str(s) => Expr::Str(s) };
+            let str_lit = select! { Token::Str(parts) => parts }.validate(
+                |parts: Vec<StringPart>, extra, emitter| {
+                    // Single Lit (or empty) → plain Expr::Str. Otherwise → Expr::Interp.
+                    let has_interp =
+                        parts.iter().any(|p| matches!(p, StringPart::Interp(_)));
+                    if !has_interp {
+                        // Concatenate all Lit segments into a single string.
+                        let s: String = parts
+                            .into_iter()
+                            .map(|p| match p {
+                                StringPart::Lit(s) => s,
+                                StringPart::Interp(_) => unreachable!(),
+                            })
+                            .collect();
+                        Expr::Str(s)
+                    } else {
+                        let ast_parts = parts
+                            .into_iter()
+                            .map(|p| match p {
+                                StringPart::Lit(s) => InterpPart::Lit(s),
+                                StringPart::Interp(src) => {
+                                    match parse_fragment(&src) {
+                                        Some(expr) => InterpPart::Expr(expr),
+                                        None => {
+                                            emitter.emit(Rich::custom(
+                                                extra.span(),
+                                                format!(
+                                                    "invalid expression in string interpolation: {{{src}}}"
+                                                ),
+                                            ));
+                                            InterpPart::Lit(format!("{{{src}}}"))
+                                        }
+                                    }
+                                }
+                            })
+                            .collect();
+                        Expr::Interp { parts: ast_parts }
+                    }
+                },
+            );
             let num_lit = select! { Token::Num(n) => {
                 if n.contains('.') {
                     Expr::Float(n)

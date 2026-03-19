@@ -7,6 +7,7 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 ## Language status
 
 - **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin
+- **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation)
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
 - **Functions**: func, typed params, return type annotation, ret, closures
 - **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via std.ops
@@ -15,7 +16,7 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T] in prelude
 - **Control flow**: if/elif/else (expression), while, for (iterator protocol), break, continue, && || (short-circuit)
 - **Blocks**: with (scoped bindings)
-- **Not yet**: lists, maps, string interpolation, const, error handling, modules
+- **Not yet**: lists, maps, const, error handling, modules
 
 ## Project layout
 
