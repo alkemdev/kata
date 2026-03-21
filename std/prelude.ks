@@ -90,3 +90,63 @@ impl Ptr as Drop {
         unsafe { std.mem.dealloc(self._id) }
     }
 }
+
+# ── Buf[T] — typed growable buffer ────────────────────────────────
+#
+# Buf[T] wraps a Ptr with length and capacity tracking.
+# Provides bounds-checked access and type-safe push/pop.
+# Does NOT need its own Drop — the ptr field's Drop handles dealloc.
+
+kind Buf[T] { ptr: Ptr, len: Int, cap: Int }
+
+# Construction: Buf[Int] { ptr: ptr_alloc(0), len: 0, cap: 0 }
+# Or use a helper that takes explicit capacity:
+#   Buf[Int] { ptr: ptr_alloc(8), len: 0, cap: 8 }
+
+impl Buf[T] {
+    func get(self, index: Int): T {
+        if index < 0 || index >= self.len {
+            panic("index out of bounds")
+        }
+        ret self.ptr.read(index)
+    }
+
+    func set(self, index: Int, val: T) {
+        if index < 0 || index >= self.len {
+            panic("index out of bounds")
+        }
+        self.ptr.write(index, val)
+    }
+
+    func push(self, val: T) {
+        if self.len == self.cap {
+            self.grow()
+        }
+        self.ptr.write(self.len, val)
+        self.len = self.len + 1
+    }
+
+    func pop(self): Opt[T] {
+        if self.len == 0 {
+            ret Opt[T].None
+        }
+        self.len = self.len - 1
+        ret Opt[T].Some(self.ptr.read(self.len))
+    }
+
+    func grow(self) {
+        let new_cap = if self.cap == 0 { 4 } else { self.cap * 2 }
+        let old_id = self.ptr._id
+        unsafe {
+            let new_id = std.mem.alloc(new_cap)
+            let i = 0
+            while i < self.len {
+                std.mem.write(new_id, i, std.mem.read(old_id, i))
+                i = i + 1
+            }
+            std.mem.dealloc(old_id)
+            self.ptr = Ptr { _id: new_id }
+        }
+        self.cap = new_cap
+    }
+}

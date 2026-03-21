@@ -475,6 +475,17 @@ impl TypeRegistry {
         }
     }
 
+    /// Get the type parameter names for a base type definition.
+    /// Returns empty vec for non-generic types.
+    pub fn type_param_names(&self, id: TypeId) -> Vec<String> {
+        match self.get(id) {
+            TypeDef::Enum { type_params, .. } | TypeDef::Struct { type_params, .. } => {
+                type_params.clone()
+            }
+            _ => vec![],
+        }
+    }
+
     /// Get the field definitions for an instantiated struct.
     pub fn get_struct_fields(
         &self,

@@ -109,6 +109,7 @@ impl Interpreter {
         // Top-level native functions.
         interp.set("print".into(), Value::NativeFn(boot.print_id));
         interp.set("typeof".into(), Value::NativeFn(boot.typeof_id));
+        interp.set("panic".into(), Value::NativeFn(boot.panic_id));
 
         // Module tree: `std.ops.*`, `std.mem.*`.
         interp.set("std".into(), Value::Module(boot.std_module));
@@ -1478,6 +1479,18 @@ impl Interpreter {
         self.push_scope();
         for (param, val) in params.iter().zip(args.iter()) {
             self.set(param.name.clone(), val.clone());
+        }
+
+        // Bind generic type params as Type values so method bodies can
+        // reference T, E, etc. (e.g., Opt[T].Some(...) in a generic method).
+        if is_method && !instance_type_args.is_empty() {
+            if let Some(receiver) = args.first() {
+                let base_id = self.types.base_type(receiver.type_id());
+                let type_param_names = self.types.type_param_names(base_id);
+                for (name, &tid) in type_param_names.iter().zip(instance_type_args.iter()) {
+                    self.set(name.clone(), Value::Type(tid));
+                }
+            }
         }
 
         let result = match self.exec_block(body, out) {

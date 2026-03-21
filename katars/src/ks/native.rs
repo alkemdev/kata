@@ -175,6 +175,18 @@ pub fn native_print(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runtim
     Ok(Value::Nil)
 }
 
+pub fn native_panic(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let msg = if args.is_empty() {
+        "panic".to_string()
+    } else {
+        args.iter()
+            .map(|v| v.display(ctx.types))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    Err(ErrorKind::Other(msg).into())
+}
+
 pub fn native_typeof(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(ErrorKind::ArityMismatch {
@@ -548,6 +560,7 @@ pub struct BootResult {
     pub std_module: ModuleId,
     pub print_id: NativeFnId,
     pub typeof_id: NativeFnId,
+    pub panic_id: NativeFnId,
 }
 
 /// Build the complete native function registry and module tree.
@@ -557,6 +570,7 @@ pub fn bootstrap() -> BootResult {
     // Top-level builtins.
     let print_id = reg.register("print", false, native_print);
     let typeof_id = reg.register("typeof", false, native_typeof);
+    let panic_id = reg.register("panic", false, native_panic);
 
     // std.ops module.
     let ops = reg.create_module("ops");
@@ -604,6 +618,7 @@ pub fn bootstrap() -> BootResult {
         std_module,
         print_id,
         typeof_id,
+        panic_id,
     }
 }
 
