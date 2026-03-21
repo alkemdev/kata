@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"func f(x: Int) { ret x }\\nf(\\\"wrong\\\")\")"
+---
+Error: type mismatch: expected Int, got Str
+   ╭─[<test>:2:3]
+   │
+ 2 │ f("wrong")
+   │   ───┬───  
+   │      ╰───── type mismatch: expected Int, got Str
+───╯

@@ -64,3 +64,59 @@ fn mixed_array() {
 fn unknown_module() {
     insta::assert_snapshot!(helpers::run_error("import std.nonexistent"));
 }
+
+#[test]
+fn func_param_type_mismatch() {
+    insta::assert_snapshot!(helpers::run_error("func f(x: Int) { ret x }\nf(\"wrong\")"));
+}
+
+#[test]
+fn func_wrong_arity() {
+    insta::assert_snapshot!(helpers::run_error(
+        "func f(a: Int, b: Int) { ret a + b }\nf(1)"
+    ));
+}
+
+#[test]
+fn struct_field_type_mismatch() {
+    insta::assert_snapshot!(helpers::run_error("kind P { x: Int }\nP { x: \"wrong\" }"));
+}
+
+#[test]
+fn struct_missing_field() {
+    insta::assert_snapshot!(helpers::run_error("kind P { x: Int, y: Int }\nP { x: 1 }"));
+}
+
+#[test]
+fn no_such_attr() {
+    insta::assert_snapshot!(helpers::run_error(
+        "kind P { x: Int }\nlet p = P { x: 1 }\np.z"
+    ));
+}
+
+#[test]
+fn undefined_func() {
+    insta::assert_snapshot!(helpers::run_error("foo(1, 2)"));
+}
+
+#[test]
+fn variant_wrong_arity() {
+    insta::assert_snapshot!(helpers::run_error("Opt[Int].Val(1, 2)"));
+}
+
+#[test]
+fn continue_outside_loop() {
+    insta::assert_snapshot!(helpers::run_error("continue"));
+}
+
+#[test]
+fn unsafe_required() {
+    insta::assert_snapshot!(helpers::run_error("std.mem.alloc(4)"));
+}
+
+#[test]
+fn use_after_free() {
+    insta::assert_snapshot!(helpers::run_error(
+        "let raw = unsafe { std.mem.alloc(4) }\nunsafe { std.mem.free(raw) }\nunsafe { std.mem.read(raw, 0) }"
+    ));
+}

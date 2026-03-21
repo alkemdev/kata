@@ -7,7 +7,7 @@ use tracing::{debug, trace};
 
 use super::ast::{
     AssignTarget, AstFieldDef, AstVariantDef, Expr, FuncDef, InterpPart, MatchArm, MethodSig,
-    Param, Pattern, Program, Spanned, Stmt,
+    Param, Pattern, Program, Span, Spanned, Stmt,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -904,8 +904,9 @@ impl Interpreter {
             }
 
             Expr::Call { callee, args } => {
-                // Evaluate args once.
+                // Evaluate args once, keeping spans for error reporting.
                 let mut arg_vals = Vec::with_capacity(args.len());
+                let arg_spans: Vec<Span> = args.iter().map(|a| a.span).collect();
                 for a in args {
                     arg_vals.push(self.eval_value(a, out)?);
                 }
@@ -929,7 +930,7 @@ impl Interpreter {
                 };
 
                 let result = self
-                    .eval_call(func, &arg_vals, out)
+                    .eval_call(func, &arg_vals, &arg_spans, out)
                     .map_err(|e: RuntimeError| e.at(expr.span))?;
 
                 // Copy-in copy-out: write mutated self back to the receiver variable.
@@ -996,7 +997,7 @@ impl Interpreter {
                         .resolve_method(&iterator, METHOD_NEXT)
                         .map_err(|e: RuntimeError| e.at(expr.span))?;
                     let next_result = match self
-                        .eval_call(bound, &[], out)
+                        .eval_call(bound, &[], &[], out)
                         .map_err(|e: RuntimeError| e.at(expr.span))?
                     {
                         Flow::Next(v) => v,
@@ -1519,7 +1520,7 @@ impl Interpreter {
         out: &mut impl Write,
     ) -> Result<Value, RuntimeError> {
         let bound = self.resolve_method(receiver, name)?;
-        match self.eval_call(bound, args, out)? {
+        match self.eval_call(bound, args, &[], out)? {
             Flow::Next(v) | Flow::Return(v) => Ok(v),
             _ => Err(ErrorKind::Other(format!("method '{name}' returned abnormal flow")).into()),
         }
@@ -1658,6 +1659,7 @@ impl Interpreter {
         &mut self,
         func: Value,
         args: &[Value],
+        arg_spans: &[Span],
         out: &mut impl Write,
     ) -> Result<Flow, RuntimeError> {
         match func {
@@ -1675,8 +1677,16 @@ impl Interpreter {
                     .into());
                 }
 
-                let result =
-                    self.call_func_body(&params, args, &ret_type, &body, false, &[], out)?;
+                let result = self.call_func_body(
+                    &params,
+                    args,
+                    arg_spans,
+                    &ret_type,
+                    &body,
+                    false,
+                    &[],
+                    out,
+                )?;
                 Ok(Flow::Next(result))
             }
 
@@ -1697,8 +1707,14 @@ impl Interpreter {
                     .into());
                 }
 
-                for (val, &expected) in args.iter().zip(field_types.iter()) {
-                    self.check_type(val, expected)?;
+                for (i, (val, &expected)) in args.iter().zip(field_types.iter()).enumerate() {
+                    self.check_type(val, expected).map_err(|e| {
+                        if let Some(&span) = arg_spans.get(i) {
+                            e.at(span)
+                        } else {
+                            e
+                        }
+                    })?;
                 }
 
                 Ok(Flow::Next(Value::Enum {
@@ -1735,9 +1751,15 @@ impl Interpreter {
                 full_args.push(*receiver);
                 full_args.extend_from_slice(args);
 
+                // Build spans: dummy (0,0) for self, then actual arg spans.
+                let mut full_spans = Vec::with_capacity(params.len());
+                full_spans.push((0, 0)); // self has no user span
+                full_spans.extend_from_slice(arg_spans);
+
                 let result = self.call_func_body(
                     &params,
                     &full_args,
+                    &full_spans,
                     &ret_type,
                     &body,
                     true,
@@ -1847,18 +1869,25 @@ impl Interpreter {
         &mut self,
         params: &[FuncParam],
         args: &[Value],
+        arg_spans: &[Span],
         ret_type: &Option<TypeExpr>,
         body: &[Spanned<Stmt>],
         is_method: bool,
         instance_type_args: &[TypeId],
         out: &mut impl Write,
     ) -> Result<Value, RuntimeError> {
-        for (param, val) in params.iter().zip(args.iter()) {
+        for (i, (param, val)) in params.iter().zip(args.iter()).enumerate() {
             if let Some(ref texpr) = param.type_ann {
                 let expected = self
                     .types
                     .resolve_texpr(texpr.clone(), instance_type_args)?;
-                self.check_type(val, expected)?;
+                self.check_type(val, expected).map_err(|e| {
+                    if let Some(&span) = arg_spans.get(i) {
+                        e.at(span)
+                    } else {
+                        e
+                    }
+                })?;
             }
         }
 

@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"continue\")"
+---
+Error: continue outside of loop
+   ╭─[<test>:1:1]
+   │
+ 1 │ continue
+   │ ────┬───  
+   │     ╰───── continue outside of loop
+───╯

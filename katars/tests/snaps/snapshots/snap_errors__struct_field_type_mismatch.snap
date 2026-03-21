@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"kind P { x: Int }\\nP { x: \\\"wrong\\\" }\")"
+---
+Error: type mismatch: expected Int, got Str
+   ╭─[<test>:2:1]
+   │
+ 2 │ P { x: "wrong" }
+   │ ┬  
+   │ ╰── type mismatch: expected Int, got Str
+───╯
