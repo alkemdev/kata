@@ -982,6 +982,10 @@ impl Interpreter {
         type_params: &[String],
         methods: &[MethodSig],
     ) -> Result<(), RuntimeError> {
+        // Register a TypeId for the interface so it's a first-class value.
+        let type_id = self.types.register_prim(name);
+        self.set(name.to_string(), Value::Type(type_id));
+
         self.interfaces.insert(
             name.to_string(),
             InterfaceDef {

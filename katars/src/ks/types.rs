@@ -162,7 +162,7 @@ impl TypeRegistry {
         id
     }
 
-    fn register_prim(&mut self, name: &str) -> TypeId {
+    pub fn register_prim(&mut self, name: &str) -> TypeId {
         let id = self.push_def(TypeDef::Prim {
             name: name.to_string(),
         });
