@@ -2,6 +2,7 @@
 #
 # Arr[T] — safe, iterable, growable array
 
+import std.core.{Opt}
 import std.mem.{Ptr, Buf, heap}
 
 # ── Arr[T] — safe, iterable array ────────────────────────────────
@@ -44,5 +45,26 @@ impl Arr[T] {
             panic("index out of bounds")
         }
         self.buf.write(index, val)
+    }
+}
+
+# ── ArrIter[T] — array iterator ──────────────────────────────────
+
+kind ArrIter[T] { arr: Arr[T], idx: Int }
+
+impl ArrIter[T] {
+    func next(self): Opt[T] {
+        if self.idx >= self.arr.len {
+            ret Opt[T].None
+        }
+        let val = self.arr.get(self.idx)
+        self.idx = self.idx + 1
+        ret Opt[T].Some(val)
+    }
+}
+
+impl Arr[T] as ToIter[T] {
+    func to_iter(self): ArrIter[T] {
+        ret ArrIter[T] { arr: self, idx: 0 }
     }
 }

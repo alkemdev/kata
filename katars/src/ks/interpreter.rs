@@ -88,6 +88,7 @@ impl Interpreter {
         let boot = native::bootstrap();
 
         let mut std_modules = HashMap::new();
+        std_modules.insert("std.core".into(), include_str!("../../../std/core/mod.ks"));
         std_modules.insert("std.mem".into(), include_str!("../../../std/mem/mod.ks"));
         std_modules.insert("std.dsa".into(), include_str!("../../../std/dsa/mod.ks"));
 

@@ -1,19 +1,11 @@
 # KataScript standard prelude
 # Auto-loaded before user code.
 
-# ── Core types ───────────────────────────────────────────────────
+# Core types (from std.core)
+import std.core.{Opt, Res}
 
-enum Opt[T] {
-    Some(T),
-    None,
-}
-
-enum Res[T, E] {
-    Ok(T),
-    Err(E),
-}
-
-# ── Iteration protocol ───────────────────────────────────────────
+# Protocols — defined here until interfaces become exportable values.
+# The for-loop desugars to Iter/ToIter, scope exit dispatches Drop.
 
 type Iter[T] {
     func next(self): Opt[T]
@@ -22,8 +14,6 @@ type Iter[T] {
 type ToIter[T] {
     func to_iter(self): Iter[T]
 }
-
-# ── Lifecycle protocols ──────────────────────────────────────────
 
 type Drop {
     func drop(self)
@@ -37,7 +27,6 @@ type Dupe {
     func dupe(self): Self
 }
 
-# ── Standard library modules ─────────────────────────────────────
-
+# Standard library
 import std.mem.{HeapAllocator, Ptr, Buf, heap}
-import std.dsa.{Arr}
+import std.dsa.{Arr, ArrIter}
