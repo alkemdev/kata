@@ -415,8 +415,14 @@ impl Interpreter {
                 let name_strs: Option<Vec<&str>> = names
                     .as_ref()
                     .map(|ns| ns.iter().map(|s| s.node.as_str()).collect());
+                // Span covers the path segments, not the `import` keyword.
+                let path_span = if let (Some(first), Some(last)) = (path.first(), path.last()) {
+                    (first.span.0, last.span.1)
+                } else {
+                    stmt.span
+                };
                 self.exec_import(&path_strs, name_strs.as_deref(), out)
-                    .map_err(|e| e.at(stmt.span))?;
+                    .map_err(|e| e.at(path_span))?;
                 Ok(Flow::Next(Value::Nil))
             }
 

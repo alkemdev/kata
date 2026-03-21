@@ -3,9 +3,9 @@ source: katars/tests/snaps/errors.rs
 expression: "helpers::run_error(\"import std.nonexistent\")"
 ---
 Error: unknown module 'std.nonexistent'
-   ╭─[<test>:1:1]
+   ╭─[<test>:1:8]
    │
  1 │ import std.nonexistent
-   │ ───────────┬──────────  
-   │            ╰──────────── unknown module 'std.nonexistent'
+   │        ───────┬───────  
+   │               ╰───────── unknown module 'std.nonexistent'
 ───╯
