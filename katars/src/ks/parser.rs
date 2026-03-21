@@ -19,7 +19,7 @@ use super::lexer::{StringPart, Token};
 //   stmt       = 'enum' IDENT type_params? '{' variant_list '}'       -- enum def
 //              | 'kind' IDENT type_params? '{' field_list '}'          -- kind def
 //              | 'type' IDENT type_params? '{' method_sig* '}'         -- interface def
-//              | 'impl' IDENT ('as' expr)? '{' func_def* '}'          -- impl block
+//              | 'impl' IDENT type_params? ('as' expr)? '{' func_def* '}' -- impl block
 //              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}'  -- function def
 //              | 'let' IDENT '=' expr ';'?                            -- variable binding
 //              | 'break' ';'?                                          -- break out of loop
@@ -36,7 +36,8 @@ use super::lexer::{StringPart, Token};
 //   param      = IDENT ':' expr                     -- typed param (type ann is expr)
 //              | IDENT                               -- untyped param
 //   ret_ann    = ':' expr                            -- return type annotation (expr)
-//   expr       = with_expr | if_expr | while_expr | for_expr | op_expr
+//   expr       = with_expr | unsafe_expr | if_expr | while_expr | for_expr | op_expr
+//   unsafe_expr = 'unsafe' '{' stmt* '}'
 //   for_expr   = 'for' IDENT 'in' expr '{' stmt* '}'
 //   while_expr = 'while' expr '{' stmt* '}'
 //   with_expr  = 'with' (binding (',' binding)*)? '{' stmt* '}'

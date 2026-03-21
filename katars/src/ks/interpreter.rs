@@ -66,8 +66,6 @@ pub struct Interpreter {
     last_method_self: Option<Value>,
     /// TypeIds that implement the Drop protocol.
     drop_types: HashSet<TypeId>,
-    /// TypeIds that implement the DeepCopy protocol.
-    dupe_types: HashSet<TypeId>,
     /// Suppress drop dispatch during drop execution (prevents infinite recursion).
     dropping: bool,
     /// True inside `unsafe { ... }` blocks. Gates native functions that require unsafe.
@@ -92,7 +90,6 @@ impl Interpreter {
             interfaces: IndexMap::new(),
             last_method_self: None,
             drop_types: HashSet::new(),
-            dupe_types: HashSet::new(),
             dropping: false,
             in_unsafe: false,
             allocations: Vec::new(),
@@ -338,14 +335,8 @@ impl Interpreter {
                     };
                     if let Some(name) = iface_name {
                         let type_id = self.resolve_type(type_name).map_err(|e| e.at(stmt.span))?;
-                        match name {
-                            "Drop" => {
-                                self.drop_types.insert(type_id);
-                            }
-                            "Dupe" => {
-                                self.dupe_types.insert(type_id);
-                            }
-                            _ => {}
+                        if name == "Drop" {
+                            self.drop_types.insert(type_id);
                         }
                     }
                 }
