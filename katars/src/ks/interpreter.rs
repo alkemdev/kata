@@ -3,12 +3,11 @@ use std::io::Write;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MethodSig, Param,
-    Program, Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, Expr, FuncDef, InterpPart, MethodSig, Param, Program,
+    Spanned, Stmt,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -575,7 +574,7 @@ impl Interpreter {
             Expr::BinOp { op, left, right } => {
                 let lv = self.eval_value(left, out)?;
                 let rv = self.eval_value(right, out)?;
-                let result = Self::eval_binop(*op, &lv, &rv)
+                let result = native::eval_binop(*op, &lv, &rv)
                     .map_err(|e| RuntimeError::from(e).at(expr.span))?;
                 Ok(Flow::Next(result))
             }
@@ -586,7 +585,7 @@ impl Interpreter {
                 else_body,
             } => {
                 let cv = self.eval_value(cond, out)?;
-                if Self::truth(&cv) {
+                if native::truth(&cv) {
                     self.push_scope();
                     let result = self.exec_block(then_body, out);
                     self.pop_scope(out);
@@ -673,7 +672,7 @@ impl Interpreter {
             Expr::While { cond, body } => {
                 loop {
                     let cv = self.eval_value(cond, out)?;
-                    if !Self::truth(&cv) {
+                    if !native::truth(&cv) {
                         break;
                     }
                     self.push_scope();
@@ -687,7 +686,7 @@ impl Interpreter {
 
             Expr::And { left, right } => {
                 let lv = self.eval_value(left, out)?;
-                if !Self::truth(&lv) {
+                if !native::truth(&lv) {
                     return Ok(Flow::Next(lv));
                 }
                 let rv = self.eval_value(right, out)?;
@@ -696,7 +695,7 @@ impl Interpreter {
 
             Expr::Or { left, right } => {
                 let lv = self.eval_value(left, out)?;
-                if Self::truth(&lv) {
+                if native::truth(&lv) {
                     return Ok(Flow::Next(lv));
                 }
                 let rv = self.eval_value(right, out)?;
@@ -705,7 +704,7 @@ impl Interpreter {
 
             Expr::UnaryOp { op, operand } => {
                 let val = self.eval_value(operand, out)?;
-                let result = Self::eval_unaryop(*op, &val)
+                let result = native::eval_unaryop(*op, &val)
                     .map_err(|e| RuntimeError::from(e).at(expr.span))?;
                 Ok(Flow::Next(result))
             }
@@ -1397,154 +1396,6 @@ impl Interpreter {
         }
     }
 
-    // ── Operators ─────────────────────────────────────────────────────────
-
-    /// Truthiness: nil, false, 0, 0.0, "" are falsy; everything else is truthy.
-    fn truth(val: &Value) -> bool {
-        match val {
-            Value::Nil => false,
-            Value::Bool(b) => *b,
-            Value::Int(n) => *n != BigInt::ZERO,
-            Value::Float(n) => *n != 0.0,
-            Value::Str(s) => !s.is_empty(),
-            _ => true,
-        }
-    }
-
-    fn eval_unaryop(op: UnaryOp, val: &Value) -> Result<Value, ErrorKind> {
-        match op {
-            UnaryOp::Neg => match val {
-                Value::Int(n) => Ok(Value::Int(-n)),
-                Value::Float(n) => Ok(Value::Float(-n)),
-                other => Err(ErrorKind::UnaryOpType {
-                    op,
-                    operand: other.type_id(),
-                }),
-            },
-            UnaryOp::Not => Ok(Value::Bool(!Self::truth(val))),
-        }
-    }
-
-    fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
-        match op {
-            BinOp::Add => Self::op_add(left, right),
-            BinOp::Sub => Self::op_arith(left, right, BinOp::Sub, |a, b| a - b, |a, b| a - b),
-            BinOp::Mul => Self::op_arith(left, right, BinOp::Mul, |a, b| a * b, |a, b| a * b),
-            BinOp::Div => Self::op_div(left, right),
-            BinOp::Eq => Ok(Value::Bool(left == right || Self::cross_eq(left, right))),
-            BinOp::Ne => Ok(Value::Bool(left != right && !Self::cross_eq(left, right))),
-            BinOp::Lt => Self::op_cmp(left, right, BinOp::Lt, |o| o.is_lt()),
-            BinOp::Gt => Self::op_cmp(left, right, BinOp::Gt, |o| o.is_gt()),
-            BinOp::Le => Self::op_cmp(left, right, BinOp::Le, |o| !o.is_gt()),
-            BinOp::Ge => Self::op_cmp(left, right, BinOp::Ge, |o| !o.is_lt()),
-        }
-    }
-
-    fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
-        match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (Value::Int(a), Value::Float(b)) => {
-                Ok(Value::Float(a.to_f64().unwrap_or(f64::NAN) + b))
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                Ok(Value::Float(a + b.to_f64().unwrap_or(f64::NAN)))
-            }
-            (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
-            _ => Err(ErrorKind::BinOpType {
-                op: BinOp::Add,
-                left: left.type_id(),
-                right: right.type_id(),
-            }),
-        }
-    }
-
-    fn op_arith(
-        left: &Value,
-        right: &Value,
-        op: BinOp,
-        int_op: impl Fn(&BigInt, &BigInt) -> BigInt,
-        float_op: impl Fn(f64, f64) -> f64,
-    ) -> Result<Value, ErrorKind> {
-        match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(a, b))),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
-            (Value::Int(a), Value::Float(b)) => {
-                Ok(Value::Float(float_op(a.to_f64().unwrap_or(f64::NAN), *b)))
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                Ok(Value::Float(float_op(*a, b.to_f64().unwrap_or(f64::NAN))))
-            }
-            _ => Err(ErrorKind::BinOpType {
-                op,
-                left: left.type_id(),
-                right: right.type_id(),
-            }),
-        }
-    }
-
-    fn op_div(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
-        match (left, right) {
-            (Value::Int(_), Value::Int(b)) if *b == BigInt::ZERO => Err(ErrorKind::DivisionByZero),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-            (Value::Int(a), Value::Float(b)) => {
-                Ok(Value::Float(a.to_f64().unwrap_or(f64::NAN) / b))
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                Ok(Value::Float(a / b.to_f64().unwrap_or(f64::NAN)))
-            }
-            _ => Err(ErrorKind::BinOpType {
-                op: BinOp::Div,
-                left: left.type_id(),
-                right: right.type_id(),
-            }),
-        }
-    }
-
-    /// Cross-type equality for Int/Float promotion.
-    fn cross_eq(left: &Value, right: &Value) -> bool {
-        match (left, right) {
-            (Value::Int(a), Value::Float(b)) => a.to_f64().map_or(false, |a| a == *b),
-            (Value::Float(a), Value::Int(b)) => b.to_f64().map_or(false, |b| *a == b),
-            _ => false,
-        }
-    }
-
-    fn op_cmp(
-        left: &Value,
-        right: &Value,
-        op: BinOp,
-        pred: impl Fn(std::cmp::Ordering) -> bool,
-    ) -> Result<Value, ErrorKind> {
-        let ord = match (left, right) {
-            (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::Float(a), Value::Float(b)) => {
-                a.partial_cmp(b).ok_or(ErrorKind::NanComparison)?
-            }
-            (Value::Int(a), Value::Float(b)) => {
-                let af = a.to_f64().unwrap_or(f64::NAN);
-                af.partial_cmp(b).ok_or(ErrorKind::NanComparison)?
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                let bf = b.to_f64().unwrap_or(f64::NAN);
-                a.partial_cmp(&bf).ok_or(ErrorKind::NanComparison)?
-            }
-            (Value::Str(a), Value::Str(b)) => a.cmp(b),
-            _ => {
-                return Err(ErrorKind::BinOpType {
-                    op,
-                    left: left.type_id(),
-                    right: right.type_id(),
-                })
-            }
-        };
-        Ok(Value::Bool(pred(ord)))
-    }
-
-    // Dead code removed: call_builtin_fn, call_builtin, call_intrinsic, expect_int
-    // All dispatch now goes through NativeFnRegistry + handler function pointers.
-    // See native.rs for implementations.
     // ── Shared helpers ──────────────────────────────────────────────────
 
     /// Resolve AST params to FuncParam values (no generic type params).
