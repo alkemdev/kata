@@ -222,6 +222,8 @@ pub enum Expr {
         bindings: Vec<(String, Spanned<Expr>)>,
         body: Vec<Spanned<Stmt>>,
     },
+    /// `unsafe { stmts }` — block with unsafe intrinsic access.
+    Unsafe { body: Vec<Spanned<Stmt>> },
     /// Attribute access: `a.b`
     Attr {
         object: Box<Spanned<Expr>>,

@@ -70,6 +70,10 @@ pub struct Interpreter {
     dupe_types: HashSet<TypeId>,
     /// Suppress drop dispatch during drop execution (prevents infinite recursion).
     dropping: bool,
+    /// True inside `unsafe { ... }` blocks. Gates `__` intrinsic calls.
+    in_unsafe: bool,
+    /// Runtime heap: allocation table for Ptr handles.
+    allocations: Vec<Option<Vec<Value>>>,
 }
 
 impl Interpreter {
@@ -85,6 +89,8 @@ impl Interpreter {
             drop_types: HashSet::new(),
             dupe_types: HashSet::new(),
             dropping: false,
+            in_unsafe: false,
+            allocations: Vec::new(),
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -497,6 +503,14 @@ impl Interpreter {
                 }
                 let result = self.exec_block(body, out);
                 self.pop_scope(out);
+                result
+            }
+
+            Expr::Unsafe { body } => {
+                let was_unsafe = self.in_unsafe;
+                self.in_unsafe = true;
+                let result = self.exec_block(body, out);
+                self.in_unsafe = was_unsafe;
                 result
             }
 
@@ -1207,7 +1221,7 @@ impl Interpreter {
             Value::Namespace(ns) => {
                 let qualified = format!("{ns}.{name}");
                 match qualified.as_str() {
-                    "std.ops" => Ok(Flow::Next(Value::Namespace(qualified))),
+                    "std.ops" | "std.mem" => Ok(Flow::Next(Value::Namespace(qualified))),
                     _ => Ok(Flow::Next(Value::BuiltinFn(qualified))),
                 }
             }
@@ -1517,7 +1531,18 @@ impl Interpreter {
     }
 
     /// Dispatch a named builtin function (from `std.ops.*` namespace).
-    fn call_builtin_fn(&self, name: &str, args: &[Value]) -> Result<Flow, RuntimeError> {
+    fn call_builtin_fn(&mut self, name: &str, args: &[Value]) -> Result<Flow, RuntimeError> {
+        // Route to std.mem.* intrinsics (unsafe-gated).
+        if let Some(suffix) = name.strip_prefix("std.mem.") {
+            if !self.in_unsafe {
+                return Err(ErrorKind::UnsafeRequired {
+                    intrinsic: name.to_string(),
+                }
+                .into());
+            }
+            return self.call_intrinsic(suffix, args);
+        }
+
         let suffix = name
             .strip_prefix("std.ops.")
             .ok_or_else(|| -> RuntimeError {
@@ -1633,6 +1658,128 @@ impl Interpreter {
         }
     }
 
+    /// Dispatch `std.mem.*` intrinsic functions. Called with the suffix after "std.mem.".
+    /// Only callable inside `unsafe` blocks (caller checks this).
+    ///
+    /// # Intrinsics
+    ///
+    /// | Name       | Signature                        | Description                                   |
+    /// |------------|----------------------------------|-----------------------------------------------|
+    /// | `alloc`    | `(cap: Int) -> Int`              | Allocate storage with capacity, return handle  |
+    /// | `dealloc`  | `(id: Int)`                      | Free the allocation (use-after-free errors)    |
+    /// | `read`     | `(id: Int, idx: Int) -> Value`   | Read element at index (no bounds check)        |
+    /// | `write`    | `(id: Int, idx: Int, val) -> Nil` | Write element at index (pads with Nil)        |
+    /// | `grow`     | `(id: Int, new_cap: Int)`        | Grow allocation to at least new_cap            |
+    /// | `capacity` | `(id: Int) -> Int`               | Query allocated capacity                       |
+    /// | `len`      | `(id: Int) -> Int`               | Query number of written elements               |
+    fn call_intrinsic(&mut self, name: &str, args: &[Value]) -> Result<Flow, RuntimeError> {
+        match name {
+            "alloc" => {
+                let cap = self.expect_int(args, 0, "std.mem.alloc")?;
+                let id = self.allocations.len();
+                self.allocations.push(Some(Vec::with_capacity(cap)));
+                Ok(Flow::Next(Value::Int(BigInt::from(id))))
+            }
+            "dealloc" => {
+                let id = self.expect_int(args, 0, "std.mem.dealloc")?;
+                let slot = self
+                    .allocations
+                    .get_mut(id)
+                    .ok_or(ErrorKind::UseAfterFree)?;
+                if slot.is_none() {
+                    return Err(ErrorKind::UseAfterFree.into());
+                }
+                *slot = None;
+                Ok(Flow::Next(Value::Nil))
+            }
+            "read" => {
+                let id = self.expect_int(args, 0, "std.mem.read")?;
+                let idx = self.expect_int(args, 1, "std.mem.read")?;
+                let alloc = self
+                    .allocations
+                    .get(id)
+                    .and_then(|s| s.as_ref())
+                    .ok_or(ErrorKind::UseAfterFree)?;
+                let val = alloc.get(idx).cloned().unwrap_or(Value::Nil);
+                Ok(Flow::Next(val))
+            }
+            "write" => {
+                let id = self.expect_int(args, 0, "std.mem.write")?;
+                let idx = self.expect_int(args, 1, "std.mem.write")?;
+                let val = args.get(2).cloned().unwrap_or(Value::Nil);
+                let alloc = self
+                    .allocations
+                    .get_mut(id)
+                    .and_then(|s| s.as_mut())
+                    .ok_or(ErrorKind::UseAfterFree)?;
+                while alloc.len() <= idx {
+                    alloc.push(Value::Nil);
+                }
+                alloc[idx] = val;
+                Ok(Flow::Next(Value::Nil))
+            }
+            "grow" => {
+                let id = self.expect_int(args, 0, "std.mem.grow")?;
+                let new_cap = self.expect_int(args, 1, "std.mem.grow")?;
+                let alloc = self
+                    .allocations
+                    .get_mut(id)
+                    .and_then(|s| s.as_mut())
+                    .ok_or(ErrorKind::UseAfterFree)?;
+                if new_cap > alloc.capacity() {
+                    alloc.reserve(new_cap - alloc.capacity());
+                }
+                Ok(Flow::Next(Value::Nil))
+            }
+            "capacity" => {
+                let id = self.expect_int(args, 0, "std.mem.capacity")?;
+                let alloc = self
+                    .allocations
+                    .get(id)
+                    .and_then(|s| s.as_ref())
+                    .ok_or(ErrorKind::UseAfterFree)?;
+                Ok(Flow::Next(Value::Int(BigInt::from(alloc.capacity()))))
+            }
+            "len" => {
+                let id = self.expect_int(args, 0, "std.mem.len")?;
+                let alloc = self
+                    .allocations
+                    .get(id)
+                    .and_then(|s| s.as_ref())
+                    .ok_or(ErrorKind::UseAfterFree)?;
+                Ok(Flow::Next(Value::Int(BigInt::from(alloc.len()))))
+            }
+            _ => Err(ErrorKind::Other(format!("unknown intrinsic 'std.mem.{name}'")).into()),
+        }
+    }
+
+    /// Extract a usize from args at the given position, expecting an Int.
+    fn expect_int(
+        &self,
+        args: &[Value],
+        pos: usize,
+        intrinsic: &str,
+    ) -> Result<usize, RuntimeError> {
+        match args.get(pos) {
+            Some(Value::Int(n)) => n
+                .to_usize()
+                .ok_or_else(|| ErrorKind::Other(format!("{intrinsic}: index out of range")).into()),
+            Some(other) => Err(ErrorKind::TypeMismatch {
+                expected: prim::INT,
+                actual: other.type_id(),
+            }
+            .into()),
+            None => Err(ErrorKind::ArityMismatch {
+                target: ArityTarget::Builtin {
+                    name: intrinsic.to_string(),
+                },
+                expected: pos + 1,
+                actual: args.len(),
+            }
+            .into()),
+        }
+    }
+
     // ── Shared helpers ──────────────────────────────────────────────────
 
     /// Resolve AST params to FuncParam values (no generic type params).
@@ -1744,6 +1891,9 @@ impl Interpreter {
 
         if is_method {
             self.last_method_self = self.get(SELF_PARAM).cloned();
+            // Remove self from the frame before popping so it doesn't get
+            // dropped — the caller owns the original, not this copy.
+            self.remove(SELF_PARAM);
         }
 
         self.pop_scope(out);

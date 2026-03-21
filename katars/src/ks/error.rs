@@ -66,6 +66,10 @@ pub enum ErrorKind {
         text: String,
         reason: String,
     },
+    UnsafeRequired {
+        intrinsic: String,
+    },
+    UseAfterFree,
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
 }
@@ -218,6 +222,10 @@ impl ErrorKind {
             ErrorKind::InvalidLiteral { kind, text, reason } => {
                 format!("invalid {kind} literal '{text}': {reason}")
             }
+            ErrorKind::UnsafeRequired { intrinsic } => {
+                format!("intrinsic '{intrinsic}' can only be called inside an unsafe block")
+            }
+            ErrorKind::UseAfterFree => "use of deallocated memory".to_string(),
             ErrorKind::Other(msg) => msg.clone(),
         }
     }

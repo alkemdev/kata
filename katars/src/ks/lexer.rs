@@ -73,6 +73,8 @@ pub enum Token {
     Continue,
     #[token("ret")]
     Ret,
+    #[token("unsafe")]
+    Unsafe,
 
     // ── identifiers ──────────────────────────────────────────────────────
     /// Must come after all keyword tokens so keywords are matched first.
@@ -321,6 +323,7 @@ impl fmt::Display for Token {
             Token::Break => write!(f, "break"),
             Token::Continue => write!(f, "continue"),
             Token::Ret => write!(f, "ret"),
+            Token::Unsafe => write!(f, "unsafe"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LBracket => write!(f, "["),

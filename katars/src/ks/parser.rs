@@ -192,6 +192,15 @@ where
                     )
                 });
 
+            let unsafe_expr = just(Token::Unsafe)
+                .ignore_then(
+                    stmt.clone()
+                        .repeated()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                )
+                .map_with(|body, ex| Spanned::new(Expr::Unsafe { body }, span(&ex.span())));
+
             // if_expr = 'if' expr '{' stmt* '}' ('else' (if_expr | '{' stmt* '}'))?
             let block = stmt
                 .clone()
@@ -280,6 +289,7 @@ where
                 .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
                 .or(paren)
                 .or(with_expr)
+                .or(unsafe_expr)
                 .or(if_expr)
                 .or(while_expr)
                 .or(for_expr);
