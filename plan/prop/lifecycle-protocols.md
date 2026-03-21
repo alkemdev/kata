@@ -1,4 +1,4 @@
-# Decision: lifecycle protocols (Drop, Copy, DeepCopy)
+# Decision: lifecycle protocols (Drop, Copy, Dupe)
 **ID:** lifecycle-protocols
 **Status:** open
 **Date opened:** 2026-03-21
@@ -16,7 +16,7 @@ This works for simple types but breaks with heap-allocated resources:
 - Cloning a `Buf[T]` must allocate new storage and copy elements — not just copy the PtrId handle (deep copy)
 - Some types (raw `Ptr[T]`) should never be implicitly copied (move-only)
 
-Three protocols are needed: `Drop`, `Copy`, and `DeepCopy`.
+Three protocols are needed: `Drop`, `Copy`, and `Dupe`.
 
 ## Alternatives
 
@@ -25,10 +25,10 @@ The runtime handles everything. Deep clone is always "clone all fields." Destruc
 **Pros:** Simple. No new concepts. Works for all current types.
 **Cons:** Can't express custom destruction (memory leaks for Buf/Ptr). Can't express custom cloning (aliasing bugs for handle-based types). Blocks the memory management architecture.
 
-### Option B: Protocol interfaces — `type Drop`, `type Copy`, `type DeepCopy`
+### Option B: Protocol interfaces — `type Drop`, `type Copy`, `type Dupe`
 Lifecycle behaviors are defined as `type` interfaces. Types opt in via `impl K as Drop { ... }`. The runtime checks conformance and dispatches automatically.
 **Pros:** Consistent with existing interface system. Composable. User-defined types participate equally. Extensible.
-**Cons:** Runtime overhead for lifecycle checks. Requires `Self` type for Copy/DeepCopy return types. Interpreter must intercept scope exit and assignment to dispatch protocols.
+**Cons:** Runtime overhead for lifecycle checks. Requires `Self` type for Copy/Dupe return types. Interpreter must intercept scope exit and assignment to dispatch protocols.
 
 ### Option C: Magic methods — `func __drop(self)`, `func __copy(self)`
 Convention-based: if a type has a method named `__drop`, the runtime calls it on scope exit. Like Python's `__del__`, `__copy__`, `__deepcopy__`.
@@ -65,13 +65,13 @@ impl Point as Copy {}  # all fields are Copy, so this is valid
 
 The `impl K as Copy {}` body is empty — the runtime generates the copy. The conformance check validates that all fields are `Copy` types.
 
-### DeepCopy
+### Dupe
 
-`DeepCopy` is for types that own resources and need custom duplication logic. When a value is assigned or passed to a function, if its type implements `DeepCopy`, the runtime calls `deep_copy(self)` instead of field-by-field cloning.
+`Dupe` is for types that own resources and need custom duplication logic. When a value is assigned or passed to a function, if its type implements `Dupe`, the runtime calls `dupe(self)` instead of field-by-field cloning.
 
 ```ks
-type DeepCopy {
-    func deep_copy(self): Self
+type Dupe {
+    func dupe(self): Self
 }
 ```
 
@@ -79,11 +79,11 @@ This requires `Self` as a type — a placeholder that resolves to the implementi
 
 ### The `Self` type
 
-`Self` is a pseudo-type available inside `impl` blocks. It resolves to the type being implemented. This is a prerequisite for Copy/DeepCopy.
+`Self` is a pseudo-type available inside `impl` blocks. It resolves to the type being implemented. This is a prerequisite for Copy/Dupe.
 
 ```ks
-impl Buf as DeepCopy {
-    func deep_copy(self): Self {
+impl Buf as Dupe {
+    func dupe(self): Self {
         # Self = Buf[T] here
         ...
     }
@@ -94,36 +94,36 @@ Implementation: when resolving type annotations inside an `impl` block, `Self` m
 
 ### Default behavior
 
-What happens when a type implements neither Copy nor DeepCopy?
+What happens when a type implements neither Copy nor Dupe?
 
 Options:
 1. **Error on assignment** — types must explicitly declare how they're copied. Strict but annoying.
-2. **Field-by-field clone (current behavior)** — the default. Each field is copied according to its own Copy/DeepCopy impl. If a field is neither, it's recursively field-cloned.
-3. **Auto-derive DeepCopy** — the runtime generates a field-by-field deep copy. Types that need custom logic override it.
+2. **Field-by-field clone (current behavior)** — the default. Each field is copied according to its own Copy/Dupe impl. If a field is neither, it's recursively field-cloned.
+3. **Auto-derive Dupe** — the runtime generates a field-by-field deep copy. Types that need custom logic override it.
 
-**Recommendation:** Option 3. Auto-derived DeepCopy is the current behavior, just named. Types with handle-based fields (Ptr) MUST override DeepCopy to allocate new storage. The runtime can warn or error if a type contains a Ptr field but doesn't implement DeepCopy.
+**Recommendation:** Option 3. Auto-derived Dupe is the current behavior, just named. Types with handle-based fields (Ptr) MUST override Dupe to allocate new storage. The runtime can warn or error if a type contains a Ptr field but doesn't implement Dupe.
 
 ### Interaction with `unsafe`
 
 `Ptr[T]` should NOT be implicitly copyable. Copying a Ptr aliases the allocation. `Ptr` should be move-only by default — assigning or passing a Ptr moves it, invalidating the source. This is the only type with move semantics.
 
-Move semantics require tracking whether a variable has been moved. This is complex in a dynamic language. Alternative: Ptr is never stored in variables directly — it's always inside a Buf, and Buf implements DeepCopy.
+Move semantics require tracking whether a variable has been moved. This is complex in a dynamic language. Alternative: Ptr is never stored in variables directly — it's always inside a Buf, and Buf implements Dupe.
 
 ### Protocol dispatch sites
 
 | Event | Protocol checked | When |
 |-------|-----------------|------|
 | Scope exit | Drop | `pop_scope()` iterates frame values |
-| `let b = a` | Copy or DeepCopy | Before binding in new scope |
-| Function arg passing | Copy or DeepCopy | When binding params in `call_func_body` |
-| `ret val` | Copy or DeepCopy | When returning from function |
-| Method copy-out | DeepCopy | When stashing `last_method_self` |
+| `let b = a` | Copy or Dupe | Before binding in new scope |
+| Function arg passing | Copy or Dupe | When binding params in `call_func_body` |
+| `ret val` | Copy or Dupe | When returning from function |
+| Method copy-out | Dupe | When stashing `last_method_self` |
 
 ### Prerequisites
 
-- **`Self` type** — needed for DeepCopy return type
+- **`Self` type** — needed for Dupe return type
 - **Generic methods** — `impl Buf[T] as Drop` needs generic impl targets
-- **Method lookup fallback** — Drop/DeepCopy on `Buf[Int]` must find impl on `Buf`
+- **Method lookup fallback** — Drop/Dupe on `Buf[Int]` must find impl on `Buf`
 
 ### Open questions
 

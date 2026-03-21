@@ -60,7 +60,7 @@ These are the irreducible operations. Everything else is built in KS.
 
 This is WHY Ptr operations are unsafe. Safe code can't create or manipulate Ptrs directly. Only `Buf[T]` (which manages the Ptr lifecycle) touches them, inside unsafe blocks.
 
-When a `Buf[T]` is deep-copied (via DeepCopy protocol), it must allocate new storage and copy elements — not just copy the PtrId. This is the connection to the lifecycle-protocols proposal.
+When a `Buf[T]` is deep-copied (via Dupe protocol), it must allocate new storage and copy elements — not just copy the PtrId. This is the connection to the lifecycle-protocols proposal.
 
 ### What is `Buf[T]`?
 
@@ -129,8 +129,8 @@ impl Buf as Drop {
     }
 }
 
-impl Buf as DeepCopy {
-    func deep_copy(self): Buf[T] {
+impl Buf as Dupe {
+    func dupe(self): Buf[T] {
         let new_buf = Buf[T].with_capacity(self.cap)
         let i = 0
         while i < self.len {
@@ -178,10 +178,10 @@ The layered architecture implies a module system. For now, Ptr and Buf can live 
 ### Prerequisites
 
 This proposal depends on:
-- **Lifecycle protocols** (Drop, DeepCopy) — see [prop: lifecycle-protocols](lifecycle-protocols.md)
+- **Lifecycle protocols** (Drop, Dupe) — see [prop: lifecycle-protocols](lifecycle-protocols.md)
 - **Generic methods** — `impl Buf[T] { ... }` requires generic impl targets (currently broken)
 - **Method lookup fallback** — `Buf[Int]` methods need to resolve from `Buf` base type
-- **`Self` type** — DeepCopy needs `func deep_copy(self): Self`
+- **`Self` type** — Dupe needs `func dupe(self): Self`
 - **`unsafe` keyword** — lexer + parser + interpreter gating
 - **`TypeExpr::Generic`** — Buf[T] field `ptr: Ptr[T]` requires TypeExpr to express generic type applications, not just bare params
 
@@ -198,7 +198,7 @@ This proposal depends on:
 ## References
 - [spec: type-system](../../docs/spec/type-system.md) — prim vs builtin layers
 - [phil: stdlib](../../docs/phil/stdlib.md) — "List constructors need memory allocation (until self-hostable)"
-- [prop: lifecycle-protocols](lifecycle-protocols.md) — Drop, Copy, DeepCopy
+- [prop: lifecycle-protocols](lifecycle-protocols.md) — Drop, Copy, Dupe
 - Rust: `NonNull<T>` → `RawVec<T>` → `Vec<T>` layering
 - Rust: `unsafe` blocks and the safety contract
 - Python: `ctypes` for raw memory, `list` as the safe wrapper

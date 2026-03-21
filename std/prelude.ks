@@ -29,6 +29,6 @@ type Copy {
     func copy(self): Self
 }
 
-type DeepCopy {
-    func deep_copy(self): Self
+type Dupe {
+    func dupe(self): Self
 }
