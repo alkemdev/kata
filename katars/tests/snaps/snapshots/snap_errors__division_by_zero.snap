@@ -6,6 +6,10 @@ Error: division by zero
    ╭─[<test>:1:9]
    │
  1 │ let x = 1 / 0
-   │         ──┬──  
+   │         ┬─┬─┬  
+   │         ╰────── Int
+   │           │ │  
    │           ╰──── division by zero
+   │             │  
+   │             ╰── Int
 ───╯

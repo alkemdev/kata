@@ -950,8 +950,14 @@ impl Interpreter {
             Expr::BinOp { op, left, right } => {
                 let lv = self.eval_value(left, out)?;
                 let rv = self.eval_value(right, out)?;
-                let result = native::eval_binop(*op, &lv, &rv)
-                    .map_err(|e| RuntimeError::from(e).at(expr.span))?;
+                let result = native::eval_binop(*op, &lv, &rv).map_err(|e| {
+                    let left_type = self.types.display_name(lv.type_id());
+                    let right_type = self.types.display_name(rv.type_id());
+                    RuntimeError::from(e)
+                        .at(expr.span)
+                        .label(left.span, left_type)
+                        .label(right.span, right_type)
+                })?;
                 Ok(Flow::Next(result))
             }
 
