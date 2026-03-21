@@ -1,4 +1,4 @@
-let x = Opt[Int].Some(42)
-let y = Opt[Int].None
+let x = Opt[Int].Val(42)
+let y = Opt[Int].Non
 print(x)
 print(y)

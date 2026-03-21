@@ -22,7 +22,7 @@ use super::value::{FuncParam, Value};
 const SELF_PARAM: &str = "self";
 const METHOD_TO_ITER: &str = "to_iter";
 const METHOD_NEXT: &str = "next";
-const VARIANT_NONE: &str = "None";
+const VARIANT_NONE: &str = "Non";
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
 

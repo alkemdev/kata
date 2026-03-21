@@ -1,2 +1,2 @@
-Wrapper[Int] { inner: Some(42) }
-Some(42)
+Wrapper[Int] { inner: Val(42) }
+Val(42)

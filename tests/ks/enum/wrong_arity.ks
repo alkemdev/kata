@@ -1,6 +1,6 @@
 enum Opt[T] {
-    Some(T),
-    None,
+    Val(T),
+    Non,
 }
 
-Opt[Int].Some(1, 2)
+Opt[Int].Val(1, 2)

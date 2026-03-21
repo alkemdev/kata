@@ -1,4 +1,4 @@
-Ok(42)
+Val(42)
 Err(bad)
-Ok(good)
+Val(good)
 Err(99)

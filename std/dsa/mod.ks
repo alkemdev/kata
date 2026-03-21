@@ -27,10 +27,10 @@ impl Arr[T] {
 
     func pop(self): Opt[T] {
         if self.len == 0 {
-            ret Opt[T].None
+            ret Opt[T].Non
         }
         self.len = self.len - 1
-        ret Opt[T].Some(self.buf.read(self.len))
+        ret Opt[T].Val(self.buf.read(self.len))
     }
 
     func get(self, index: Int): T {
@@ -55,11 +55,11 @@ kind ArrIter[T] { arr: Arr[T], idx: Int }
 impl ArrIter[T] {
     func next(self): Opt[T] {
         if self.idx >= self.arr.len {
-            ret Opt[T].None
+            ret Opt[T].Non
         }
         let val = self.arr.get(self.idx)
         self.idx = self.idx + 1
-        ret Opt[T].Some(val)
+        ret Opt[T].Val(val)
     }
 }
 

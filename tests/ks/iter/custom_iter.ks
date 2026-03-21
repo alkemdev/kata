@@ -13,9 +13,9 @@ impl CountdownIter {
         if self.current > 0 {
             let val = self.current
             self.current = self.current - 1
-            ret Opt[Int].Some(val)
+            ret Opt[Int].Val(val)
         }
-        ret Opt[Int].None
+        ret Opt[Int].Non
     }
 }
 

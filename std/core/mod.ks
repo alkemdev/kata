@@ -7,12 +7,12 @@
 # ── Fundamental types ────────────────────────────────────────────
 
 enum Opt[T] {
-    Some(T),
-    None,
+    Val(T),
+    Non,
 }
 
 enum Res[T, E] {
-    Ok(T),
+    Val(T),
     Err(E),
 }
 

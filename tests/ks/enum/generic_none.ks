@@ -1,7 +1,7 @@
 enum Opt[T] {
-    Some(T),
-    None,
+    Val(T),
+    Non,
 }
 
-let y = Opt[Int].None
+let y = Opt[Int].Non
 print(y)

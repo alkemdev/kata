@@ -1,7 +1,7 @@
 enum Opt[T] {
-    Some(T),
-    None,
+    Val(T),
+    Non,
 }
 
-let x = Opt[Int].Some(42)
+let x = Opt[Int].Val(42)
 print(x)
