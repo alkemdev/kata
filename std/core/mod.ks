@@ -11,6 +11,9 @@ enum Opt[T] {
     Non,
 }
 
+# Opt.unwrap() requires pattern matching to implement in KS.
+# Deferred until match expressions land.
+
 enum Res[T, E] {
     Val(T),
     Err(E),

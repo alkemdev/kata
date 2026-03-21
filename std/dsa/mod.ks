@@ -33,18 +33,19 @@ impl Arr[T] {
         ret Opt[T].Val(self.buf.read(self.len))
     }
 
-    func get(self, index: Int): T {
+    func get(self, index: Int): Opt[T] {
         if index < 0 || index >= self.len {
-            panic("index out of bounds")
+            ret Opt[T].Non
         }
-        ret self.buf.read(index)
+        ret Opt[T].Val(self.buf.read(index))
     }
 
-    func set(self, index: Int, val: T) {
+    func set(self, index: Int, val: T): Bool {
         if index < 0 || index >= self.len {
-            panic("index out of bounds")
+            ret false
         }
         self.buf.write(index, val)
+        ret true
     }
 }
 
@@ -57,7 +58,8 @@ impl ArrIter[T] {
         if self.idx >= self.arr.len {
             ret Opt[T].Non
         }
-        let val = self.arr.get(self.idx)
+        # Read directly from buf — we already bounds-checked above.
+        let val = self.arr.buf.read(self.idx)
         self.idx = self.idx + 1
         ret Opt[T].Val(val)
     }
