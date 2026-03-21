@@ -11,7 +11,7 @@ use std::io::Write;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_traits::{ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 
 use super::ast::{BinOp, UnaryOp};
@@ -74,6 +74,9 @@ pub struct NativeCtx<'a> {
     pub types: &'a TypeRegistry,
     pub allocations: &'a mut Vec<Option<Vec<Value>>>,
     pub out: &'a mut dyn Write,
+    /// Available for native fns that need to know if they're in an unsafe context.
+    /// Currently checked at the dispatch level before the handler is called.
+    #[allow(dead_code)]
     pub in_unsafe: bool,
 }
 
@@ -363,7 +366,7 @@ pub fn truth(v: &Value) -> bool {
     match v {
         Value::Nil => false,
         Value::Bool(b) => *b,
-        Value::Int(n) => *n != BigInt::ZERO,
+        Value::Int(n) => !n.is_zero(),
         Value::Float(f) => *f != 0.0,
         Value::Str(s) => !s.is_empty(),
         _ => true,
@@ -399,12 +402,19 @@ pub fn eval_unaryop(op: UnaryOp, operand: &Value) -> Result<Value, ErrorKind> {
 
 // ── Operator helpers ────────────────────────────────────────────────
 
+/// Convert a BigInt to f64 for mixed-type arithmetic. Errors if the
+/// integer is too large to represent as a float (avoids silent data loss).
+fn int_to_f64(n: &BigInt) -> Result<f64, ErrorKind> {
+    n.to_f64()
+        .ok_or_else(|| ErrorKind::Other(format!("integer too large for float conversion: {n}")))
+}
+
 fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a.to_f64().unwrap_or(0.0) + b)),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b.to_f64().unwrap_or(0.0))),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(int_to_f64(a)? + b)),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + int_to_f64(b)?)),
         (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
         _ => Err(ErrorKind::BinOpType {
             op: BinOp::Add,
@@ -430,7 +440,7 @@ fn op_arith(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> 
             Ok(Value::Float(r))
         }
         (Value::Int(a), Value::Float(b)) => {
-            let a = a.to_f64().unwrap_or(0.0);
+            let a = int_to_f64(a)?;
             let r = match op {
                 BinOp::Sub => a - b,
                 BinOp::Mul => a * b,
@@ -439,7 +449,7 @@ fn op_arith(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> 
             Ok(Value::Float(r))
         }
         (Value::Float(a), Value::Int(b)) => {
-            let b = b.to_f64().unwrap_or(0.0);
+            let b = int_to_f64(b)?;
             let r = match op {
                 BinOp::Sub => a - b,
                 BinOp::Mul => a * b,
@@ -473,13 +483,13 @@ fn op_div(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
             if *b == 0.0 {
                 return Err(ErrorKind::DivisionByZero);
             }
-            Ok(Value::Float(a.to_f64().unwrap_or(0.0) / b))
+            Ok(Value::Float(int_to_f64(a)? / b))
         }
         (Value::Float(a), Value::Int(b)) => {
             if b.is_zero() {
                 return Err(ErrorKind::DivisionByZero);
             }
-            Ok(Value::Float(a / b.to_f64().unwrap_or(0.0)))
+            Ok(Value::Float(a / int_to_f64(b)?))
         }
         _ => Err(ErrorKind::BinOpType {
             op: BinOp::Div,
@@ -502,11 +512,11 @@ fn op_cmp(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
         (Value::Int(a), Value::Int(b)) => a.cmp(b),
         (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).ok_or(ErrorKind::NanComparison)?,
         (Value::Int(a), Value::Float(b)) => {
-            let a = a.to_f64().unwrap_or(0.0);
+            let a = int_to_f64(a)?;
             a.partial_cmp(b).ok_or(ErrorKind::NanComparison)?
         }
         (Value::Float(a), Value::Int(b)) => {
-            let b = b.to_f64().unwrap_or(0.0);
+            let b = int_to_f64(b)?;
             a.partial_cmp(&b).ok_or(ErrorKind::NanComparison)?
         }
         (Value::Str(a), Value::Str(b)) => a.cmp(b),
@@ -617,17 +627,5 @@ impl std::fmt::Display for NativeFnId {
 impl std::fmt::Display for ModuleId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ModuleId({})", self.0)
-    }
-}
-
-// ── BigInt::is_zero helper ──────────────────────────────────────────
-
-trait IsZero {
-    fn is_zero(&self) -> bool;
-}
-
-impl IsZero for BigInt {
-    fn is_zero(&self) -> bool {
-        *self == BigInt::ZERO
     }
 }
