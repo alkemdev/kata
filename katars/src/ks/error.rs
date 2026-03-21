@@ -66,11 +66,6 @@ pub enum ErrorKind {
         text: String,
         reason: String,
     },
-    UnknownTypeParam {
-        param: String,
-        context_kind: &'static str,
-        context_name: String,
-    },
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
 }
@@ -222,13 +217,6 @@ impl ErrorKind {
             ErrorKind::IteratorProtocol(msg) => msg.to_string(),
             ErrorKind::InvalidLiteral { kind, text, reason } => {
                 format!("invalid {kind} literal '{text}': {reason}")
-            }
-            ErrorKind::UnknownTypeParam {
-                param,
-                context_kind,
-                context_name,
-            } => {
-                format!("unknown type parameter '{param}' in {context_kind} '{context_name}'")
             }
             ErrorKind::Other(msg) => msg.clone(),
         }

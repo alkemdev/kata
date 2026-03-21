@@ -1,0 +1,11 @@
+# Res[Int, Str]: Ok takes Int (param 0), Err takes Str (param 1)
+let a = Res[Int, Str].Ok(42)
+let b = Res[Int, Str].Err("bad")
+print(a)
+print(b)
+
+# Res[Str, Int]: Ok takes Str (param 0), Err takes Int (param 1)
+let c = Res[Str, Int].Ok("good")
+let d = Res[Str, Int].Err(99)
+print(c)
+print(d)

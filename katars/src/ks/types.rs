@@ -92,8 +92,8 @@ pub struct VariantDef {
 pub enum TypeExpr {
     /// A resolved concrete type.
     Concrete(TypeId),
-    /// A type parameter name (e.g., "T") — resolved at instantiation time.
-    Param(String),
+    /// A positional type parameter index — resolved at instantiation via `type_args[idx]`.
+    Param(usize),
 }
 
 /// A variant in an instantiated enum. All fields are concrete.
@@ -168,41 +168,36 @@ impl TypeRegistry {
     fn resolve_concrete(texpr: TypeExpr, context: &str) -> TypeId {
         match texpr {
             TypeExpr::Concrete(tid) => tid,
-            TypeExpr::Param(p) => panic!("non-generic {context} has type param {p}"),
+            TypeExpr::Param(idx) => panic!("non-generic {context} has type param at index {idx}"),
         }
     }
 
-    /// Check cache, validate arity, build param map.
-    /// Returns Ok(None) for cache hit, Ok(Some(map)) for cache miss.
-    fn prepare_instantiation<'a>(
+    /// Check cache and validate arity.
+    /// Returns `Ok(true)` for cache miss (proceed with instantiation),
+    /// `Ok(false)` for cache hit (caller should look up the cached instance).
+    fn prepare_instantiation(
         &self,
         base_id: TypeId,
         type_args: &[TypeId],
-        type_params: &'a [String],
+        type_params_len: usize,
         name: &str,
-    ) -> Result<Option<HashMap<&'a str, TypeId>>, ErrorKind> {
+    ) -> Result<bool, ErrorKind> {
         let key = (base_id, type_args.to_vec());
         if self.instances.contains_key(&key) {
-            return Ok(None);
+            return Ok(false);
         }
 
-        if type_args.len() != type_params.len() {
+        if type_args.len() != type_params_len {
             return Err(ErrorKind::ArityMismatch {
                 target: ArityTarget::TypeArgs {
                     name: name.to_string(),
                 },
-                expected: type_params.len(),
+                expected: type_params_len,
                 actual: type_args.len(),
             });
         }
 
-        let param_map: HashMap<&str, TypeId> = type_params
-            .iter()
-            .zip(type_args.iter())
-            .map(|(p, &t)| (p.as_str(), t))
-            .collect();
-
-        Ok(Some(param_map))
+        Ok(true)
     }
 
     /// Register a generic enum definition. Returns the TypeId for the
@@ -270,34 +265,25 @@ impl TypeRegistry {
             });
         };
 
-        let Some(param_map) =
-            self.prepare_instantiation(base_id, &type_args, &type_params, &name)?
-        else {
+        if !self.prepare_instantiation(base_id, &type_args, type_params.len(), &name)? {
             return Ok(*self.instances.get(&(base_id, type_args)).unwrap());
-        };
+        }
 
-        // Resolve all variant fields.
+        // Resolve all variant fields via positional index into type_args.
         let resolved_variants = variants
             .into_iter()
             .map(|(vname, vdef)| {
-                let fields =
-                    vdef.fields
-                        .into_iter()
-                        .map(|f| match f {
-                            TypeExpr::Concrete(tid) => Ok(tid),
-                            TypeExpr::Param(ref p) => param_map
-                                .get(p.as_str())
-                                .copied()
-                                .ok_or_else(|| ErrorKind::UnknownTypeParam {
-                                    param: p.clone(),
-                                    context_kind: "variant",
-                                    context_name: vname.clone(),
-                                }),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                Ok((vname, ResolvedVariantDef { fields }))
+                let fields = vdef
+                    .fields
+                    .into_iter()
+                    .map(|f| match f {
+                        TypeExpr::Concrete(tid) => tid,
+                        TypeExpr::Param(idx) => type_args[idx],
+                    })
+                    .collect();
+                (vname, ResolvedVariantDef { fields })
             })
-            .collect::<Result<IndexMap<_, _>, ErrorKind>>()?;
+            .collect();
 
         let inst_id = self.push_def(TypeDef::EnumInstance {
             base: base_id,
@@ -419,28 +405,20 @@ impl TypeRegistry {
             });
         };
 
-        let Some(param_map) =
-            self.prepare_instantiation(base_id, &type_args, &type_params, &name)?
-        else {
+        if !self.prepare_instantiation(base_id, &type_args, type_params.len(), &name)? {
             return Ok(*self.instances.get(&(base_id, type_args)).unwrap());
-        };
+        }
 
         let resolved_fields = fields
             .into_iter()
             .map(|(fname, texpr)| {
                 let tid = match texpr {
-                    TypeExpr::Concrete(tid) => Ok(tid),
-                    TypeExpr::Param(ref p) => param_map.get(p.as_str()).copied().ok_or_else(|| {
-                        ErrorKind::UnknownTypeParam {
-                            param: p.clone(),
-                            context_kind: "field",
-                            context_name: fname.clone(),
-                        }
-                    }),
-                }?;
-                Ok((fname, tid))
+                    TypeExpr::Concrete(tid) => tid,
+                    TypeExpr::Param(idx) => type_args[idx],
+                };
+                (fname, tid)
             })
-            .collect::<Result<IndexMap<_, _>, ErrorKind>>()?;
+            .collect();
 
         let inst_id = self.push_def(TypeDef::StructInstance {
             base: base_id,
@@ -519,7 +497,7 @@ mod tests {
         variants.insert(
             "Some".into(),
             VariantDef {
-                fields: vec![TypeExpr::Param("T".into())],
+                fields: vec![TypeExpr::Param(0)],
             },
         );
         variants.insert("None".into(), VariantDef { fields: vec![] });
@@ -541,7 +519,7 @@ mod tests {
         variants.insert(
             "Some".into(),
             VariantDef {
-                fields: vec![TypeExpr::Param("T".into())],
+                fields: vec![TypeExpr::Param(0)],
             },
         );
         variants.insert("None".into(), VariantDef { fields: vec![] });
@@ -550,5 +528,130 @@ mod tests {
         let inst1 = reg.instantiate_enum(base, vec![prim::INT]).unwrap();
         let inst2 = reg.instantiate_enum(base, vec![prim::INT]).unwrap();
         assert_eq!(inst1, inst2);
+    }
+
+    #[test]
+    fn instantiate_multi_param_enum() {
+        let mut reg = TypeRegistry::new();
+        let mut variants = IndexMap::new();
+        variants.insert(
+            "Ok".into(),
+            VariantDef {
+                fields: vec![TypeExpr::Param(0)],
+            },
+        );
+        variants.insert(
+            "Err".into(),
+            VariantDef {
+                fields: vec![TypeExpr::Param(1)],
+            },
+        );
+
+        let base = reg.register_enum("Res".into(), vec!["T".into(), "E".into()], variants);
+        let inst = reg
+            .instantiate_enum(base, vec![prim::INT, prim::STR])
+            .unwrap();
+
+        assert_eq!(reg.display_name(inst), "Res[Int, Str]");
+
+        let (_, ok_def) = reg.get_variant(inst, "Ok").unwrap();
+        assert_eq!(ok_def.fields, vec![prim::INT]);
+
+        let (_, err_def) = reg.get_variant(inst, "Err").unwrap();
+        assert_eq!(err_def.fields, vec![prim::STR]);
+    }
+
+    #[test]
+    fn multi_param_enum_order_matters() {
+        let mut reg = TypeRegistry::new();
+        let mut variants = IndexMap::new();
+        variants.insert(
+            "Ok".into(),
+            VariantDef {
+                fields: vec![TypeExpr::Param(0)],
+            },
+        );
+        variants.insert(
+            "Err".into(),
+            VariantDef {
+                fields: vec![TypeExpr::Param(1)],
+            },
+        );
+
+        let base = reg.register_enum("Res".into(), vec!["T".into(), "E".into()], variants);
+
+        let int_str = reg
+            .instantiate_enum(base, vec![prim::INT, prim::STR])
+            .unwrap();
+        let str_int = reg
+            .instantiate_enum(base, vec![prim::STR, prim::INT])
+            .unwrap();
+
+        // Different type arg order → different instances.
+        assert_ne!(int_str, str_int);
+
+        // Ok field follows param index 0.
+        let (_, ok_a) = reg.get_variant(int_str, "Ok").unwrap();
+        let (_, ok_b) = reg.get_variant(str_int, "Ok").unwrap();
+        assert_eq!(ok_a.fields, vec![prim::INT]);
+        assert_eq!(ok_b.fields, vec![prim::STR]);
+    }
+
+    #[test]
+    fn instantiate_generic_struct() {
+        let mut reg = TypeRegistry::new();
+        let mut fields = IndexMap::new();
+        fields.insert("val".into(), TypeExpr::Param(0));
+
+        let base = reg.register_struct("Box".into(), vec!["T".into()], fields);
+        let inst = reg.instantiate_struct(base, vec![prim::INT]).unwrap();
+
+        assert_eq!(reg.display_name(inst), "Box[Int]");
+        let resolved = reg.get_struct_fields(inst).unwrap();
+        assert_eq!(resolved.get("val"), Some(&prim::INT));
+    }
+
+    #[test]
+    fn instantiate_multi_param_struct() {
+        let mut reg = TypeRegistry::new();
+        let mut fields = IndexMap::new();
+        fields.insert("fst".into(), TypeExpr::Param(0));
+        fields.insert("snd".into(), TypeExpr::Param(1));
+
+        let base = reg.register_struct("Pair".into(), vec!["A".into(), "B".into()], fields);
+        let inst = reg
+            .instantiate_struct(base, vec![prim::INT, prim::STR])
+            .unwrap();
+
+        assert_eq!(reg.display_name(inst), "Pair[Int, Str]");
+        let resolved = reg.get_struct_fields(inst).unwrap();
+        assert_eq!(resolved.get("fst"), Some(&prim::INT));
+        assert_eq!(resolved.get("snd"), Some(&prim::STR));
+    }
+
+    #[test]
+    fn type_args_arity_mismatch() {
+        let mut reg = TypeRegistry::new();
+        let mut variants = IndexMap::new();
+        variants.insert(
+            "Some".into(),
+            VariantDef {
+                fields: vec![TypeExpr::Param(0)],
+            },
+        );
+
+        let base = reg.register_enum("Opt".into(), vec!["T".into()], variants);
+        let err = reg
+            .instantiate_enum(base, vec![prim::INT, prim::STR])
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ErrorKind::ArityMismatch {
+                expected: 1,
+                actual: 2,
+                ..
+            }
+        ));
     }
 }

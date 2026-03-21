@@ -1,0 +1,4 @@
+Ok(42)
+Err(bad)
+Ok(good)
+Err(99)
