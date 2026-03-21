@@ -26,7 +26,7 @@ Types implement an iterator interface. `for` desugars to repeated `.next()` call
 ```ks
 // The protocol (eventually a `kind`):
 // - .iter() returns an iterator
-// - iterator.next() returns Opt[T] — Some(value) or None to stop
+// - iterator.next() returns Opt[T] — Val(value) or None to stop
 
 for x in range(0, 10) {
     print(x)
@@ -36,7 +36,7 @@ for x in range(0, 10) {
 with iter = range(0, 10).iter() {
     while true {
         let next = iter.next()
-        if next eq Opt.None { break }
+        if next eq Opt.Non { break }
         let x = next  // unwrap somehow
         print(x)
     }
@@ -122,7 +122,7 @@ type ToIter[T] {
 ```
 This is the principled version using `type` (abstract interface). Before `type` interfaces exist, the protocol is a convention: types that have `.to_iter()` returning an object with `.next()` work with `for`.
 
-**Opt[T] for completion signaling:** `next()` returning `Opt.Some(value)` or `Opt.None` is clean. `Opt` already exists. This avoids sentinel values, separate `.has_next()` methods, or exceptions.
+**Opt[T] for completion signaling:** `next()` returning `Opt.Val(value)` or `Opt.Non` is clean. `Opt` already exists. This avoids sentinel values, separate `.has_next()` methods, or exceptions.
 
 ### `for` syntax
 
@@ -177,7 +177,7 @@ Operators went through a similar evolution: hardcoded prim dispatch now, user-de
 ## Decision
 **Chosen: Option A — external iterator protocol.**
 
-`for x in expr { body }` desugars to: call `.to_iter()` on the iterable, then loop calling `.next()` on the iterator. `.next()` returns `Opt[T]` — `Some(value)` continues, `None` breaks.
+`for x in expr { body }` desugars to: call `.to_iter()` on the iterable, then loop calling `.next()` on the iterator. `.next()` returns `Opt[T]` — `Val(value)` continues, `Non` breaks.
 
 The prelude defines abstract interfaces `Iter[T]` and `ToIter[T]`. Types opt in by implementing these via `impl`. `break` and `continue` work inside `for` loops via `Flow::Break`/`Flow::Continue` signals in the interpreter.
 

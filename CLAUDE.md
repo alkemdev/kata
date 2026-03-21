@@ -6,24 +6,28 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 
 ## Language status
 
-- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin
+- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin, RawPtr
 - **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation)
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
 - **Functions**: func, typed params, return type annotation, ret, closures
 - **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via std.ops
-- **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in prelude
-- **Methods**: impl blocks, method dispatch, mutable self (copy-in copy-out)
-- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T] in prelude
+- **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in std.core
+- **Methods**: impl blocks (generic: `impl Foo[T]`), method dispatch with base-type fallback, mutable self (copy-in copy-out), `self`/`Self` keywords
+- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe in std.core
 - **Control flow**: if/elif/else (expression), while, for (iterator protocol), break, continue, && || (short-circuit)
-- **Blocks**: with (scoped bindings)
-- **Not yet**: lists, maps, const, error handling, modules
+- **Blocks**: with (scoped bindings), unsafe (gates std.mem intrinsics)
+- **Memory**: RawPtr (opaque prim), Ptr[T], Buf[T], Arr[T] — layered stack with Allocator interface
+- **Modules**: import std.mem (scoped), import std.mem.{Ptr, Buf} (selective). Hierarchical std: std.core, std.mem, std.dsa
+- **Lifecycle**: Drop protocol (auto-called on scope exit), Self type in impl blocks
+- **Not yet**: maps, const, error handling, pattern matching, array literals
 
 ## Project layout
 
-- `katars/src/ks/` — interpreter source: lexer, AST, parser, type registry, values, interpreter
+- `katars/src/ks/` — interpreter source: lexer, AST, parser, type registry, values, native functions, interpreter
 - `katars/src/tui/` — ratatui REPL
-- `std/` — KataScript standard library (prelude auto-loaded)
+- `std/` — KataScript standard library: `prelude.ks` (auto-loaded re-exports), `core/` (Opt, Res, protocols), `mem/` (Ptr, Buf, Allocator), `dsa/` (Arr)
 - `tests/ks/<feature>/` — conformance fixtures, one `.ks` + `.expected` pair per behavior
+- `demos/` — example KataScript programs
 - `docs/` — permanent reference: `phil/` (philosophy), `spec/` (approved decisions)
 - `plan/` — work tracking: `prop/` (active proposals), `todo/`, `work/` (in progress), `roadmap.md`
 
@@ -121,6 +125,6 @@ The interpreter is split across three files in `katars/src/ks/`:
 
 Key patterns to understand by reading the code:
 - **Postfix chains** — member access, indexing, and calls compose uniformly via `Expr::Attr`, `Expr::Item`, `Expr::Call`.
-- **Operator dispatch** — operators go through `std.ops` (a `Value::Namespace`). `&&`/`||` are control flow, not operators — they short-circuit.
+- **Operator dispatch** — operators go through `std.ops` (a module in the native function tree). `&&`/`||` are control flow, not operators — they short-circuit.
 - **Truthiness** — nil, false, 0, 0.0, "" are falsy; everything else is truthy.
-- **Builtins** — `Interpreter::call_builtin` dispatches by name; returns `None` to fall through to user-defined functions.
+- **Builtins** — native functions dispatched via `NativeFnRegistry` + handler function pointers. No string matching at call time.

@@ -38,9 +38,9 @@ Everything else should be definable in KS.
 
 Before any stdlib can exist, KS needs:
 
-1. **Enums / sum types** — `enum Opt[T] { Some(T), None }`
+1. **Enums / sum types** — `enum Opt[T] { Val(T), Non }`
 2. **Generics** — `[T]` type parameters on enums, functions, types
-3. **Pattern matching** — `match v { Some(x) => ..., None => ... }`
+3. **Pattern matching** — `match v { Val(x) => ..., Non => ... }`
 4. **Prelude loading** — runtime reads and evaluates `std/prelude.ks` before user code
 
 These are language features, not stdlib. They gate everything below.
@@ -51,12 +51,12 @@ Once enums + generics + pattern matching exist:
 
 ```ks
 enum Opt[T] {
-    Some(T),
+    Val(T),
     None,
 }
 
 enum Res[T, E] {
-    Ok(T),
+    Val(T),
     Err(E),
 }
 ```
@@ -79,5 +79,5 @@ When the type system is mature enough, `List`, `Map`, `Set` migrate from runtime
 
 - **Prelude loading mechanism:** Does the evaluator read `std/prelude.ks` from disk at startup? Embed it at compile time via `include_str!`? The latter is simpler for distribution (single binary) but harder to iterate on.
 - **Method syntax on enums:** `opt.unwrap()` needs either a method dispatch system or standalone functions like `unwrap(opt)`. Methods are nicer but require more machinery.
-- **Nil ↔ Opt relationship:** See [prop: nil-option](../prop/nil-option.md). If `nil` stays as a prim, it's independent of `Opt.None`. If it becomes sugar, every type is implicitly optional.
+- **Nil ↔ Opt relationship:** See [prop: nil-option](../prop/nil-option.md). If `nil` stays as a prim, it's independent of `Opt.Non`. If it becomes sugar, every type is implicitly optional.
 - **Error ↔ Res relationship:** See [prop: error-handling](../prop/error-handling.md). Runtime errors (type mismatches, etc.) might produce `Res.Err` or might remain a separate panic mechanism.

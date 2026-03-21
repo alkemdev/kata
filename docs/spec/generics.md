@@ -17,7 +17,7 @@ KataScript supports generic type parameters on `enum`, `kind`, and `type` defini
 Type parameters are declared in square brackets after the type name:
 
 ```
-enum Opt[T] { Some(T), None }
+enum Opt[T] { Val(T), Non }
 kind Pair[A, B] { fst: A, snd: B }
 type Iter[T] { func next(self): Opt[T] }
 ```
@@ -39,13 +39,13 @@ Nested generics work: `Opt[Opt[Int]]`, `Res[Opt[Str], Int]`.
 Type parameters are resolved by position, not by name:
 
 ```
-enum Res[T, E] { Ok(T), Err(E) }
+enum Res[T, E] { Val(T), Err(E) }
 ```
 
 - `T` is parameter index 0. In `Res[Int, Str]`, `T` resolves to `Int`.
 - `E` is parameter index 1. In `Res[Int, Str]`, `E` resolves to `Str`.
 
-Swapping arguments changes the types: `Res[Str, Int].Ok("hello")` is valid; `Res[Int, Str].Ok("hello")` is a type error.
+Swapping arguments changes the types: `Res[Str, Int].Val("hello")` is valid; `Res[Int, Str].Val("hello")` is a type error.
 
 ### Parameter reuse
 The same parameter can appear in multiple fields or variant positions:
@@ -85,21 +85,21 @@ enum Unit[T] { Val }
 At construction time, each field value is checked against the resolved type:
 
 ```
-let x = Opt[Int].Some(42)    # OK
-let y = Opt[Int].Some("no")  # type mismatch: expected Int, got Str
+let x = Opt[Int].Val(42)    # OK
+let y = Opt[Int].Val("no")   # type mismatch: expected Int, got Str
 ```
 
 Arity is also checked:
 
 ```
-let x = Opt[Int, Str].Some(1)  # 'Opt' expects 1 type argument(s), got 2
+let x = Opt[Int, Str].Val(1)  # 'Opt' expects 1 type argument(s), got 2
 ```
 
 ### Instantiation caching
 Each `(base_type_id, type_args)` pair is instantiated at most once. Subsequent uses of the same instantiation return the same `TypeId`:
 
 ```
-typeof(Opt[Int].Some(1)) == typeof(Opt[Int].Some(2))  # true
+typeof(Opt[Int].Val(1)) == typeof(Opt[Int].Val(2))  # true
 ```
 
 ### Implementation details
@@ -108,11 +108,10 @@ typeof(Opt[Int].Some(1)) == typeof(Opt[Int].Some(2))  # true
 - **Instantiation**: Direct index lookup `type_args[idx]` — O(1), no HashMap.
 - **Translation boundary**: `resolve_type_ann` in the interpreter is the single point where parameter names (strings) become positional indices. Everything downstream is index-based.
 
-### Known limitations (2026-03-21)
-- **Generic methods**: `impl Opt[T] { ... }` does not work — the `impl` target must be a concrete (instantiated) type or a non-generic type. The AST stores the impl target as a name string, not a full expression.
+### Known limitations
 - **Interface conformance type args**: In `impl K as Iter[Int] { ... }`, the `[Int]` type arguments on the interface are parsed but not validated during conformance checking.
 - **No bounds/constraints**: There is no way to constrain a type parameter (e.g., `T: Iter`). All type parameters accept any type.
-- **No type parameter inference**: Type arguments must always be written explicitly. `Opt.Some(42)` does not infer `Opt[Int]`.
+- **No type parameter inference**: Type arguments must always be written explicitly. `Opt.Val(42)` does not infer `Opt[Int]`.
 
 ## Decision
 Generics use positional parameter indices. The AST stores parameter names as strings (source text). The type registry and interpreter use `TypeExpr::Param(usize)` — the index into the definition's parameter list. Instantiation resolves parameters via direct indexing into `type_args`. Caching is keyed on `(base_id, type_args)`.

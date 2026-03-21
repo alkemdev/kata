@@ -10,7 +10,7 @@ How should KataScript associate functions with types and dispatch `.method()` ca
 
 ## Context
 KataScript has dot access (`Expr::Attr`) and function calls (`Expr::Call`), so `x.foo(y)` already parses as "access `foo` on `x`, then call the result with `y`." But there's no mechanism to define what `foo` means on a given type. Currently, dot access is hardcoded for:
-- Enum types: `Opt.Some` produces a `VariantConstructor`
+- Enum types: `Opt.Val` produces a `VariantConstructor`
 - Namespaces: `std.ops` resolves sub-namespaces and builtins
 
 Method dispatch is needed for:

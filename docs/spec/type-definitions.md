@@ -45,7 +45,7 @@ let p = Point(1.0, 2.0)
 ```
 Construction looks like a function call. Access is positional.
 
-**Pros:** Minimal syntax. Consistent with enum variant construction (`Some(1)`). Easy to parse — same as a call expression.
+**Pros:** Minimal syntax. Consistent with enum variant construction (`Val(1)`). Easy to parse — same as a call expression.
 **Cons:** Positional fields don't scale — `Point(1.0, 2.0)` is fine, but `Config(true, 8080, "localhost", nil)` is unreadable. No names to access by. Enum variants already cover this shape — what does `kind` add?
 
 ### Option C: Both named and positional forms
@@ -76,7 +76,7 @@ Named fields are the canonical form. Positional construction is sugar that assig
 ## Discussion
 **Current state (2026-03-16):** `TypeDef` has `Prim` and `Enum` variants. `Value` has `Enum { type_id, variant_idx, fields }` for enum instances. The parser handles `Expr::Attr` (dot access) and `Expr::Call` (function calls). `TypeRegistry` manages registration, lookup, and generic instantiation.
 
-**Named vs positional:** Enum variants already provide positional-field types. `Opt.Some(1)` is a value carrying positional data. Product types should add something new — named fields. This argues for Option A or D.
+**Named vs positional:** Enum variants already provide positional-field types. `Opt.Val(1)` is a value carrying positional data. Product types should add something new — named fields. This argues for Option A or D.
 
 **Construction syntax:** `Point { x: 1.0, y: 2.0 }` after a type name is unambiguous — the parser sees `Ident LBrace` where the ident resolves to a type. Bare `{ k: v }` in expression position is a map (per [spec: block-syntax](block-syntax.md)). No ambiguity.
 

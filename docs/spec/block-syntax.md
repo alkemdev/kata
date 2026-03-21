@@ -87,7 +87,7 @@ Leaning toward **Option C** — `with` for all standalone blocks (with optional 
 Note: the binding form also pairs naturally with pattern matching later:
 
 ```ks
-with Opt.Some(x) = maybe_value() {
+with Opt.Val(x) = maybe_value() {
     print(x)
 }
 ```
