@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: type mismatch: expected Int, got Str
+   ╭─[<test>:1:9]
+   │
+ 1 │ let a = [1, "two", 3]
+   │         ──────┬──────  
+   │               ╰──────── type mismatch: expected Int, got Str
+───╯

@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: no match arm matched
+   ╭─[<test>:1:1]
+   │
+ 1 │ match 42 { 0 -> "zero" }
+   │ ────────────┬───────────  
+   │             ╰───────────── no match arm matched
+───╯

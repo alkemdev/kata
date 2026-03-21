@@ -34,6 +34,7 @@ num-traits = "0.2"
 
 [dev-dependencies]
 datatest-stable = "0.2"
+insta = "1.46.3"
 
 [[test]]
 name    = "conformance"

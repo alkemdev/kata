@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: type mismatch: expected Int, got Str
+   ╭─[<test>:1:1]
+   │
+ 1 │ Opt[Int].Val("wrong")
+   │ ─┬─  
+   │  ╰─── type mismatch: expected Int, got Str
+───╯

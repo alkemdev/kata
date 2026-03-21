@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: break outside of loop
+   ╭─[<test>:1:1]
+   │
+ 1 │ break
+   │ ──┬──  
+   │   ╰──── break outside of loop
+───╯

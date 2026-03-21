@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: undefined variable 'x'
+   ╭─[<test>:1:15]
+   │
+ 1 │ print("hello {x}")
+   │               ┬  
+   │               ╰── undefined variable 'x'
+───╯

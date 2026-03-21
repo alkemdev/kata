@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: division by zero
+   ╭─[<test>:1:9]
+   │
+ 1 │ let x = 1 / 0
+   │         ──┬──  
+   │           ╰──── division by zero
+───╯

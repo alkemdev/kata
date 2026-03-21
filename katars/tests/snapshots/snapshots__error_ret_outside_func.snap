@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: ret outside of function
+   ╭─[<test>:1:1]
+   │
+ 1 │ ret 1
+   │ ──┬──  
+   │   ╰──── ret outside of function
+───╯

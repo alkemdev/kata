@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: unknown module 'std.nonexistent'
+   ╭─[<test>:1:1]
+   │
+ 1 │ import std.nonexistent
+   │ ───────────┬──────────  
+   │            ╰──────────── unknown module 'std.nonexistent'
+───╯

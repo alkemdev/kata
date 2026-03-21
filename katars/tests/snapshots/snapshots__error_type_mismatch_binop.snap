@@ -1,0 +1,11 @@
+---
+source: katars/tests/snapshots.rs
+expression: output
+---
+Error: cannot apply '+' to Int and Str
+   ╭─[<test>:1:9]
+   │
+ 1 │ let x = 1 + "a"
+   │         ───┬───  
+   │            ╰───── cannot apply '+' to Int and Str
+───╯
