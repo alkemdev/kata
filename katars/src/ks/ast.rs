@@ -60,8 +60,8 @@ pub enum Stmt {
     },
     /// `import std.mem` (scoped) or `import std.mem.{Ptr, Buf}` (selective).
     Import {
-        path: Vec<String>,
-        names: Option<Vec<String>>,
+        path: Vec<Spanned<String>>,
+        names: Option<Vec<Spanned<String>>>,
     },
     /// `break` — exit the current loop.
     Break,

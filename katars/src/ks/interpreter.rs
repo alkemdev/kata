@@ -407,7 +407,11 @@ impl Interpreter {
             }
 
             Stmt::Import { path, names } => {
-                self.exec_import(path, names.as_deref(), out)
+                let path_strs: Vec<&str> = path.iter().map(|s| s.node.as_str()).collect();
+                let name_strs: Option<Vec<&str>> = names
+                    .as_ref()
+                    .map(|ns| ns.iter().map(|s| s.node.as_str()).collect());
+                self.exec_import(&path_strs, name_strs.as_deref(), out)
                     .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
@@ -426,8 +430,8 @@ impl Interpreter {
 
     fn exec_import(
         &mut self,
-        path: &[String],
-        names: Option<&[String]>,
+        path: &[&str],
+        names: Option<&[&str]>,
         out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
         let module_key = path.join(".");
@@ -438,33 +442,23 @@ impl Interpreter {
         match names {
             // Selective: `import std.mem.{Ptr, Buf}` — pull names into scope.
             Some(selected) => {
-                // Collect values first to avoid borrow conflict.
                 let module = self.native_registry.get_module(module_id);
                 let mut exports = Vec::new();
-                for name in selected {
+                for &name in selected {
                     let val = module.entries.get(name).cloned().ok_or_else(|| {
                         RuntimeError::new(ErrorKind::Other(format!(
                             "module '{module_key}' has no export '{name}'"
                         )))
                     })?;
-                    exports.push((name.clone(), val));
+                    exports.push((name.to_string(), val));
                 }
                 for (name, val) in exports {
                     self.set(name, val);
                 }
             }
-            // Scoped: `import std.mem` — make module accessible via path.
+            // Scoped: `import std.mem` — add to the module tree in scope.
             None => {
-                // Build the module path in scope: `std.mem` means
-                // set `std` as a module containing `mem`.
-                // For single-segment paths, just set directly.
-                if path.len() == 1 {
-                    self.set(path[0].clone(), Value::Module(module_id));
-                } else {
-                    // Walk/create the path: for `std.mem`, ensure `std`
-                    // exists as a module, then add `mem` to it.
-                    self.ensure_module_path(path, module_id);
-                }
+                self.ensure_module_path(path, module_id);
             }
         }
 
@@ -516,27 +510,33 @@ impl Interpreter {
     }
 
     /// Ensure a dotted path exists in scope as nested modules.
-    /// For `["std", "mem"]` with `module_id`, sets `std` in scope
-    /// with `mem` as a child module.
-    fn ensure_module_path(&mut self, path: &[String], leaf_id: native::ModuleId) {
+    /// Reuses existing modules (including the native `std` module)
+    /// instead of creating new ones that would shadow them.
+    fn ensure_module_path(&mut self, path: &[&str], leaf_id: native::ModuleId) {
         if path.is_empty() {
             return;
         }
 
-        let root_name = &path[0];
-
         // Get or create the root module in scope.
-        let root_id = if let Some(Value::Module(mid)) = self.get(root_name) {
+        let root_id = if let Some(Value::Module(mid)) = self.get(path[0]) {
             *mid
         } else {
-            let mid = self.native_registry.create_module(root_name);
-            self.set(root_name.clone(), Value::Module(mid));
+            let mid = self.native_registry.create_module(path[0]);
+            self.set(path[0].to_string(), Value::Module(mid));
             mid
         };
 
-        // Walk the path, creating intermediate modules as needed.
+        if path.len() == 1 {
+            // Single segment: the root IS the leaf. Already set.
+            // But if we loaded a new module, we need to merge or replace.
+            // For now, just set it.
+            self.set(path[0].to_string(), Value::Module(leaf_id));
+            return;
+        }
+
+        // Walk intermediate segments, creating modules as needed.
         let mut current = root_id;
-        for segment in &path[1..path.len() - 1] {
+        for &segment in &path[1..path.len() - 1] {
             let module = self.native_registry.get_module(current);
             if let Some(Value::Module(mid)) = module.entries.get(segment) {
                 current = *mid;
@@ -547,12 +547,10 @@ impl Interpreter {
             }
         }
 
-        // Add the leaf module.
-        if path.len() > 1 {
-            let leaf_name = &path[path.len() - 1];
-            self.native_registry
-                .add_submodule(current, leaf_name, leaf_id);
-        }
+        // Add the leaf module to its parent.
+        let leaf_name = path[path.len() - 1];
+        self.native_registry
+            .add_submodule(current, leaf_name, leaf_id);
     }
 
     // ── Block execution ──────────────────────────────────────────────────

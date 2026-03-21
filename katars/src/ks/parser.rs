@@ -715,8 +715,12 @@ where
             });
 
         // import_stmt = 'import' IDENT ('.' IDENT)* ('.' '{' IDENT (',' IDENT)* '}')?
+        let spanned_ident = select! { Token::Ident(name) => name }
+            .map_with(|name, ex| Spanned::new(name, span(&ex.span())));
+
         let import_names = just(Token::Dot).ignore_then(
-            select! { Token::Ident(name) => name }
+            spanned_ident
+                .clone()
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
@@ -725,7 +729,7 @@ where
 
         let import_stmt = just(Token::Import)
             .ignore_then(
-                select! { Token::Ident(name) => name }
+                spanned_ident
                     .separated_by(just(Token::Dot))
                     .at_least(1)
                     .collect::<Vec<_>>(),
