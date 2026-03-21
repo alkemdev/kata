@@ -77,6 +77,8 @@ pub enum Token {
     Unsafe,
     #[token("import")]
     Import,
+    #[token("match")]
+    Match,
     #[token("self")]
     SelfValue,
     #[token("Self")]
@@ -122,6 +124,8 @@ pub enum Token {
     LtEq,
     #[token(">=")]
     GtEq,
+    #[token("->")]
+    Arrow,
     #[token("+")]
     Plus,
     #[token("-")]
@@ -331,6 +335,7 @@ impl fmt::Display for Token {
             Token::Ret => write!(f, "ret"),
             Token::Unsafe => write!(f, "unsafe"),
             Token::Import => write!(f, "import"),
+            Token::Match => write!(f, "match"),
             Token::SelfValue => write!(f, "self"),
             Token::SelfType => write!(f, "Self"),
             Token::LParen => write!(f, "("),
@@ -350,6 +355,7 @@ impl fmt::Display for Token {
             Token::Gt => write!(f, ">"),
             Token::LtEq => write!(f, "<="),
             Token::GtEq => write!(f, ">="),
+            Token::Arrow => write!(f, "->"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),

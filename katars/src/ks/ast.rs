@@ -132,6 +132,28 @@ pub enum InterpPart {
     Expr(Spanned<Expr>),
 }
 
+// ── Match patterns ───────────────────────────────────────────────────────────
+
+/// A pattern in a match arm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Pattern {
+    /// Match a variant by name: `Val(x, y)` or `Non` (unit variant).
+    Variant { name: String, bindings: Vec<String> },
+    /// Match a literal value: `42`, `"hello"`, `true`, `nil`.
+    Literal(Spanned<Expr>),
+    /// Wildcard: `_` — matches anything, no binding.
+    Wildcard,
+    /// Catch-all binding: `x` — matches anything, binds the whole value.
+    Binding(String),
+}
+
+/// A single arm in a match expression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchArm {
+    pub pattern: Spanned<Pattern>,
+    pub body: Vec<Spanned<Stmt>>,
+}
+
 // ── Operators ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +251,11 @@ pub enum Expr {
     },
     /// `unsafe { stmts }` — block with unsafe intrinsic access.
     Unsafe { body: Vec<Spanned<Stmt>> },
+    /// `match expr { pattern -> body, ... }` — pattern matching.
+    Match {
+        subject: Box<Spanned<Expr>>,
+        arms: Vec<MatchArm>,
+    },
     /// `[expr, expr, ...]` — array literal.
     ArrLit { elements: Vec<Spanned<Expr>> },
     /// Attribute access: `a.b`

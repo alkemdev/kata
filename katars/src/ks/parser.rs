@@ -8,8 +8,8 @@ use logos::Logos;
 use tracing::{debug, info};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MethodSig, Param,
-    Program, Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MatchArm,
+    MethodSig, Param, Pattern, Program, Spanned, Stmt, UnaryOp,
 };
 use super::lexer::{StringPart, Token};
 
@@ -215,6 +215,128 @@ where
                 )
                 .map_with(|body, ex| Spanned::new(Expr::Unsafe { body }, span(&ex.span())));
 
+            // match_expr = 'match' expr '{' match_arm (',' match_arm)* ','? '}'
+            // match_arm  = pattern '->' expr  |  pattern '->' '{' stmt* '}'
+            // pattern    = IDENT '(' IDENT (',' IDENT)* ')' | '_' | literal | IDENT
+
+            let pattern = {
+                // Variant with bindings: Val(x, y)
+                let variant_with_bindings = select! { Token::Ident(name) => name }
+                    .then(
+                        select! { Token::Ident(name) => name }
+                            .separated_by(just(Token::Comma))
+                            .allow_trailing()
+                            .collect::<Vec<_>>()
+                            .delimited_by(just(Token::LParen), just(Token::RParen)),
+                    )
+                    .map_with(|(name, bindings), ex| {
+                        Spanned::new(Pattern::Variant { name, bindings }, span(&ex.span()))
+                    });
+
+                // Wildcard: _
+                // We use Ident("_") since _ lexes as an identifier
+                let wildcard = select! { Token::Ident(name) => name }
+                    .filter(|n| n == "_")
+                    .map_with(|_, ex| Spanned::new(Pattern::Wildcard, span(&ex.span())));
+
+                // Literal: 42, "hello", true, false, nil
+                let lit_int = select! { Token::Num(s) => s }.map_with(|s, ex| {
+                    Spanned::new(
+                        Pattern::Literal(Spanned::new(Expr::Int(s), span(&ex.span()))),
+                        span(&ex.span()),
+                    )
+                });
+                let lit_str = select! { Token::Str(parts) => parts }
+                    .try_map(|parts, _span| {
+                        // Only plain string literals (no interpolation) in patterns
+                        if parts.len() == 1 {
+                            if let super::lexer::StringPart::Lit(s) = &parts[0] {
+                                return Ok(s.clone());
+                            }
+                        }
+                        if parts.is_empty() {
+                            return Ok(String::new());
+                        }
+                        Err(Rich::custom(
+                            _span,
+                            "interpolated strings not allowed in match patterns",
+                        ))
+                    })
+                    .map_with(|s, ex| {
+                        Spanned::new(
+                            Pattern::Literal(Spanned::new(Expr::Str(s), span(&ex.span()))),
+                            span(&ex.span()),
+                        )
+                    });
+                let lit_true = just(Token::True).map_with(|_, ex| {
+                    Spanned::new(
+                        Pattern::Literal(Spanned::new(Expr::Bool(true), span(&ex.span()))),
+                        span(&ex.span()),
+                    )
+                });
+                let lit_false = just(Token::False).map_with(|_, ex| {
+                    Spanned::new(
+                        Pattern::Literal(Spanned::new(Expr::Bool(false), span(&ex.span()))),
+                        span(&ex.span()),
+                    )
+                });
+                let lit_nil = just(Token::Nil).map_with(|_, ex| {
+                    Spanned::new(
+                        Pattern::Literal(Spanned::new(Expr::Nil, span(&ex.span()))),
+                        span(&ex.span()),
+                    )
+                });
+
+                // Bare ident: unit variant or catch-all binding
+                let bare_ident = select! { Token::Ident(name) => name }
+                    .filter(|n| n != "_")
+                    .map_with(|name, ex| {
+                        // Could be unit variant or binding — resolved at runtime
+                        Spanned::new(Pattern::Binding(name), span(&ex.span()))
+                    });
+
+                variant_with_bindings
+                    .or(wildcard)
+                    .or(lit_int)
+                    .or(lit_str)
+                    .or(lit_true)
+                    .or(lit_false)
+                    .or(lit_nil)
+                    .or(bare_ident)
+            };
+
+            // Arm body: single expression (as a statement) or block
+            let arm_body = stmt
+                .clone()
+                .repeated()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace))
+                .or(stmt.clone().map(|s| vec![s]));
+
+            let match_arm = pattern
+                .then_ignore(just(Token::Arrow))
+                .then(arm_body)
+                .map(|(pattern, body)| MatchArm { pattern, body });
+
+            let match_expr = just(Token::Match)
+                .ignore_then(expr.clone())
+                .then(
+                    match_arm
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                )
+                .map_with(|(subject, arms), ex| {
+                    Spanned::new(
+                        Expr::Match {
+                            subject: Box::new(subject),
+                            arms,
+                        },
+                        span(&ex.span()),
+                    )
+                });
+
             // if_expr = 'if' expr '{' stmt* '}' ('else' (if_expr | '{' stmt* '}'))?
             let block = stmt
                 .clone()
@@ -305,6 +427,7 @@ where
                 .or(arr_lit)
                 .or(with_expr)
                 .or(unsafe_expr)
+                .or(match_expr)
                 .or(if_expr)
                 .or(while_expr)
                 .or(for_expr);

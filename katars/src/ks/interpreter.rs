@@ -6,8 +6,8 @@ use num_bigint::BigInt;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, Expr, FuncDef, InterpPart, MethodSig, Param, Program,
-    Spanned, Stmt,
+    AssignTarget, AstFieldDef, AstVariantDef, Expr, FuncDef, InterpPart, MatchArm, MethodSig,
+    Param, Pattern, Program, Spanned, Stmt,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -654,6 +654,111 @@ impl Interpreter {
         Ok(Flow::Next(arr_val))
     }
 
+    // ── Match expressions ────────────────────────────────────────────────
+
+    fn eval_match(
+        &mut self,
+        subject: &Spanned<Expr>,
+        arms: &[MatchArm],
+        out: &mut impl Write,
+    ) -> Result<Flow, RuntimeError> {
+        let val = self.eval_value(subject, out)?;
+
+        for arm in arms {
+            if let Some(bindings) = self.match_pattern(&val, &arm.pattern.node) {
+                self.push_scope();
+                for (name, bound_val) in bindings {
+                    self.set(name, bound_val);
+                }
+                let result = self.exec_block(&arm.body, out);
+                self.pop_scope(out);
+                return result;
+            }
+        }
+
+        Err(ErrorKind::Other("no match arm matched".into()).into())
+    }
+
+    fn match_pattern(&self, val: &Value, pattern: &Pattern) -> Option<Vec<(String, Value)>> {
+        match pattern {
+            Pattern::Wildcard => Some(vec![]),
+
+            Pattern::Binding(name) => {
+                // If the value is an enum, treat bare idents as variant names.
+                if let Value::Enum {
+                    type_id,
+                    variant_idx,
+                    ..
+                } = val
+                {
+                    let variant_name = self.types.variant_name(*type_id, *variant_idx);
+                    if variant_name == name {
+                        return Some(vec![]); // Matched as unit variant
+                    }
+                    return None; // Enum value, but variant name doesn't match
+                }
+                // Non-enum: catch-all binding.
+                Some(vec![(name.clone(), val.clone())])
+            }
+
+            Pattern::Variant { name, bindings } => {
+                if let Value::Enum {
+                    type_id,
+                    variant_idx,
+                    fields,
+                } = val
+                {
+                    let variant_name = self.types.variant_name(*type_id, *variant_idx);
+                    if variant_name == name {
+                        let bound: Vec<_> = bindings
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(n, v)| (n.clone(), v.clone()))
+                            .collect();
+                        return Some(bound);
+                    }
+                }
+                None
+            }
+
+            Pattern::Literal(lit_expr) => match &lit_expr.node {
+                Expr::Int(s) => {
+                    if let Value::Int(n) = val {
+                        if let Ok(lit_n) = s.parse::<BigInt>() {
+                            if *n == lit_n {
+                                return Some(vec![]);
+                            }
+                        }
+                    }
+                    None
+                }
+                Expr::Str(s) => {
+                    if let Value::Str(v) = val {
+                        if v == s {
+                            return Some(vec![]);
+                        }
+                    }
+                    None
+                }
+                Expr::Bool(b) => {
+                    if let Value::Bool(v) = val {
+                        if v == b {
+                            return Some(vec![]);
+                        }
+                    }
+                    None
+                }
+                Expr::Nil => {
+                    if matches!(val, Value::Nil) {
+                        return Some(vec![]);
+                    }
+                    None
+                }
+                _ => None,
+            },
+        }
+    }
+
     // ── Block execution ──────────────────────────────────────────────────
 
     fn exec_block(
@@ -755,6 +860,10 @@ impl Interpreter {
 
             Expr::ArrLit { elements } => self
                 .eval_arr_lit(elements, out)
+                .map_err(|e: RuntimeError| e.at(expr.span)),
+
+            Expr::Match { subject, arms } => self
+                .eval_match(subject, arms, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
 
             Expr::Attr { object, name } => {
