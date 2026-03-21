@@ -567,9 +567,7 @@ impl Interpreter {
         out: &mut impl Write,
     ) -> Result<Flow, RuntimeError> {
         if elements.is_empty() {
-            return Err(
-                ErrorKind::Other("empty array literal — cannot infer element type".into()).into(),
-            );
+            return Err(ErrorKind::EmptyArrayLiteral.into());
         }
 
         // Evaluate all elements.
@@ -679,7 +677,7 @@ impl Interpreter {
             }
         }
 
-        Err(ErrorKind::Other("no match arm matched".into()).into())
+        Err(ErrorKind::NoMatchArm.into())
     }
 
     fn match_pattern(&self, val: &Value, pattern: &Pattern) -> Option<Vec<(String, Value)>> {
@@ -871,7 +869,6 @@ impl Interpreter {
 
             Expr::Try(inner) => {
                 let val = self.eval_value(inner, out)?;
-                // Check if it's an enum with a "Non" variant → early return.
                 if let Value::Enum {
                     type_id,
                     variant_idx,
@@ -881,19 +878,13 @@ impl Interpreter {
                 {
                     let variant_name = self.types.variant_name(type_id, variant_idx);
                     if variant_name == "Non" {
-                        // Early return: propagate the Non value.
                         return Ok(Flow::Return(val));
                     }
-                    // Val(x) → unwrap to x.
                     if let Some(inner_val) = fields.first() {
                         return Ok(Flow::Next(inner_val.clone()));
                     }
                 }
-                // Not an Opt-like enum — error.
-                Err(ErrorKind::Other(
-                    "? operator requires an Opt value (enum with Val/Non variants)".into(),
-                )
-                .into())
+                Err(RuntimeError::new(ErrorKind::InvalidTry).at(expr.span))
             }
 
             Expr::Attr { object, name } => {

@@ -70,6 +70,9 @@ pub enum ErrorKind {
         intrinsic: String,
     },
     UseAfterFree,
+    NoMatchArm,
+    InvalidTry,
+    EmptyArrayLiteral,
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
 }
@@ -226,6 +229,13 @@ impl ErrorKind {
                 format!("intrinsic '{intrinsic}' can only be called inside an unsafe block")
             }
             ErrorKind::UseAfterFree => "use of deallocated memory".to_string(),
+            ErrorKind::NoMatchArm => "no match arm matched".to_string(),
+            ErrorKind::InvalidTry => {
+                "? operator requires an Opt value (enum with Val/Non variants)".to_string()
+            }
+            ErrorKind::EmptyArrayLiteral => {
+                "empty array literal — cannot infer element type".to_string()
+            }
             ErrorKind::Other(msg) => msg.clone(),
         }
     }
