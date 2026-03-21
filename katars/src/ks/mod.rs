@@ -60,13 +60,16 @@ fn render_error(err: &RuntimeError, types: &TypeRegistry, source: &str, filename
     // Only render with ariadne if the span is within the source's range.
     // Errors from stdlib code may have spans relative to prelude source.
     if let Some(span) = err.span.filter(|s| s.1 <= source.len()) {
-        let mut report = Report::build(ReportKind::Error, filename, span.0)
-            .with_message(&message)
-            .with_label(
-                Label::new((filename, span.0..span.1))
-                    .with_message(&message)
-                    .with_color(Color::Red),
-            );
+        let mut report = Report::build(ReportKind::Error, filename, span.0).with_message(&message);
+        // Only label the primary span with the message when there are no
+        // secondary labels. With secondary labels, they provide context
+        // and repeating the header is redundant.
+        let primary = Label::new((filename, span.0..span.1)).with_color(Color::Red);
+        report = report.with_label(if err.labels.is_empty() {
+            primary.with_message(&message)
+        } else {
+            primary
+        });
 
         for (label_span, label_msg) in &err.labels {
             report = report.with_label(

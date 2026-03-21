@@ -47,9 +47,14 @@ pub fn run_error(source: &str) -> String {
             if let Some(span) = e.span.filter(|s| s.1 <= source.len()) {
                 use ariadne::{Label, Report, ReportKind, Source};
                 let mut buf = Vec::new();
-                let mut report = Report::build(ReportKind::Error, filename, span.0)
-                    .with_message(&message)
-                    .with_label(Label::new((filename, span.0..span.1)).with_message(&message));
+                let mut report =
+                    Report::build(ReportKind::Error, filename, span.0).with_message(&message);
+                let primary = Label::new((filename, span.0..span.1));
+                report = report.with_label(if e.labels.is_empty() {
+                    primary.with_message(&message)
+                } else {
+                    primary
+                });
                 for (label_span, label_msg) in &e.labels {
                     report = report.with_label(
                         Label::new((filename, label_span.0..label_span.1)).with_message(label_msg),

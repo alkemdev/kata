@@ -6,10 +6,8 @@ Error: cannot apply '+' to Int and Str
    ╭─[<test>:1:9]
    │
  1 │ let x = 1 + "a"
-   │         ┬──┬─┬─  
+   │         ┬────┬─  
    │         ╰──────── Int
-   │            │ │   
-   │            ╰───── cannot apply '+' to Int and Str
    │              │   
    │              ╰─── Str
 ───╯
