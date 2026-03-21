@@ -39,3 +39,11 @@ insta = "1.46.3"
 [[test]]
 name    = "conformance"
 harness = false
+
+[[test]]
+name = "snap_errors"
+path = "tests/snaps/errors.rs"
+
+[[test]]
+name = "snap_output"
+path = "tests/snaps/output.rs"

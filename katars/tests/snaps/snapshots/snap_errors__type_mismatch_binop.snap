@@ -1,6 +1,6 @@
 ---
-source: katars/tests/snapshots.rs
-expression: output
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let x = 1 + \\\"a\\\"\")"
 ---
 Error: cannot apply '+' to Int and Str
    ╭─[<test>:1:9]

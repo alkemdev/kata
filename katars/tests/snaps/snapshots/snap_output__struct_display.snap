@@ -1,0 +1,5 @@
+---
+source: katars/tests/snaps/output.rs
+expression: "helpers::run_ok(\"kind Point { x: Int, y: Int }\\nlet p = Point { x: 1, y: 2 }\\nprint(p)\")"
+---
+Point { x: 1, y: 2 }

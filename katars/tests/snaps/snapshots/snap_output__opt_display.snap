@@ -1,0 +1,6 @@
+---
+source: katars/tests/snaps/output.rs
+expression: "helpers::run_ok(\"print(Opt[Int].Val(42))\\nprint(Opt[Int].Non)\")"
+---
+Val(42)
+Non

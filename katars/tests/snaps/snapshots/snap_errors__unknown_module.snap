@@ -1,6 +1,6 @@
 ---
-source: katars/tests/snapshots.rs
-expression: output
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"import std.nonexistent\")"
 ---
 Error: unknown module 'std.nonexistent'
    ╭─[<test>:1:1]

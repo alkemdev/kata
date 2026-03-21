@@ -1,0 +1,5 @@
+---
+source: katars/tests/snaps/output.rs
+expression: "helpers::run_ok(\"print(\\\"hello, world\\\")\")"
+---
+hello, world

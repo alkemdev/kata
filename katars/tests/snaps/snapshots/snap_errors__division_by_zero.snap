@@ -1,6 +1,6 @@
 ---
-source: katars/tests/snapshots.rs
-expression: output
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let x = 1 / 0\")"
 ---
 Error: division by zero
    ╭─[<test>:1:9]

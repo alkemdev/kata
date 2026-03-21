@@ -1,6 +1,6 @@
 ---
-source: katars/tests/snapshots.rs
-expression: output
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"break\")"
 ---
 Error: break outside of loop
    ╭─[<test>:1:1]

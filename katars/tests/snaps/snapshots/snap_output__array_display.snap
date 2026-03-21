@@ -1,0 +1,7 @@
+---
+source: katars/tests/snaps/output.rs
+expression: "helpers::run_ok(\"let a = [1, 2, 3]\\nfor x in a { print(x) }\")"
+---
+1
+2
+3

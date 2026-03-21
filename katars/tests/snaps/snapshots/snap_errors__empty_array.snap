@@ -1,6 +1,6 @@
 ---
-source: katars/tests/snapshots.rs
-expression: output
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let a = []\")"
 ---
 Error: empty array literal — cannot infer element type
    ╭─[<test>:1:9]
