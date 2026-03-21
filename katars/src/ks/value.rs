@@ -5,7 +5,7 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 use super::ast::{Spanned, Stmt};
-use super::types::{prim, TypeId, TypeRegistry};
+use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Value ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +20,7 @@ pub enum Value {
     Bin(Vec<u8>),
     Func {
         params: Vec<FuncParam>,
-        ret_type: Option<TypeId>,
+        ret_type: Option<TypeExpr>,
         body: Vec<Spanned<Stmt>>,
     },
     Enum {
@@ -56,7 +56,7 @@ pub enum Value {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuncParam {
     pub name: String,
-    pub type_id: Option<TypeId>,
+    pub type_ann: Option<TypeExpr>,
 }
 
 impl Value {

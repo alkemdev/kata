@@ -67,7 +67,7 @@ pub struct Interpreter {
     /// TypeIds that implement the Drop protocol.
     drop_types: HashSet<TypeId>,
     /// TypeIds that implement the DeepCopy protocol.
-    deep_copy_types: HashSet<TypeId>,
+    dupe_types: HashSet<TypeId>,
     /// Suppress drop dispatch during drop execution (prevents infinite recursion).
     dropping: bool,
 }
@@ -83,7 +83,7 @@ impl Interpreter {
             interfaces: IndexMap::new(),
             last_method_self: None,
             drop_types: HashSet::new(),
-            deep_copy_types: HashSet::new(),
+            dupe_types: HashSet::new(),
             dropping: false,
         };
 
@@ -159,6 +159,18 @@ impl Interpreter {
                 self.drop_value(field_val, out);
             }
         }
+    }
+
+    /// Clone a value, dispatching to `dupe` if the type implements Dupe.
+    /// Falls back to Rust `Clone` (field-by-field copy) for all other types.
+    fn clone_value(&mut self, value: &Value, out: &mut impl Write) -> Value {
+        let tid = value.type_id();
+        if self.dupe_types.contains(&tid) {
+            if let Ok(duped) = self.call_method(value, "dupe", &[], out) {
+                return duped;
+            }
+        }
+        value.clone()
     }
 
     /// Update an existing variable in the nearest enclosing scope that contains it.
@@ -299,10 +311,11 @@ impl Interpreter {
 
             Stmt::Impl {
                 type_name,
+                type_params,
                 as_type,
                 methods,
             } => {
-                self.register_impl(type_name, methods, out)
+                self.register_impl(type_name, type_params, methods, out)
                     .map_err(|e| e.at(stmt.span))?;
                 if let Some(iface_expr) = as_type {
                     self.check_conformance(type_name, &iface_expr.node)
@@ -325,8 +338,8 @@ impl Interpreter {
                             "Drop" => {
                                 self.drop_types.insert(type_id);
                             }
-                            "DeepCopy" => {
-                                self.deep_copy_types.insert(type_id);
+                            "Dupe" => {
+                                self.dupe_types.insert(type_id);
                             }
                             _ => {}
                         }
@@ -343,17 +356,19 @@ impl Interpreter {
             }) => {
                 let func_params = self.resolve_params(params).map_err(|e| e.at(stmt.span))?;
 
-                let ret_tid = ret_type
+                let ret_texpr = ret_type
                     .as_ref()
-                    .map(|ann| {
-                        self.resolve_type_expr(&ann.node)
-                            .map_err(|e| e.at(ann.span))
+                    .map(|ann| -> Result<TypeExpr, RuntimeError> {
+                        let tid = self
+                            .resolve_type_expr(&ann.node)
+                            .map_err(|e| e.at(ann.span))?;
+                        Ok(TypeExpr::Concrete(tid))
                     })
                     .transpose()?;
 
                 let func = Value::Func {
                     params: func_params,
-                    ret_type: ret_tid,
+                    ret_type: ret_texpr,
                     body: body.clone(),
                 };
                 self.set(name.clone(), func);
@@ -906,6 +921,7 @@ impl Interpreter {
     fn register_impl(
         &mut self,
         type_name: &str,
+        type_params: &[String],
         methods: &[Spanned<FuncDef>],
         _out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
@@ -930,16 +946,18 @@ impl Interpreter {
                 .into());
             }
 
-            let func_params = self.resolve_params(params)?;
+            // Resolve params using type_params so generic annotations
+            // (e.g., `val: T`) produce TypeExpr::Param(idx).
+            let func_params = self.resolve_params_with_type_params(params, type_params)?;
 
-            let ret_tid = ret_type
+            let ret_texpr = ret_type
                 .as_ref()
-                .map(|ann| self.resolve_type_expr(&ann.node))
+                .map(|ann| self.resolve_type_ann(&ann.node, type_params))
                 .transpose()?;
 
             let func = Value::Func {
                 params: func_params,
-                ret_type: ret_tid,
+                ret_type: ret_texpr,
                 body: body.clone(),
             };
 
@@ -956,6 +974,7 @@ impl Interpreter {
     }
 
     /// Convert an expression used as a type annotation to a TypeExpr.
+    /// Handles bare names (`Int`, `T`), and generic applications (`Ptr[T]`, `Res[T, E]`).
     fn resolve_type_ann(
         &self,
         expr: &Expr,
@@ -969,7 +988,26 @@ impl Interpreter {
                     Ok(TypeExpr::Concrete(self.resolve_type(n)?))
                 }
             }
-            _ => Err(ErrorKind::Unsupported("complex type annotations not yet supported").into()),
+            Expr::Item { object, args } => {
+                // Generic type application: e.g., Ptr[T], Opt[T], Res[T, E]
+                let base_id = match &object.node {
+                    Expr::Name(n) => self.resolve_type(n)?,
+                    _ => {
+                        return Err(
+                            ErrorKind::Unsupported("nested generic base must be a name").into()
+                        )
+                    }
+                };
+                let type_args: Vec<TypeExpr> = args
+                    .iter()
+                    .map(|a| self.resolve_type_ann(&a.node, type_params))
+                    .collect::<Result<_, _>>()?;
+                Ok(TypeExpr::Generic {
+                    base: base_id,
+                    args: type_args,
+                })
+            }
+            _ => Err(ErrorKind::Unsupported("unsupported type annotation").into()),
         }
     }
 
@@ -1044,12 +1082,19 @@ impl Interpreter {
 
     // ── Method helpers ────────────────────────────────────────────────
 
-    /// Look up a method by name in the method table for a given type.
+    /// Look up a method by name. Falls back from instance to base type
+    /// (e.g., Buf[Int] → Buf) so generic methods work.
     fn lookup_method(&self, type_id: TypeId, name: &str) -> Option<Value> {
-        self.methods
-            .get(&type_id)
-            .and_then(|table| table.get(name))
-            .cloned()
+        // Try exact type first.
+        if let Some(method) = self.methods.get(&type_id).and_then(|t| t.get(name)) {
+            return Some(method.clone());
+        }
+        // Fall back to base type for instances.
+        let base = self.types.base_type(type_id);
+        if base != type_id {
+            return self.methods.get(&base).and_then(|t| t.get(name)).cloned();
+        }
+        None
     }
 
     /// Wrap a Func value as a BoundMethod with the given receiver.
@@ -1244,7 +1289,8 @@ impl Interpreter {
                     .into());
                 }
 
-                let result = self.call_func_body(&params, args, ret_type, &body, false, out)?;
+                let result =
+                    self.call_func_body(&params, args, &ret_type, &body, false, &[], out)?;
                 Ok(Flow::Next(result))
             }
 
@@ -1299,11 +1345,19 @@ impl Interpreter {
                 }
 
                 let mut full_args = Vec::with_capacity(params.len());
+                let receiver_type_args = self.types.instance_type_args(receiver.type_id());
                 full_args.push(*receiver);
                 full_args.extend_from_slice(args);
 
-                let result =
-                    self.call_func_body(&params, &full_args, ret_type, &body, true, out)?;
+                let result = self.call_func_body(
+                    &params,
+                    &full_args,
+                    &ret_type,
+                    &body,
+                    true,
+                    &receiver_type_args,
+                    out,
+                )?;
                 Ok(Flow::Next(result))
             }
 
@@ -1581,19 +1635,28 @@ impl Interpreter {
 
     // ── Shared helpers ──────────────────────────────────────────────────
 
-    /// Resolve AST params to FuncParam values.
+    /// Resolve AST params to FuncParam values (no generic type params).
     fn resolve_params(&mut self, params: &[Param]) -> Result<Vec<FuncParam>, RuntimeError> {
+        self.resolve_params_with_type_params(params, &[])
+    }
+
+    /// Resolve AST params to FuncParam values, with optional generic type params.
+    fn resolve_params_with_type_params(
+        &self,
+        params: &[Param],
+        type_params: &[String],
+    ) -> Result<Vec<FuncParam>, RuntimeError> {
         params
             .iter()
             .map(|p| {
-                let type_id = p
+                let type_ann = p
                     .type_ann
                     .as_ref()
-                    .map(|ann| self.resolve_type_expr(&ann.node))
+                    .map(|ann| self.resolve_type_ann(&ann.node, type_params))
                     .transpose()?;
                 Ok(FuncParam {
                     name: p.name.clone(),
-                    type_id,
+                    type_ann,
                 })
             })
             .collect()
@@ -1643,13 +1706,17 @@ impl Interpreter {
         &mut self,
         params: &[FuncParam],
         args: &[Value],
-        ret_type: Option<TypeId>,
+        ret_type: &Option<TypeExpr>,
         body: &[Spanned<Stmt>],
         is_method: bool,
+        instance_type_args: &[TypeId],
         out: &mut impl Write,
     ) -> Result<Value, RuntimeError> {
         for (param, val) in params.iter().zip(args.iter()) {
-            if let Some(expected) = param.type_id {
+            if let Some(ref texpr) = param.type_ann {
+                let expected = self
+                    .types
+                    .resolve_texpr(texpr.clone(), instance_type_args)?;
                 self.check_type(val, expected)?;
             }
         }
@@ -1681,7 +1748,10 @@ impl Interpreter {
 
         self.pop_scope(out);
 
-        if let Some(expected_ret) = ret_type {
+        if let Some(ref ret_texpr) = ret_type {
+            let expected_ret = self
+                .types
+                .resolve_texpr(ret_texpr.clone(), instance_type_args)?;
             self.check_type(&result, expected_ret)?;
         }
 

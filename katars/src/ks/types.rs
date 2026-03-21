@@ -87,13 +87,17 @@ pub struct VariantDef {
     pub fields: Vec<TypeExpr>,
 }
 
-/// A type expression in a definition — either a concrete type or a type param.
-#[derive(Debug, Clone)]
+/// A type expression in a definition — either a concrete type, a type param,
+/// or a generic application (e.g., `Ptr[T]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TypeExpr {
     /// A resolved concrete type.
     Concrete(TypeId),
     /// A positional type parameter index — resolved at instantiation via `type_args[idx]`.
     Param(usize),
+    /// A generic type application: base type with type argument expressions.
+    /// e.g., `Ptr[T]` = `Generic { base: Ptr base TypeId, args: [Param(0)] }`
+    Generic { base: TypeId, args: Vec<TypeExpr> },
 }
 
 /// A variant in an instantiated enum. All fields are concrete.
@@ -169,6 +173,36 @@ impl TypeRegistry {
         match texpr {
             TypeExpr::Concrete(tid) => tid,
             TypeExpr::Param(idx) => panic!("non-generic {context} has type param at index {idx}"),
+            TypeExpr::Generic { .. } => panic!("non-generic {context} has generic type expr"),
+        }
+    }
+
+    /// Resolve a TypeExpr using concrete type_args for parameter substitution.
+    /// Handles recursive generic applications (e.g., `Ptr[T]` → `Ptr[Int]`).
+    pub fn resolve_texpr(
+        &mut self,
+        texpr: TypeExpr,
+        type_args: &[TypeId],
+    ) -> Result<TypeId, ErrorKind> {
+        match texpr {
+            TypeExpr::Concrete(tid) => Ok(tid),
+            TypeExpr::Param(idx) => Ok(type_args[idx]),
+            TypeExpr::Generic { base, args } => {
+                // Recursively resolve each arg, then instantiate.
+                let resolved_args: Vec<TypeId> = args
+                    .into_iter()
+                    .map(|a| self.resolve_texpr(a, type_args))
+                    .collect::<Result<_, _>>()?;
+                // Instantiate based on what the base type is.
+                match self.defs[base.0 as usize].clone() {
+                    TypeDef::Enum { .. } => self.instantiate_enum(base, resolved_args),
+                    TypeDef::Struct { .. } => self.instantiate_struct(base, resolved_args),
+                    _ => Err(ErrorKind::WrongTypeKind {
+                        type_id: base,
+                        expected: TypeKindExpectation::GenericType,
+                    }),
+                }
+            }
         }
     }
 
@@ -269,21 +303,18 @@ impl TypeRegistry {
             return Ok(*self.instances.get(&(base_id, type_args)).unwrap());
         }
 
-        // Resolve all variant fields via positional index into type_args.
+        // Resolve all variant fields, substituting type params with concrete args.
         let resolved_variants = variants
             .into_iter()
             .map(|(vname, vdef)| {
                 let fields = vdef
                     .fields
                     .into_iter()
-                    .map(|f| match f {
-                        TypeExpr::Concrete(tid) => tid,
-                        TypeExpr::Param(idx) => type_args[idx],
-                    })
-                    .collect();
-                (vname, ResolvedVariantDef { fields })
+                    .map(|f| self.resolve_texpr(f, &type_args))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((vname, ResolvedVariantDef { fields }))
             })
-            .collect();
+            .collect::<Result<IndexMap<_, _>, ErrorKind>>()?;
 
         let inst_id = self.push_def(TypeDef::EnumInstance {
             base: base_id,
@@ -412,13 +443,10 @@ impl TypeRegistry {
         let resolved_fields = fields
             .into_iter()
             .map(|(fname, texpr)| {
-                let tid = match texpr {
-                    TypeExpr::Concrete(tid) => tid,
-                    TypeExpr::Param(idx) => type_args[idx],
-                };
-                (fname, tid)
+                let tid = self.resolve_texpr(texpr, &type_args)?;
+                Ok((fname, tid))
             })
-            .collect();
+            .collect::<Result<IndexMap<_, _>, ErrorKind>>()?;
 
         let inst_id = self.push_def(TypeDef::StructInstance {
             base: base_id,
@@ -427,6 +455,24 @@ impl TypeRegistry {
         });
         self.instances.insert((base_id, type_args), inst_id);
         Ok(inst_id)
+    }
+
+    /// Get the type_args for an instance type. Returns empty slice for non-instances.
+    pub fn instance_type_args(&self, id: TypeId) -> Vec<TypeId> {
+        match self.get(id) {
+            TypeDef::EnumInstance { type_args, .. } | TypeDef::StructInstance { type_args, .. } => {
+                type_args.clone()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Get the base TypeId for an instance type. Returns the id itself for non-instances.
+    pub fn base_type(&self, id: TypeId) -> TypeId {
+        match self.get(id) {
+            TypeDef::EnumInstance { base, .. } | TypeDef::StructInstance { base, .. } => *base,
+            _ => id,
+        }
     }
 
     /// Get the field definitions for an instantiated struct.

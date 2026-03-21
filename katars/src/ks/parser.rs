@@ -605,6 +605,7 @@ where
 
         let impl_block = just(Token::Impl)
             .ignore_then(select! { Token::Ident(name) => name })
+            .then(type_params.clone().or_not())
             .then(just(Token::As).ignore_then(expr.clone()).or_not())
             .then(
                 impl_func_def
@@ -612,10 +613,11 @@ where
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::LBrace), just(Token::RBrace)),
             )
-            .map_with(|((type_name, as_type), methods), ex| {
+            .map_with(|(((type_name, tparams), as_type), methods), ex| {
                 Spanned::new(
                     Stmt::Impl {
                         type_name,
+                        type_params: tparams.unwrap_or_default(),
                         as_type,
                         methods,
                     },

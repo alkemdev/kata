@@ -46,9 +46,10 @@ pub enum Stmt {
         type_params: Vec<String>,
         methods: Vec<MethodSig>,
     },
-    /// `impl Name (as Name)? { func_def* }` — attach methods to a kind or enum.
+    /// `impl Name[T, ...]? (as Name)? { func_def* }` — attach methods to a kind or enum.
     Impl {
         type_name: String,
+        type_params: Vec<String>,
         as_type: Option<Spanned<Expr>>,
         methods: Vec<Spanned<FuncDef>>,
     },
