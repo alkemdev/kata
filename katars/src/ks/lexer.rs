@@ -4,12 +4,25 @@ use std::fmt;
 use tracing::debug;
 
 /// A segment of a string literal — either literal text or an interpolation expression.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StringPart {
     /// Literal text segment (escape sequences already resolved).
     Lit(String),
     /// Raw source text of an interpolated expression: `{expr}`.
-    Interp(String),
+    /// The usize is the byte offset of the expression start in the original source.
+    Interp(String, usize),
+}
+
+/// PartialEq ignores the offset on Interp — it's metadata for error reporting,
+/// not part of the semantic identity.
+impl PartialEq for StringPart {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StringPart::Lit(a), StringPart::Lit(b)) => a == b,
+            (StringPart::Interp(a, _), StringPart::Interp(b, _)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// The complete KataScript token set.
@@ -162,6 +175,7 @@ fn scan_string_body(
     rest: &str,
     close_quote: u8,
     interpolate: bool,
+    base_offset: usize,
 ) -> Option<(usize, Vec<StringPart>)> {
     let bytes = rest.as_bytes();
     let mut parts: Vec<StringPart> = Vec::new();
@@ -268,7 +282,11 @@ fn scan_string_body(
             }
             // i is one past the closing '}'. Expression text is [start..i-1].
             let expr_text = std::str::from_utf8(&bytes[start..i - 1]).ok()?;
-            parts.push(StringPart::Interp(expr_text.to_string()));
+            // base_offset + start gives the absolute byte position of the expr
+            parts.push(StringPart::Interp(
+                expr_text.to_string(),
+                base_offset + start,
+            ));
             continue;
         }
 
@@ -286,7 +304,8 @@ fn scan_string_body(
 /// treats `{` as a literal character (no interpolation).
 fn lex_single_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
     let rest = lex.remainder();
-    let (consumed, parts) = scan_string_body(rest, b'\'', false)?;
+    let base = lex.span().end; // byte offset after the opening quote
+    let (consumed, parts) = scan_string_body(rest, b'\'', false, base)?;
     lex.bump(consumed);
     Some(parts)
 }
@@ -295,7 +314,8 @@ fn lex_single_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
 /// `{expr}` interpolation boundaries.
 fn lex_double_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
     let rest = lex.remainder();
-    let (consumed, parts) = scan_string_body(rest, b'"', true)?;
+    let base = lex.span().end; // byte offset after the opening quote
+    let (consumed, parts) = scan_string_body(rest, b'"', true, base)?;
     lex.bump(consumed);
     Some(parts)
 }
@@ -308,7 +328,7 @@ impl fmt::Display for Token {
                 for part in parts {
                     match part {
                         StringPart::Lit(s) => write!(f, "{s}")?,
-                        StringPart::Interp(s) => write!(f, "{{{s}}}")?,
+                        StringPart::Interp(s, _) => write!(f, "{{{s}}}")?,
                     }
                 }
                 write!(f, "\"")
@@ -652,7 +672,7 @@ mod tests {
             one(r#""hello {name}""#),
             Token::Str(vec![
                 StringPart::Lit("hello ".into()),
-                StringPart::Interp("name".into()),
+                StringPart::Interp("name".into(), 0),
             ])
         );
     }
@@ -663,7 +683,7 @@ mod tests {
             one(r#""1+1={1+1}""#),
             Token::Str(vec![
                 StringPart::Lit("1+1=".into()),
-                StringPart::Interp("1+1".into()),
+                StringPart::Interp("1+1".into(), 0),
             ])
         );
     }
@@ -673,7 +693,7 @@ mod tests {
         // Expression containing braces: {Point { x: 1 }}
         assert_eq!(
             one(r#""{Point { x: 1 }}""#),
-            Token::Str(vec![StringPart::Interp("Point { x: 1 }".into()),])
+            Token::Str(vec![StringPart::Interp("Point { x: 1 }".into(), 0),])
         );
     }
 
@@ -684,7 +704,7 @@ mod tests {
             one(r#""outer {"inner"}""#),
             Token::Str(vec![
                 StringPart::Lit("outer ".into()),
-                StringPart::Interp("\"inner\"".into()),
+                StringPart::Interp("\"inner\"".into(), 0),
             ])
         );
     }
@@ -694,9 +714,9 @@ mod tests {
         assert_eq!(
             one(r#""{a} and {b}""#),
             Token::Str(vec![
-                StringPart::Interp("a".into()),
+                StringPart::Interp("a".into(), 0),
                 StringPart::Lit(" and ".into()),
-                StringPart::Interp("b".into()),
+                StringPart::Interp("b".into(), 0),
             ])
         );
     }
@@ -720,7 +740,7 @@ mod tests {
         // `"{}"` — empty interpolation expression.
         assert_eq!(
             one(r#""{}""#),
-            Token::Str(vec![StringPart::Interp("".into())])
+            Token::Str(vec![StringPart::Interp("".into(), 0)])
         );
     }
 
@@ -729,7 +749,7 @@ mod tests {
         // Single-quoted string inside interpolation — scanner must track `'...'`.
         assert_eq!(
             one(r#""{'hello'}""#),
-            Token::Str(vec![StringPart::Interp("'hello'".into())])
+            Token::Str(vec![StringPart::Interp("'hello'".into(), 0)])
         );
     }
 
@@ -738,7 +758,7 @@ mod tests {
         // `}` inside a single-quoted string inside interpolation must not close the interp.
         assert_eq!(
             one(r#""{func('it}s')}""#),
-            Token::Str(vec![StringPart::Interp("func('it}s')".into())])
+            Token::Str(vec![StringPart::Interp("func('it}s')".into(), 0)])
         );
     }
 
@@ -749,7 +769,7 @@ mod tests {
             one(r#""\\{x}""#),
             Token::Str(vec![
                 StringPart::Lit("\\".into()),
-                StringPart::Interp("x".into()),
+                StringPart::Interp("x".into(), 0),
             ])
         );
     }
@@ -760,8 +780,8 @@ mod tests {
         assert_eq!(
             one(r#""{a}{b}""#),
             Token::Str(vec![
-                StringPart::Interp("a".into()),
-                StringPart::Interp("b".into()),
+                StringPart::Interp("a".into(), 0),
+                StringPart::Interp("b".into(), 0),
             ])
         );
     }

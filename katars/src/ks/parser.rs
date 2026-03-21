@@ -68,21 +68,24 @@ fn span(s: &SimpleSpan) -> (usize, usize) {
 
 /// Parse a KataScript expression from a source fragment (used for string interpolation).
 /// Returns `None` if the fragment fails to parse.
-fn parse_fragment(source: &str) -> Option<Spanned<Expr>> {
+/// Parse a fragment of source code (e.g., from string interpolation).
+/// `base_offset` is the byte position of the fragment in the original source,
+/// used to offset spans so error messages point to the right location.
+fn parse_fragment(source: &str, base_offset: usize) -> Option<Spanned<Expr>> {
     let token_iter =
         Token::lexer(source)
             .spanned()
-            .map(|(result, span): (_, std::ops::Range<usize>)| {
+            .map(move |(result, span): (_, std::ops::Range<usize>)| {
                 let tok = result.unwrap_or(Token::Error);
-                (tok, SimpleSpan::from(span))
+                // Offset spans by base_offset so they map to the original source.
+                let adjusted = (span.start + base_offset)..(span.end + base_offset);
+                (tok, SimpleSpan::from(adjusted))
             });
 
-    let token_stream = Stream::from_iter(token_iter).map(
-        SimpleSpan::from(source.len()..source.len()),
-        |(t, s): (_, _)| (t, s),
-    );
+    let eoi = source.len() + base_offset;
+    let token_stream =
+        Stream::from_iter(token_iter).map(SimpleSpan::from(eoi..eoi), |(t, s): (_, _)| (t, s));
 
-    // We need an expression parser. Re-use stmt_parser and expect a single expr statement.
     let parser = stmt_parser().then_ignore(end());
     let (ast, errors) = parser.parse(token_stream).into_output_errors();
 
@@ -112,14 +115,14 @@ where
                 |parts: Vec<StringPart>, extra, emitter| {
                     // Single Lit (or empty) → plain Expr::Str. Otherwise → Expr::Interp.
                     let has_interp =
-                        parts.iter().any(|p| matches!(p, StringPart::Interp(_)));
+                        parts.iter().any(|p| matches!(p, StringPart::Interp(_, _)));
                     if !has_interp {
                         // Concatenate all Lit segments into a single string.
                         let s: String = parts
                             .into_iter()
                             .map(|p| match p {
                                 StringPart::Lit(s) => s,
-                                StringPart::Interp(_) => unreachable!(),
+                                StringPart::Interp(_, _) => unreachable!(),
                             })
                             .collect();
                         Expr::Str(s)
@@ -128,8 +131,8 @@ where
                             .into_iter()
                             .map(|p| match p {
                                 StringPart::Lit(s) => InterpPart::Lit(s),
-                                StringPart::Interp(src) => {
-                                    match parse_fragment(&src) {
+                                StringPart::Interp(src, offset) => {
+                                    match parse_fragment(&src, offset) {
                                         Some(expr) => InterpPart::Expr(expr),
                                         None => {
                                             emitter.emit(Rich::custom(
