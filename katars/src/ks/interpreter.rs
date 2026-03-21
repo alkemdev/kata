@@ -554,6 +554,106 @@ impl Interpreter {
             .add_submodule(current, leaf_name, leaf_id);
     }
 
+    // ── Array literal ────────────────────────────────────────────────────
+
+    /// Build an Arr[T] from a literal `[expr, expr, ...]`.
+    /// Infers element type from the first element, type-checks the rest.
+    fn eval_arr_lit(
+        &mut self,
+        elements: &[Spanned<Expr>],
+        out: &mut impl Write,
+    ) -> Result<Flow, RuntimeError> {
+        if elements.is_empty() {
+            return Err(
+                ErrorKind::Other("empty array literal — cannot infer element type".into()).into(),
+            );
+        }
+
+        // Evaluate all elements.
+        let mut vals = Vec::with_capacity(elements.len());
+        for elem in elements {
+            vals.push(self.eval_value(elem, out)?);
+        }
+
+        // Infer element type from the first element.
+        let elem_tid = vals[0].type_id();
+
+        // Type-check remaining elements.
+        for (i, val) in vals.iter().enumerate().skip(1) {
+            let tid = val.type_id();
+            if tid != elem_tid {
+                return Err(ErrorKind::TypeMismatch {
+                    expected: elem_tid,
+                    actual: tid,
+                }
+                .into());
+            }
+        }
+
+        // Allocate: std.mem.alloc(len) → RawPtr
+        let cap = vals.len();
+        let alloc_id = self.allocations.len() as u32;
+        self.allocations.push(Some(Vec::with_capacity(cap)));
+
+        // Write elements into the allocation.
+        {
+            let alloc = self.allocations.last_mut().unwrap().as_mut().unwrap();
+            for val in &vals {
+                alloc.push(val.clone());
+            }
+        }
+
+        // Build the Ptr[T] → Buf[T] → Arr[T] stack.
+        // We need the type registry to instantiate Ptr[T], Buf[T], Arr[T].
+        let ptr_base = self
+            .types
+            .lookup("Ptr")
+            .ok_or_else(|| ErrorKind::Other("Ptr type not found — is std.mem loaded?".into()))?;
+        let buf_base = self
+            .types
+            .lookup("Buf")
+            .ok_or_else(|| ErrorKind::Other("Buf type not found — is std.mem loaded?".into()))?;
+        let arr_base = self
+            .types
+            .lookup("Arr")
+            .ok_or_else(|| ErrorKind::Other("Arr type not found — is std.dsa loaded?".into()))?;
+
+        let ptr_tid = self.types.instantiate_struct(ptr_base, vec![elem_tid])?;
+        let buf_tid = self.types.instantiate_struct(buf_base, vec![elem_tid])?;
+        let arr_tid = self.types.instantiate_struct(arr_base, vec![elem_tid])?;
+
+        let ptr_val = Value::Struct {
+            type_id: ptr_tid,
+            fields: {
+                let mut f = IndexMap::new();
+                f.insert("raw".into(), Value::RawPtr(alloc_id));
+                f
+            },
+        };
+
+        let buf_val = Value::Struct {
+            type_id: buf_tid,
+            fields: {
+                let mut f = IndexMap::new();
+                f.insert("ptr".into(), ptr_val);
+                f.insert("cap".into(), Value::Int(BigInt::from(cap)));
+                f
+            },
+        };
+
+        let arr_val = Value::Struct {
+            type_id: arr_tid,
+            fields: {
+                let mut f = IndexMap::new();
+                f.insert("buf".into(), buf_val);
+                f.insert("len".into(), Value::Int(BigInt::from(vals.len())));
+                f
+            },
+        };
+
+        Ok(Flow::Next(arr_val))
+    }
+
     // ── Block execution ──────────────────────────────────────────────────
 
     fn exec_block(
@@ -652,6 +752,10 @@ impl Interpreter {
                 self.in_unsafe = was_unsafe;
                 result
             }
+
+            Expr::ArrLit { elements } => self
+                .eval_arr_lit(elements, out)
+                .map_err(|e: RuntimeError| e.at(expr.span)),
 
             Expr::Attr { object, name } => {
                 let obj = self.eval_value(object, out)?;

@@ -51,7 +51,8 @@ use super::lexer::{StringPart, Token};
 //   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}')*
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
-//   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')'
+//   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')' | arr_lit
+//   arr_lit    = '[' (expr (',' expr)* ','?)? ']'
 //   str        = '"' (text | escape | '{' expr '}')* '"'
 //   escape     = '\n' | '\t' | '\\' | '\"' | '\{' | '\}'
 
@@ -166,6 +167,15 @@ where
             let paren = expr
                 .clone()
                 .delimited_by(just(Token::LParen), just(Token::RParen));
+
+            // arr_lit = '[' (expr (',' expr)* ','?)? ']'
+            let arr_lit = expr
+                .clone()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBracket), just(Token::RBracket))
+                .map_with(|elements, ex| Spanned::new(Expr::ArrLit { elements }, span(&ex.span())));
 
             // with_expr = 'with' (binding (',' binding)*)? '{' stmt* '}'
             let binding = select! { Token::Ident(name) => name }
@@ -292,6 +302,7 @@ where
                 .or(name)
                 .map_with(|e, ex| Spanned::new(e, span(&ex.span())))
                 .or(paren)
+                .or(arr_lit)
                 .or(with_expr)
                 .or(unsafe_expr)
                 .or(if_expr)

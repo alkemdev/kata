@@ -229,6 +229,8 @@ pub enum Expr {
     },
     /// `unsafe { stmts }` — block with unsafe intrinsic access.
     Unsafe { body: Vec<Spanned<Stmt>> },
+    /// `[expr, expr, ...]` — array literal.
+    ArrLit { elements: Vec<Spanned<Expr>> },
     /// Attribute access: `a.b`
     Attr {
         object: Box<Spanned<Expr>>,
