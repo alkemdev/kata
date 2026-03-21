@@ -1,5 +1,5 @@
-// KataScript standard prelude
-// Auto-loaded before user code.
+# KataScript standard prelude
+# Auto-loaded before user code.
 
 enum Opt[T] {
     Some(T),
@@ -11,7 +11,7 @@ enum Res[T, E] {
     Err(E),
 }
 
-// Iteration protocol interfaces
+# Iteration protocol interfaces
 type Iter[T] {
     func next(self): Opt[T]
 }

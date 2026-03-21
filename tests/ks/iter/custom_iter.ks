@@ -1,4 +1,4 @@
-// A custom iterable that counts down from n to 1
+# A custom iterable that counts down from n to 1
 kind Countdown { n: Int }
 kind CountdownIter { current: Int }
 

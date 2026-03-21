@@ -19,7 +19,7 @@ pub enum StringPart {
 /// those to `Token::Error` so the token stream stays intact for recovery.
 #[derive(Logos, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[logos(skip r"[ \t\r\n]+")]
-#[logos(skip(r"//[^\n]*", allow_greedy = true))]
+#[logos(skip(r"#[^\n]*", allow_greedy = true))]
 pub enum Token {
     // ── literals ─────────────────────────────────────────────────────────
     /// A string literal. Double-quoted strings support `{expr}` interpolation;
@@ -495,12 +495,12 @@ mod tests {
 
     #[test]
     fn lex_line_comment_skipped() {
-        assert_eq!(tokens("// this is a comment"), vec![]);
+        assert_eq!(tokens("# this is a comment"), vec![]);
     }
 
     #[test]
     fn lex_comment_does_not_eat_next_line() {
-        assert_eq!(tokens("// comment\ntrue"), vec![Token::True]);
+        assert_eq!(tokens("# comment\ntrue"), vec![Token::True]);
     }
 
     // ── error recovery ────────────────────────────────────────────────────────
