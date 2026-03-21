@@ -77,6 +77,10 @@ pub enum Token {
     Unsafe,
     #[token("import")]
     Import,
+    #[token("self")]
+    SelfValue,
+    #[token("Self")]
+    SelfType,
 
     // ── identifiers ──────────────────────────────────────────────────────
     /// Must come after all keyword tokens so keywords are matched first.
@@ -327,6 +331,8 @@ impl fmt::Display for Token {
             Token::Ret => write!(f, "ret"),
             Token::Unsafe => write!(f, "unsafe"),
             Token::Import => write!(f, "import"),
+            Token::SelfValue => write!(f, "self"),
+            Token::SelfType => write!(f, "Self"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LBracket => write!(f, "["),

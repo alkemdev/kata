@@ -159,7 +159,9 @@ where
                 Token::False => Expr::Bool(false),
             };
             let nil_lit = just(Token::Nil).to(Expr::Nil);
-            let name = select! { Token::Ident(s) => Expr::Name(s) };
+            let name = select! { Token::Ident(s) => Expr::Name(s) }
+                .or(just(Token::SelfValue).to(Expr::Name("self".to_string())))
+                .or(just(Token::SelfType).to(Expr::Name("Self".to_string())));
 
             let paren = expr
                 .clone()
@@ -537,8 +539,10 @@ where
                 )
             });
 
-        // param = IDENT ':' expr | IDENT
-        let param = select! { Token::Ident(name) => name }
+        // param = (IDENT | 'self') (':' expr)?
+        let param_name = select! { Token::Ident(name) => name }
+            .or(just(Token::SelfValue).to("self".to_string()));
+        let param = param_name
             .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
             .map(|(name, type_ann)| Param { name, type_ann });
 
