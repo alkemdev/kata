@@ -284,6 +284,8 @@ pub enum Expr {
         op: UnaryOp,
         operand: Box<Spanned<Expr>>,
     },
+    /// Postfix `?` — unwrap Opt.Val or early-return Opt.Non.
+    Try(Box<Spanned<Expr>>),
     /// `if cond { body } else { body }` — expression-oriented, returns last value.
     If {
         cond: Box<Spanned<Expr>>,

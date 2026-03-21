@@ -434,11 +434,13 @@ where
 
             // ── postfix chain: .attr, [item], (call) ─────────────────
 
+            #[derive(Clone)]
             enum Postfix {
                 Attr(String),
                 Item(Vec<Spanned<Expr>>),
                 Call(Vec<Spanned<Expr>>),
                 Construct(Vec<(String, Spanned<Expr>)>),
+                Try,
             }
 
             let attr = just(Token::Dot)
@@ -472,7 +474,9 @@ where
                 .delimited_by(just(Token::LBrace), just(Token::RBrace))
                 .map(Postfix::Construct);
 
-            let postfix = attr.or(item).or(call).or(construct);
+            let try_op = just(Token::Question).to(Postfix::Try);
+
+            let postfix = attr.or(item).or(call).or(construct).or(try_op);
 
             let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
                 let s = lhs.span;
@@ -505,6 +509,7 @@ where
                         },
                         s,
                     ),
+                    Postfix::Try => Spanned::new(Expr::Try(Box::new(lhs)), s),
                 }
             });
 

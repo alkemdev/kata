@@ -136,6 +136,8 @@ pub enum Token {
     Slash,
     #[token("!")]
     Bang,
+    #[token("?")]
+    Question,
     #[token("&&")]
     And,
     #[token("||")]
@@ -361,6 +363,7 @@ impl fmt::Display for Token {
             Token::Star => write!(f, "*"),
             Token::Slash => write!(f, "/"),
             Token::Bang => write!(f, "!"),
+            Token::Question => write!(f, "?"),
             Token::And => write!(f, "&&"),
             Token::Or => write!(f, "||"),
             Token::Error => write!(f, "<invalid>"),

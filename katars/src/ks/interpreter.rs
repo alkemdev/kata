@@ -383,11 +383,14 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::Let { name, value } => {
-                let val = self.eval_value(value, out)?;
-                self.set(name.clone(), val);
-                Ok(Flow::Next(Value::Nil))
-            }
+            Stmt::Let { name, value } => match self.eval_expr(value, out)? {
+                Flow::Next(val) => {
+                    self.set(name.clone(), val);
+                    Ok(Flow::Next(Value::Nil))
+                }
+                ret @ Flow::Return(_) => Ok(ret),
+                _ => Ok(Flow::Next(Value::Nil)),
+            },
 
             Stmt::Assign { target, value } => {
                 let val = self.eval_value(value, out)?;
@@ -865,6 +868,33 @@ impl Interpreter {
             Expr::Match { subject, arms } => self
                 .eval_match(subject, arms, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
+
+            Expr::Try(inner) => {
+                let val = self.eval_value(inner, out)?;
+                // Check if it's an enum with a "Non" variant → early return.
+                if let Value::Enum {
+                    type_id,
+                    variant_idx,
+                    ref fields,
+                    ..
+                } = val
+                {
+                    let variant_name = self.types.variant_name(type_id, variant_idx);
+                    if variant_name == "Non" {
+                        // Early return: propagate the Non value.
+                        return Ok(Flow::Return(val));
+                    }
+                    // Val(x) → unwrap to x.
+                    if let Some(inner_val) = fields.first() {
+                        return Ok(Flow::Next(inner_val.clone()));
+                    }
+                }
+                // Not an Opt-like enum — error.
+                Err(ErrorKind::Other(
+                    "? operator requires an Opt value (enum with Val/Non variants)".into(),
+                )
+                .into())
+            }
 
             Expr::Attr { object, name } => {
                 let obj = self.eval_value(object, out)?;
