@@ -14,6 +14,7 @@ use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
     RuntimeError, TypeKindExpectation,
 };
+use super::native::{self, ModuleItem, NativeCtx, NativeFnRegistry};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncParam, Value};
 
@@ -70,16 +71,21 @@ pub struct Interpreter {
     dupe_types: HashSet<TypeId>,
     /// Suppress drop dispatch during drop execution (prevents infinite recursion).
     dropping: bool,
-    /// True inside `unsafe { ... }` blocks. Gates `__` intrinsic calls.
+    /// True inside `unsafe { ... }` blocks. Gates native functions that require unsafe.
     in_unsafe: bool,
     /// Runtime heap: allocation table for Ptr handles.
     allocations: Vec<Option<Vec<Value>>>,
+    /// Native function registry and module tree.
+    native_registry: NativeFnRegistry,
 }
 
 impl Interpreter {
     /// Create a new interpreter with primitive types bootstrapped.
     pub fn new() -> Self {
         let types = TypeRegistry::new();
+        // Bootstrap native functions and module tree.
+        let boot = native::bootstrap();
+
         let mut interp = Self {
             types,
             frames: vec![IndexMap::new()],
@@ -91,6 +97,7 @@ impl Interpreter {
             dropping: false,
             in_unsafe: false,
             allocations: Vec::new(),
+            native_registry: boot.registry,
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -103,8 +110,12 @@ impl Interpreter {
         interp.set("Func".into(), Value::Type(prim::FUNC));
         interp.set("Type".into(), Value::Type(prim::TYPE));
 
-        // The `std` namespace — std.ops.add, std.ops.sub, etc.
-        interp.set("std".into(), Value::Namespace("std".into()));
+        // Top-level native functions.
+        interp.set("print".into(), Value::NativeFn(boot.print_id));
+        interp.set("typeof".into(), Value::NativeFn(boot.typeof_id));
+
+        // Module tree: `std.ops.*`, `std.mem.*`.
+        interp.set("std".into(), Value::Module(boot.std_module));
 
         interp
     }
@@ -165,18 +176,6 @@ impl Interpreter {
                 self.drop_value(field_val, out);
             }
         }
-    }
-
-    /// Clone a value, dispatching to `dupe` if the type implements Dupe.
-    /// Falls back to Rust `Clone` (field-by-field copy) for all other types.
-    fn clone_value(&mut self, value: &Value, out: &mut impl Write) -> Value {
-        let tid = value.type_id();
-        if self.dupe_types.contains(&tid) {
-            if let Ok(duped) = self.call_method(value, "dupe", &[], out) {
-                return duped;
-            }
-        }
-        value.clone()
     }
 
     /// Update an existing variable in the nearest enclosing scope that contains it.
@@ -535,16 +534,6 @@ impl Interpreter {
                 let mut arg_vals = Vec::with_capacity(args.len());
                 for a in args {
                     arg_vals.push(self.eval_value(a, out)?);
-                }
-
-                // Fast path: if callee is a bare Name, check builtins first.
-                if let Expr::Name(name) = &callee.node {
-                    if let Some(result) = self
-                        .call_builtin(name, &arg_vals, out)
-                        .map_err(|e: RuntimeError| e.at(expr.span))?
-                    {
-                        return Ok(result);
-                    }
                 }
 
                 let func = self.eval_value(callee, out)?;
@@ -1218,11 +1207,17 @@ impl Interpreter {
                 }
                 .into())
             }
-            Value::Namespace(ns) => {
-                let qualified = format!("{ns}.{name}");
-                match qualified.as_str() {
-                    "std.ops" | "std.mem" => Ok(Flow::Next(Value::Namespace(qualified))),
-                    _ => Ok(Flow::Next(Value::BuiltinFn(qualified))),
+            Value::Module(module_id) => {
+                let module = self.native_registry.get_module(*module_id);
+                match module.entries.get(name) {
+                    Some(ModuleItem::SubModule(sub_id)) => Ok(Flow::Next(Value::Module(*sub_id))),
+                    Some(ModuleItem::NativeFn(fn_id)) => Ok(Flow::Next(Value::NativeFn(*fn_id))),
+                    None => Err(ErrorKind::NoAttr {
+                        type_id: prim::NIL,
+                        attr: name.to_string(),
+                        access: AccessKind::Attr,
+                    }
+                    .into()),
                 }
             }
             other => {
@@ -1375,7 +1370,24 @@ impl Interpreter {
                 Ok(Flow::Next(result))
             }
 
-            Value::BuiltinFn(name) => self.call_builtin_fn(&name, args),
+            Value::NativeFn(fn_id) => {
+                let entry = self.native_registry.get(fn_id);
+                if entry.requires_unsafe && !self.in_unsafe {
+                    return Err(ErrorKind::UnsafeRequired {
+                        intrinsic: entry.name.to_string(),
+                    }
+                    .into());
+                }
+                let handler = entry.handler;
+                let mut ctx = NativeCtx {
+                    types: &self.types,
+                    allocations: &mut self.allocations,
+                    out,
+                    in_unsafe: self.in_unsafe,
+                };
+                let result = handler(&mut ctx, args)?;
+                Ok(Flow::Next(result))
+            }
 
             other => Err(ErrorKind::WrongTypeKind {
                 type_id: other.type_id(),
@@ -1530,256 +1542,9 @@ impl Interpreter {
         Ok(Value::Bool(pred(ord)))
     }
 
-    /// Dispatch a named builtin function (from `std.ops.*` namespace).
-    fn call_builtin_fn(&mut self, name: &str, args: &[Value]) -> Result<Flow, RuntimeError> {
-        // Route to std.mem.* intrinsics (unsafe-gated).
-        if let Some(suffix) = name.strip_prefix("std.mem.") {
-            if !self.in_unsafe {
-                return Err(ErrorKind::UnsafeRequired {
-                    intrinsic: name.to_string(),
-                }
-                .into());
-            }
-            return self.call_intrinsic(suffix, args);
-        }
-
-        let suffix = name
-            .strip_prefix("std.ops.")
-            .ok_or_else(|| -> RuntimeError {
-                ErrorKind::Undefined {
-                    kind: NameKind::Variable,
-                    name: name.to_string(),
-                }
-                .into()
-            })?;
-
-        const BINOPS: [BinOp; 10] = [
-            BinOp::Add,
-            BinOp::Sub,
-            BinOp::Mul,
-            BinOp::Div,
-            BinOp::Eq,
-            BinOp::Ne,
-            BinOp::Lt,
-            BinOp::Gt,
-            BinOp::Le,
-            BinOp::Ge,
-        ];
-        for op in BINOPS {
-            if suffix == op.method_name() {
-                if args.len() != 2 {
-                    return Err(ErrorKind::ArityMismatch {
-                        target: ArityTarget::Builtin {
-                            name: name.to_string(),
-                        },
-                        expected: 2,
-                        actual: args.len(),
-                    }
-                    .into());
-                }
-                return Ok(Flow::Next(
-                    Self::eval_binop(op, &args[0], &args[1]).map_err(RuntimeError::from)?,
-                ));
-            }
-        }
-
-        match suffix {
-            "neg" | "not" => {
-                if args.len() != 1 {
-                    return Err(ErrorKind::ArityMismatch {
-                        target: ArityTarget::Builtin {
-                            name: name.to_string(),
-                        },
-                        expected: 1,
-                        actual: args.len(),
-                    }
-                    .into());
-                }
-                let op = if suffix == "neg" {
-                    UnaryOp::Neg
-                } else {
-                    UnaryOp::Not
-                };
-                Ok(Flow::Next(
-                    Self::eval_unaryop(op, &args[0]).map_err(RuntimeError::from)?,
-                ))
-            }
-            "truth" => {
-                if args.len() != 1 {
-                    return Err(ErrorKind::ArityMismatch {
-                        target: ArityTarget::Builtin {
-                            name: name.to_string(),
-                        },
-                        expected: 1,
-                        actual: args.len(),
-                    }
-                    .into());
-                }
-                Ok(Flow::Next(Value::Bool(Self::truth(&args[0]))))
-            }
-            _ => Err(ErrorKind::Undefined {
-                kind: NameKind::Variable,
-                name: name.to_string(),
-            }
-            .into()),
-        }
-    }
-
-    // ── Built-in functions ───────────────────────────────────────────────
-
-    fn call_builtin(
-        &mut self,
-        name: &str,
-        args: &[Value],
-        out: &mut impl Write,
-    ) -> Result<Option<Flow>, RuntimeError> {
-        match name {
-            "print" => {
-                let parts: Vec<String> = args.iter().map(|v| v.display(&self.types)).collect();
-                writeln!(out, "{}", parts.join(" "))
-                    .map_err(|e| ErrorKind::Other(e.to_string()))?;
-                Ok(Some(Flow::Next(Value::Nil)))
-            }
-            "typeof" => {
-                if args.len() != 1 {
-                    return Err(ErrorKind::ArityMismatch {
-                        target: ArityTarget::Builtin {
-                            name: "typeof".to_string(),
-                        },
-                        expected: 1,
-                        actual: args.len(),
-                    }
-                    .into());
-                }
-                let tid = args[0].type_id();
-                Ok(Some(Flow::Next(Value::Type(tid))))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    /// Dispatch `std.mem.*` intrinsic functions. Called with the suffix after "std.mem.".
-    /// Only callable inside `unsafe` blocks (caller checks this).
-    ///
-    /// # Intrinsics
-    ///
-    /// | Name       | Signature                        | Description                                   |
-    /// |------------|----------------------------------|-----------------------------------------------|
-    /// | `alloc`    | `(cap: Int) -> Int`              | Allocate storage with capacity, return handle  |
-    /// | `dealloc`  | `(id: Int)`                      | Free the allocation (use-after-free errors)    |
-    /// | `read`     | `(id: Int, idx: Int) -> Value`   | Read element at index (no bounds check)        |
-    /// | `write`    | `(id: Int, idx: Int, val) -> Nil` | Write element at index (pads with Nil)        |
-    /// | `grow`     | `(id: Int, new_cap: Int)`        | Grow allocation to at least new_cap            |
-    /// | `capacity` | `(id: Int) -> Int`               | Query allocated capacity                       |
-    /// | `len`      | `(id: Int) -> Int`               | Query number of written elements               |
-    fn call_intrinsic(&mut self, name: &str, args: &[Value]) -> Result<Flow, RuntimeError> {
-        match name {
-            "alloc" => {
-                let cap = self.expect_int(args, 0, "std.mem.alloc")?;
-                let id = self.allocations.len();
-                self.allocations.push(Some(Vec::with_capacity(cap)));
-                Ok(Flow::Next(Value::Int(BigInt::from(id))))
-            }
-            "dealloc" => {
-                let id = self.expect_int(args, 0, "std.mem.dealloc")?;
-                let slot = self
-                    .allocations
-                    .get_mut(id)
-                    .ok_or(ErrorKind::UseAfterFree)?;
-                if slot.is_none() {
-                    return Err(ErrorKind::UseAfterFree.into());
-                }
-                *slot = None;
-                Ok(Flow::Next(Value::Nil))
-            }
-            "read" => {
-                let id = self.expect_int(args, 0, "std.mem.read")?;
-                let idx = self.expect_int(args, 1, "std.mem.read")?;
-                let alloc = self
-                    .allocations
-                    .get(id)
-                    .and_then(|s| s.as_ref())
-                    .ok_or(ErrorKind::UseAfterFree)?;
-                let val = alloc.get(idx).cloned().unwrap_or(Value::Nil);
-                Ok(Flow::Next(val))
-            }
-            "write" => {
-                let id = self.expect_int(args, 0, "std.mem.write")?;
-                let idx = self.expect_int(args, 1, "std.mem.write")?;
-                let val = args.get(2).cloned().unwrap_or(Value::Nil);
-                let alloc = self
-                    .allocations
-                    .get_mut(id)
-                    .and_then(|s| s.as_mut())
-                    .ok_or(ErrorKind::UseAfterFree)?;
-                while alloc.len() <= idx {
-                    alloc.push(Value::Nil);
-                }
-                alloc[idx] = val;
-                Ok(Flow::Next(Value::Nil))
-            }
-            "grow" => {
-                let id = self.expect_int(args, 0, "std.mem.grow")?;
-                let new_cap = self.expect_int(args, 1, "std.mem.grow")?;
-                let alloc = self
-                    .allocations
-                    .get_mut(id)
-                    .and_then(|s| s.as_mut())
-                    .ok_or(ErrorKind::UseAfterFree)?;
-                if new_cap > alloc.capacity() {
-                    alloc.reserve(new_cap - alloc.capacity());
-                }
-                Ok(Flow::Next(Value::Nil))
-            }
-            "capacity" => {
-                let id = self.expect_int(args, 0, "std.mem.capacity")?;
-                let alloc = self
-                    .allocations
-                    .get(id)
-                    .and_then(|s| s.as_ref())
-                    .ok_or(ErrorKind::UseAfterFree)?;
-                Ok(Flow::Next(Value::Int(BigInt::from(alloc.capacity()))))
-            }
-            "len" => {
-                let id = self.expect_int(args, 0, "std.mem.len")?;
-                let alloc = self
-                    .allocations
-                    .get(id)
-                    .and_then(|s| s.as_ref())
-                    .ok_or(ErrorKind::UseAfterFree)?;
-                Ok(Flow::Next(Value::Int(BigInt::from(alloc.len()))))
-            }
-            _ => Err(ErrorKind::Other(format!("unknown intrinsic 'std.mem.{name}'")).into()),
-        }
-    }
-
-    /// Extract a usize from args at the given position, expecting an Int.
-    fn expect_int(
-        &self,
-        args: &[Value],
-        pos: usize,
-        intrinsic: &str,
-    ) -> Result<usize, RuntimeError> {
-        match args.get(pos) {
-            Some(Value::Int(n)) => n
-                .to_usize()
-                .ok_or_else(|| ErrorKind::Other(format!("{intrinsic}: index out of range")).into()),
-            Some(other) => Err(ErrorKind::TypeMismatch {
-                expected: prim::INT,
-                actual: other.type_id(),
-            }
-            .into()),
-            None => Err(ErrorKind::ArityMismatch {
-                target: ArityTarget::Builtin {
-                    name: intrinsic.to_string(),
-                },
-                expected: pos + 1,
-                actual: args.len(),
-            }
-            .into()),
-        }
-    }
-
+    // Dead code removed: call_builtin_fn, call_builtin, call_intrinsic, expect_int
+    // All dispatch now goes through NativeFnRegistry + handler function pointers.
+    // See native.rs for implementations.
     // ── Shared helpers ──────────────────────────────────────────────────
 
     /// Resolve AST params to FuncParam values (no generic type params).

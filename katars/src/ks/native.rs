@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ast::{BinOp, UnaryOp};
 use super::error::{ArityTarget, ErrorKind, RuntimeError};
-use super::types::{prim, TypeId, TypeRegistry};
+use super::types::{prim, TypeRegistry};
 use super::value::Value;
 
 // ── IDs ──────────────────────────────────────────────────────────────────────

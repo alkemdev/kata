@@ -5,6 +5,7 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 use super::ast::{Spanned, Stmt};
+use super::native::{ModuleId, NativeFnId};
 use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Value ────────────────────────────────────────────────────────────────────
@@ -46,10 +47,10 @@ pub enum Value {
         receiver: Box<Value>,
         func: Box<Value>,
     },
-    /// A namespace value — e.g., `std`, `std.ops`.
-    Namespace(String),
-    /// A built-in function — e.g., `std.ops.add`.
-    BuiltinFn(String),
+    /// A module in the module tree — e.g., `std`, `std.ops`.
+    Module(ModuleId),
+    /// A native (Rust-backed) function — e.g., `print`, `std.ops.add`.
+    NativeFn(NativeFnId),
 }
 
 /// A function parameter with an optional type annotation.
@@ -75,8 +76,8 @@ impl Value {
             Value::BoundMethod { .. } => prim::FUNC,
             Value::Type(_) => prim::TYPE,
             Value::VariantConstructor { .. } => prim::FUNC,
-            Value::Namespace(_) => prim::NIL,
-            Value::BuiltinFn(_) => prim::FUNC,
+            Value::Module(_) => prim::NIL,
+            Value::NativeFn(_) => prim::FUNC,
         }
     }
 
@@ -136,8 +137,8 @@ impl Value {
                     "<bound-method(?)>".to_string()
                 }
             }
-            Value::Namespace(name) => format!("<namespace {name}>"),
-            Value::BuiltinFn(name) => format!("<builtin {name}>"),
+            Value::Module(id) => format!("<module {id}>"),
+            Value::NativeFn(id) => format!("<native-fn {id}>"),
         }
     }
 }
@@ -177,8 +178,8 @@ impl PartialEq for Value {
             (Value::Func { .. }, Value::Func { .. }) => false,
             (Value::BoundMethod { .. }, Value::BoundMethod { .. }) => false,
             (Value::VariantConstructor { .. }, Value::VariantConstructor { .. }) => false,
-            (Value::Namespace(a), Value::Namespace(b)) => a == b,
-            (Value::BuiltinFn(a), Value::BuiltinFn(b)) => a == b,
+            (Value::Module(a), Value::Module(b)) => a == b,
+            (Value::NativeFn(a), Value::NativeFn(b)) => a == b,
             _ => false,
         }
     }
@@ -226,8 +227,8 @@ impl fmt::Display for Value {
                     write!(f, "<bound-method(?)>")
                 }
             }
-            Value::Namespace(name) => write!(f, "<namespace {name}>"),
-            Value::BuiltinFn(name) => write!(f, "<builtin {name}>"),
+            Value::Module(id) => write!(f, "<module {id}>"),
+            Value::NativeFn(id) => write!(f, "<native-fn {id}>"),
         }
     }
 }
