@@ -58,6 +58,8 @@ pub enum Stmt {
         target: AssignTarget,
         value: Spanned<Expr>,
     },
+    /// `import std.mem` — load a module.
+    Import { path: Vec<String> },
     /// `break` — exit the current loop.
     Break,
     /// `continue` — skip to the next loop iteration.

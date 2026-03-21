@@ -16,7 +16,8 @@ use super::lexer::{StringPart, Token};
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
 //   program    = stmt*
-//   stmt       = 'enum' IDENT type_params? '{' variant_list '}'       -- enum def
+//   stmt       = 'import' IDENT ('.' IDENT)* ';'?                    -- module import
+//              | 'enum' IDENT type_params? '{' variant_list '}'       -- enum def
 //              | 'kind' IDENT type_params? '{' field_list '}'          -- kind def
 //              | 'type' IDENT type_params? '{' method_sig* '}'         -- interface def
 //              | 'impl' IDENT type_params? ('as' expr)? '{' func_def* '}' -- impl block
@@ -713,7 +714,19 @@ where
                 }
             });
 
-        enum_def
+        // import_stmt = 'import' IDENT ('.' IDENT)*
+        let import_stmt = just(Token::Import)
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .separated_by(just(Token::Dot))
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::Semicolon).or_not())
+            .map_with(|path, ex| Spanned::new(Stmt::Import { path }, span(&ex.span())));
+
+        import_stmt
+            .or(enum_def)
             .or(kind_def)
             .or(interface_def)
             .or(impl_block)

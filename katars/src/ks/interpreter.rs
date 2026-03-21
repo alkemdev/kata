@@ -72,6 +72,10 @@ pub struct Interpreter {
     in_unsafe: bool,
     /// Runtime heap: allocation table for Ptr handles.
     allocations: Vec<Option<Vec<Value>>>,
+    /// Embedded standard library modules: "std.mem" → source code.
+    std_modules: HashMap<String, &'static str>,
+    /// Modules already loaded (prevent double-loading).
+    loaded_modules: HashSet<String>,
     /// Native function registry and module tree.
     native_registry: NativeFnRegistry,
 }
@@ -83,12 +87,18 @@ impl Interpreter {
         // Bootstrap native functions and module tree.
         let boot = native::bootstrap();
 
+        let mut std_modules = HashMap::new();
+        std_modules.insert("std.mem".into(), include_str!("../../../std/mem/mod.ks"));
+        std_modules.insert("std.dsa".into(), include_str!("../../../std/dsa/mod.ks"));
+
         let mut interp = Self {
             types,
             frames: vec![IndexMap::new()],
             methods: HashMap::new(),
             interfaces: IndexMap::new(),
             last_method_self: None,
+            std_modules,
+            loaded_modules: HashSet::new(),
             drop_types: HashSet::new(),
             dropping: false,
             in_unsafe: false,
@@ -396,6 +406,11 @@ impl Interpreter {
                 }
             }
 
+            Stmt::Import { path } => {
+                self.exec_import(path, out).map_err(|e| e.at(stmt.span))?;
+                Ok(Flow::Next(Value::Nil))
+            }
+
             Stmt::Break => Ok(Flow::Break),
             Stmt::Continue => Ok(Flow::Continue),
 
@@ -404,6 +419,39 @@ impl Interpreter {
                 Ok(Flow::Return(val))
             }
         }
+    }
+
+    // ── Module imports ────────────────────────────────────────────────
+
+    fn exec_import(&mut self, path: &[String], out: &mut impl Write) -> Result<(), RuntimeError> {
+        let module_key = path.join(".");
+
+        // Skip if already loaded.
+        if self.loaded_modules.contains(&module_key) {
+            return Ok(());
+        }
+        self.loaded_modules.insert(module_key.clone());
+
+        // Look up the embedded source.
+        let source = self
+            .std_modules
+            .get(&module_key)
+            .ok_or_else(|| -> RuntimeError {
+                ErrorKind::Other(format!("unknown module '{module_key}'")).into()
+            })?;
+
+        // Parse and execute in the current scope (flat merge).
+        let filename = format!("<{module_key}>");
+        let program = super::parser::parse(source, &filename).map_err(|()| -> RuntimeError {
+            ErrorKind::Other(format!("failed to parse module '{module_key}'")).into()
+        })?;
+
+        self.exec_program(&program, None, out)
+            .map_err(|e| -> RuntimeError {
+                ErrorKind::Other(format!("error in module '{module_key}': {e}")).into()
+            })?;
+
+        Ok(())
     }
 
     // ── Block execution ──────────────────────────────────────────────────
