@@ -1,0 +1,5 @@
+# Bool array literal
+let flags = [true, false, true]
+for f in flags {
+    print(f)
+}
