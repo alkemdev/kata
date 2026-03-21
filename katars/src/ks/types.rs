@@ -129,6 +129,7 @@ pub mod prim {
     pub const BIN: TypeId = TypeId(5);
     pub const FUNC: TypeId = TypeId(6);
     pub const TYPE: TypeId = TypeId(7);
+    pub const RAW_PTR: TypeId = TypeId(8);
 }
 
 impl TypeRegistry {
@@ -149,6 +150,7 @@ impl TypeRegistry {
         reg.register_prim("Bin");
         reg.register_prim("Func");
         reg.register_prim("Type");
+        reg.register_prim("RawPtr");
 
         reg
     }

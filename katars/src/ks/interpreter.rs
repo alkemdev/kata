@@ -105,6 +105,7 @@ impl Interpreter {
         interp.set("Bin".into(), Value::Type(prim::BIN));
         interp.set("Func".into(), Value::Type(prim::FUNC));
         interp.set("Type".into(), Value::Type(prim::TYPE));
+        interp.set("RawPtr".into(), Value::Type(prim::RAW_PTR));
 
         // Top-level native functions.
         interp.set("print".into(), Value::NativeFn(boot.print_id));

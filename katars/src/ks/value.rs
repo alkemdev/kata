@@ -51,6 +51,8 @@ pub enum Value {
     Module(ModuleId),
     /// A native (Rust-backed) function — e.g., `print`, `std.ops.add`.
     NativeFn(NativeFnId),
+    /// An opaque handle to runtime-managed storage. Cannot be forged from KS.
+    RawPtr(u32),
 }
 
 /// A function parameter with an optional type annotation.
@@ -78,6 +80,7 @@ impl Value {
             Value::VariantConstructor { .. } => prim::FUNC,
             Value::Module(_) => prim::NIL,
             Value::NativeFn(_) => prim::FUNC,
+            Value::RawPtr(_) => prim::RAW_PTR,
         }
     }
 
@@ -139,6 +142,7 @@ impl Value {
             }
             Value::Module(id) => format!("<module {id}>"),
             Value::NativeFn(id) => format!("<native-fn {id}>"),
+            Value::RawPtr(id) => format!("<rawptr:{id}>"),
         }
     }
 }
@@ -180,6 +184,7 @@ impl PartialEq for Value {
             (Value::VariantConstructor { .. }, Value::VariantConstructor { .. }) => false,
             (Value::Module(a), Value::Module(b)) => a == b,
             (Value::NativeFn(a), Value::NativeFn(b)) => a == b,
+            (Value::RawPtr(a), Value::RawPtr(b)) => a == b,
             _ => false,
         }
     }
@@ -229,6 +234,7 @@ impl fmt::Display for Value {
             }
             Value::Module(id) => write!(f, "<module {id}>"),
             Value::NativeFn(id) => write!(f, "<native-fn {id}>"),
+            Value::RawPtr(id) => write!(f, "<rawptr:{id}>"),
         }
     }
 }

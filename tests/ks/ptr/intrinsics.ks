@@ -10,6 +10,6 @@ unsafe {
     print(std.mem.len(id))
     let cap = std.mem.capacity(id)
     print(cap >= 4)
-    std.mem.dealloc(id)
+    std.mem.free(id)
 }
 print("done")

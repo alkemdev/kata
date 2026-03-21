@@ -1,9 +1,8 @@
-# Ptr Drop auto-deallocates when scope exits
+# Buf[T] auto-drops via Ptr → RawPtr cleanup
 func test() {
-    let p = ptr_alloc(4)
-    p.write(0, 42)
-    print(p.read(0))
-    # p goes out of scope here — Drop calls std.mem.dealloc
+    let buf = Buf[Int] { ptr: Ptr[Int] { raw: heap.make(4) }, cap: 4 }
+    buf.write(0, 42)
+    print(buf.read(0))
 }
 
 test()

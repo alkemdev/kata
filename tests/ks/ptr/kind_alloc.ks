@@ -1,8 +1,8 @@
-# Use Ptr kind to allocate, write, and read
-let p = ptr_alloc(4)
-p.write(0, "hello")
-p.write(1, "world")
+# Ptr[T] wraps RawPtr with typed read/write
+let raw = unsafe { std.mem.alloc(4) }
+let p = Ptr[Int] { raw: raw }
+p.write(0, 42)
+p.write(1, 99)
 print(p.read(0))
 print(p.read(1))
-print(p.capacity() >= 4)
-p.dealloc()
+unsafe { std.mem.free(raw) }

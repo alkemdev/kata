@@ -1,13 +1,13 @@
-# Grow an allocation and write to extended region
+# HeapAllocator.grow: allocate, copy, free old, return new
+let raw = heap.make(2)
 unsafe {
-    let id = std.mem.alloc(2)
-    std.mem.write(id, 0, "a")
-    std.mem.write(id, 1, "b")
-    std.mem.grow(id, 10)
-    std.mem.write(id, 5, "f")
-    print(std.mem.read(id, 0))
-    print(std.mem.read(id, 5))
-    let cap = std.mem.capacity(id)
-    print(cap >= 10)
-    std.mem.dealloc(id)
+    std.mem.write(raw, 0, "a")
+    std.mem.write(raw, 1, "b")
 }
+let new_raw = heap.grow(raw, 2, 10)
+unsafe {
+    std.mem.write(new_raw, 5, "f")
+    print(std.mem.read(new_raw, 0))
+    print(std.mem.read(new_raw, 5))
+}
+heap.free(new_raw)

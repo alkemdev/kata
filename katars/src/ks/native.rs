@@ -81,6 +81,19 @@ pub struct NativeCtx<'a> {
 }
 
 impl<'a> NativeCtx<'a> {
+    /// Extract a RawPtr id from args at the given position.
+    pub fn expect_rawptr(&self, args: &[Value], pos: usize) -> Result<u32, RuntimeError> {
+        match args.get(pos) {
+            Some(Value::RawPtr(id)) => Ok(*id),
+            Some(other) => Err(ErrorKind::TypeMismatch {
+                expected: prim::RAW_PTR,
+                actual: other.type_id(),
+            }
+            .into()),
+            None => Err(ErrorKind::Other("missing argument".into()).into()),
+        }
+    }
+
     /// Extract a usize from args at the given position, expecting an Int.
     pub fn expect_int(&self, args: &[Value], pos: usize) -> Result<usize, RuntimeError> {
         match args.get(pos) {
@@ -290,17 +303,23 @@ pub fn native_ops_truth(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, R
 }
 
 // ── std.mem — allocation intrinsics ─────────────────────────────────
+//
+// Minimal runtime escape hatch for memory management. All take/return
+// RawPtr (opaque handle). Only callable inside `unsafe` blocks.
 
 pub fn native_mem_alloc(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let cap = ctx.expect_int(args, 0)?;
-    let id = ctx.allocations.len();
+    let id = ctx.allocations.len() as u32;
     ctx.allocations.push(Some(Vec::with_capacity(cap)));
-    Ok(Value::Int(BigInt::from(id)))
+    Ok(Value::RawPtr(id))
 }
 
-pub fn native_mem_dealloc(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let id = ctx.expect_int(args, 0)?;
-    let slot = ctx.allocations.get_mut(id).ok_or(ErrorKind::UseAfterFree)?;
+pub fn native_mem_free(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let id = ctx.expect_rawptr(args, 0)?;
+    let slot = ctx
+        .allocations
+        .get_mut(id as usize)
+        .ok_or(ErrorKind::UseAfterFree)?;
     if slot.is_none() {
         return Err(ErrorKind::UseAfterFree.into());
     }
@@ -309,23 +328,23 @@ pub fn native_mem_dealloc(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, 
 }
 
 pub fn native_mem_read(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let id = ctx.expect_int(args, 0)?;
+    let id = ctx.expect_rawptr(args, 0)?;
     let idx = ctx.expect_int(args, 1)?;
     let alloc = ctx
         .allocations
-        .get(id)
+        .get(id as usize)
         .and_then(|s| s.as_ref())
         .ok_or(ErrorKind::UseAfterFree)?;
     Ok(alloc.get(idx).cloned().unwrap_or(Value::Nil))
 }
 
 pub fn native_mem_write(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let id = ctx.expect_int(args, 0)?;
+    let id = ctx.expect_rawptr(args, 0)?;
     let idx = ctx.expect_int(args, 1)?;
     let val = args.get(2).cloned().unwrap_or(Value::Nil);
     let alloc = ctx
         .allocations
-        .get_mut(id)
+        .get_mut(id as usize)
         .and_then(|s| s.as_mut())
         .ok_or(ErrorKind::UseAfterFree)?;
     while alloc.len() <= idx {
@@ -335,35 +354,21 @@ pub fn native_mem_write(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Ru
     Ok(Value::Nil)
 }
 
-pub fn native_mem_grow(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let id = ctx.expect_int(args, 0)?;
-    let new_cap = ctx.expect_int(args, 1)?;
-    let alloc = ctx
-        .allocations
-        .get_mut(id)
-        .and_then(|s| s.as_mut())
-        .ok_or(ErrorKind::UseAfterFree)?;
-    if new_cap > alloc.capacity() {
-        alloc.reserve(new_cap - alloc.capacity());
-    }
-    Ok(Value::Nil)
-}
-
 pub fn native_mem_capacity(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let id = ctx.expect_int(args, 0)?;
+    let id = ctx.expect_rawptr(args, 0)?;
     let alloc = ctx
         .allocations
-        .get(id)
+        .get(id as usize)
         .and_then(|s| s.as_ref())
         .ok_or(ErrorKind::UseAfterFree)?;
     Ok(Value::Int(BigInt::from(alloc.capacity())))
 }
 
 pub fn native_mem_len(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let id = ctx.expect_int(args, 0)?;
+    let id = ctx.expect_rawptr(args, 0)?;
     let alloc = ctx
         .allocations
-        .get(id)
+        .get(id as usize)
         .and_then(|s| s.as_ref())
         .ok_or(ErrorKind::UseAfterFree)?;
     Ok(Value::Int(BigInt::from(alloc.len())))
@@ -597,10 +602,9 @@ pub fn bootstrap() -> BootResult {
     let mem = reg.create_module("mem");
     for (name, handler) in [
         ("alloc", native_mem_alloc as NativeHandler),
-        ("dealloc", native_mem_dealloc),
+        ("free", native_mem_free),
         ("read", native_mem_read),
         ("write", native_mem_write),
-        ("grow", native_mem_grow),
         ("capacity", native_mem_capacity),
         ("len", native_mem_len),
     ] {

@@ -6,6 +6,6 @@ unsafe {
     std.mem.write(b, 0, "world")
     print(std.mem.read(a, 0))
     print(std.mem.read(b, 0))
-    std.mem.dealloc(a)
-    std.mem.dealloc(b)
+    std.mem.free(a)
+    std.mem.free(b)
 }

@@ -13,5 +13,5 @@ unsafe {
     print(std.mem.read(id, 2))
     print(std.mem.read(id, 3))
     print(std.mem.read(id, 4))
-    std.mem.dealloc(id)
+    std.mem.free(id)
 }
