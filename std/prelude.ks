@@ -19,3 +19,16 @@ type Iter[T] {
 type ToIter[T] {
     func to_iter(self): Iter[T]
 }
+
+# Lifecycle protocols
+type Drop {
+    func drop(self)
+}
+
+type Copy {
+    func copy(self): Self
+}
+
+type DeepCopy {
+    func deep_copy(self): Self
+}

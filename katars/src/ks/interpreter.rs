@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use indexmap::IndexMap;
@@ -64,6 +64,12 @@ pub struct Interpreter {
     interfaces: IndexMap<String, InterfaceDef>,
     /// Temporary: holds mutated `self` after a method call for copy-out.
     last_method_self: Option<Value>,
+    /// TypeIds that implement the Drop protocol.
+    drop_types: HashSet<TypeId>,
+    /// TypeIds that implement the DeepCopy protocol.
+    deep_copy_types: HashSet<TypeId>,
+    /// Suppress drop dispatch during drop execution (prevents infinite recursion).
+    dropping: bool,
 }
 
 impl Interpreter {
@@ -76,6 +82,9 @@ impl Interpreter {
             methods: HashMap::new(),
             interfaces: IndexMap::new(),
             last_method_self: None,
+            drop_types: HashSet::new(),
+            deep_copy_types: HashSet::new(),
+            dropping: false,
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -112,21 +121,53 @@ impl Interpreter {
             .insert(name, value);
     }
 
+    /// Remove a name from the current (innermost) scope frame.
+    fn remove(&mut self, name: &str) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.shift_remove(name);
+        }
+    }
+
     fn push_scope(&mut self) {
         self.frames.push(IndexMap::new());
     }
 
-    fn pop_scope(&mut self) {
+    fn pop_scope(&mut self, out: &mut impl Write) {
         debug_assert!(self.frames.len() > 1, "cannot pop the global frame");
-        self.frames.pop();
+        let frame = self.frames.pop().unwrap();
+        if !self.dropping {
+            for (_name, value) in frame {
+                self.drop_value(value, out);
+            }
+        }
+    }
+
+    /// Call `drop` on a value if its type implements Drop, then recursively
+    /// drop struct fields. Outer drop runs first, then fields (Rust order).
+    /// Suppresses nested drop dispatch to prevent infinite recursion.
+    fn drop_value(&mut self, value: Value, out: &mut impl Write) {
+        let tid = value.type_id();
+        if self.drop_types.contains(&tid) {
+            self.dropping = true;
+            // Best-effort: call drop, ignore errors (destructors shouldn't fail).
+            let _ = self.call_method(&value, "drop", &[], out);
+            self.dropping = false;
+        }
+        // Recursively drop struct fields.
+        if let Value::Struct { fields, .. } = value {
+            for (_, field_val) in fields {
+                self.drop_value(field_val, out);
+            }
+        }
     }
 
     /// Update an existing variable in the nearest enclosing scope that contains it.
-    fn update_in_scope(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
+    /// Returns the old value (if any) for drop dispatch by the caller.
+    fn update_in_scope(&mut self, name: &str, value: Value) -> Result<Option<Value>, RuntimeError> {
         for frame in self.frames.iter_mut().rev() {
             if frame.contains_key(name) {
-                frame.insert(name.to_string(), value);
-                return Ok(());
+                let old = frame.insert(name.to_string(), value);
+                return Ok(old);
             }
         }
         Err(ErrorKind::Undefined {
@@ -266,6 +307,30 @@ impl Interpreter {
                 if let Some(iface_expr) = as_type {
                     self.check_conformance(type_name, &iface_expr.node)
                         .map_err(|e| e.at(iface_expr.span))?;
+                    // Track lifecycle protocol implementations.
+                    let iface_name = match &iface_expr.node {
+                        Expr::Name(n) => Some(n.as_str()),
+                        Expr::Item { object, .. } => {
+                            if let Expr::Name(n) = &object.node {
+                                Some(n.as_str())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(name) = iface_name {
+                        let type_id = self.resolve_type(type_name).map_err(|e| e.at(stmt.span))?;
+                        match name {
+                            "Drop" => {
+                                self.drop_types.insert(type_id);
+                            }
+                            "DeepCopy" => {
+                                self.deep_copy_types.insert(type_id);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 Ok(Flow::Next(Value::Nil))
             }
@@ -305,8 +370,12 @@ impl Interpreter {
                 let val = self.eval_value(value, out)?;
                 match target {
                     AssignTarget::Name(name) => {
-                        self.update_in_scope(name, val)
+                        let old = self
+                            .update_in_scope(name, val)
                             .map_err(|e| e.at(stmt.span))?;
+                        if let Some(old_val) = old {
+                            self.drop_value(old_val, out);
+                        }
                         Ok(Flow::Next(Value::Nil))
                     }
                     AssignTarget::Attr { object, attr } => self
@@ -412,7 +481,7 @@ impl Interpreter {
                     self.set(name.clone(), val);
                 }
                 let result = self.exec_block(body, out);
-                self.pop_scope();
+                self.pop_scope(out);
                 result
             }
 
@@ -474,7 +543,10 @@ impl Interpreter {
                 // Copy-in copy-out: write mutated self back to the receiver variable.
                 if let Some(var_name) = receiver_var {
                     if let Some(mutated_self) = self.last_method_self.take() {
-                        self.update_in_scope(&var_name, mutated_self)
+                        // Copy-out: replacing self with its mutated version.
+                        // Don't drop the old value — it's the same object, pre-mutation.
+                        let _ = self
+                            .update_in_scope(&var_name, mutated_self)
                             .map_err(|e: RuntimeError| e.at(expr.span))?;
                     }
                 }
@@ -499,12 +571,12 @@ impl Interpreter {
                 if Self::truth(&cv) {
                     self.push_scope();
                     let result = self.exec_block(then_body, out);
-                    self.pop_scope();
+                    self.pop_scope(out);
                     result
                 } else if let Some(else_stmts) = else_body {
                     self.push_scope();
                     let result = self.exec_block(else_stmts, out);
-                    self.pop_scope();
+                    self.pop_scope(out);
                     result
                 } else {
                     Ok(Flow::Next(Value::Nil))
@@ -572,7 +644,7 @@ impl Interpreter {
                     self.set(binding.clone(), val);
 
                     let flow = self.exec_block(body, out)?;
-                    if let Some(early) = self.dispatch_loop_flow(flow) {
+                    if let Some(early) = self.dispatch_loop_flow(flow, out) {
                         return Ok(early);
                     }
                 }
@@ -588,7 +660,7 @@ impl Interpreter {
                     }
                     self.push_scope();
                     let flow = self.exec_block(body, out)?;
-                    if let Some(early) = self.dispatch_loop_flow(flow) {
+                    if let Some(early) = self.dispatch_loop_flow(flow, out) {
                         return Ok(early);
                     }
                 }
@@ -839,6 +911,9 @@ impl Interpreter {
     ) -> Result<(), RuntimeError> {
         let type_id = self.resolve_type(type_name)?;
 
+        // Make `Self` available as a type alias within this impl block.
+        self.set("Self".into(), Value::Type(type_id));
+
         for method in methods {
             let FuncDef {
                 name,
@@ -874,6 +949,9 @@ impl Interpreter {
                 .insert(name.clone(), func);
         }
 
+        // Remove `Self` so it doesn't leak into surrounding scope.
+        self.remove("Self");
+
         Ok(())
     }
 
@@ -885,8 +963,8 @@ impl Interpreter {
     ) -> Result<TypeExpr, RuntimeError> {
         match expr {
             Expr::Name(n) => {
-                if type_params.contains(n) {
-                    Ok(TypeExpr::Param(n.clone()))
+                if let Some(idx) = type_params.iter().position(|p| p == n) {
+                    Ok(TypeExpr::Param(idx))
                 } else {
                     Ok(TypeExpr::Concrete(self.resolve_type(n)?))
                 }
@@ -1584,15 +1662,15 @@ impl Interpreter {
         let result = match self.exec_block(body, out) {
             Ok(Flow::Next(v) | Flow::Return(v)) => v,
             Ok(Flow::Break) => {
-                self.pop_scope();
+                self.pop_scope(out);
                 return Err(ErrorKind::FlowMisuse(FlowMisuse::BreakOutsideLoop).into());
             }
             Ok(Flow::Continue) => {
-                self.pop_scope();
+                self.pop_scope(out);
                 return Err(ErrorKind::FlowMisuse(FlowMisuse::ContinueOutsideLoop).into());
             }
             Err(e) => {
-                self.pop_scope();
+                self.pop_scope(out);
                 return Err(e);
             }
         };
@@ -1601,7 +1679,7 @@ impl Interpreter {
             self.last_method_self = self.get(SELF_PARAM).cloned();
         }
 
-        self.pop_scope();
+        self.pop_scope(out);
 
         if let Some(expected_ret) = ret_type {
             self.check_type(&result, expected_ret)?;
@@ -1612,18 +1690,18 @@ impl Interpreter {
 
     /// Dispatch loop-body flow control. Always pops scope.
     /// Returns `None` to continue looping, `Some(flow)` to exit.
-    fn dispatch_loop_flow(&mut self, flow: Flow) -> Option<Flow> {
+    fn dispatch_loop_flow(&mut self, flow: Flow, out: &mut impl Write) -> Option<Flow> {
         match flow {
             Flow::Next(_) | Flow::Continue => {
-                self.pop_scope();
+                self.pop_scope(out);
                 None
             }
             Flow::Break => {
-                self.pop_scope();
+                self.pop_scope(out);
                 Some(Flow::Next(Value::Nil))
             }
             ret @ Flow::Return(_) => {
-                self.pop_scope();
+                self.pop_scope(out);
                 Some(ret)
             }
         }
