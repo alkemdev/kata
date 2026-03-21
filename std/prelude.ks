@@ -39,4 +39,5 @@ type Dupe {
 
 # ── Standard library modules ─────────────────────────────────────
 
-import std.dsa
+import std.mem.{HeapAllocator, Ptr, Buf, heap}
+import std.dsa.{Arr}

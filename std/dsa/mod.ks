@@ -2,7 +2,7 @@
 #
 # Arr[T] — safe, iterable, growable array
 
-import std.mem
+import std.mem.{Ptr, Buf, heap}
 
 # ── Arr[T] — safe, iterable array ────────────────────────────────
 #

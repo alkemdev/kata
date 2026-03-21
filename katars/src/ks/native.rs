@@ -31,18 +31,13 @@ pub struct ModuleId(pub u32);
 
 // ── Module tree ──────────────────────────────────────────────────────────────
 
-/// A node in the module tree. Contains sub-modules and native function entries.
+/// A node in the module tree. Entries are Values — sub-modules are
+/// `Value::Module(id)`, native fns are `Value::NativeFn(id)`, and
+/// KS-defined exports (types, functions) are any Value.
 #[derive(Debug)]
 pub struct Module {
     pub name: String,
-    pub entries: IndexMap<String, ModuleItem>,
-}
-
-/// An entry in a module — either a sub-module or a native function.
-#[derive(Debug)]
-pub enum ModuleItem {
-    SubModule(ModuleId),
-    NativeFn(NativeFnId),
+    pub entries: IndexMap<String, Value>,
 }
 
 impl Module {
@@ -154,7 +149,7 @@ impl NativeFnRegistry {
     pub fn add_submodule(&mut self, parent: ModuleId, name: impl Into<String>, child: ModuleId) {
         self.modules[parent.0 as usize]
             .entries
-            .insert(name.into(), ModuleItem::SubModule(child));
+            .insert(name.into(), Value::Module(child));
     }
 
     /// Add a native function to a module.
@@ -162,7 +157,14 @@ impl NativeFnRegistry {
         let name = self.fns[fn_id.0 as usize].name.to_string();
         self.modules[module.0 as usize]
             .entries
-            .insert(name, ModuleItem::NativeFn(fn_id));
+            .insert(name, Value::NativeFn(fn_id));
+    }
+
+    /// Add a KS-defined value to a module.
+    pub fn add_value(&mut self, module: ModuleId, name: impl Into<String>, value: Value) {
+        self.modules[module.0 as usize]
+            .entries
+            .insert(name.into(), value);
     }
 
     /// Look up a native function entry by ID.

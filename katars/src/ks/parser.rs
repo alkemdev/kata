@@ -714,7 +714,15 @@ where
                 }
             });
 
-        // import_stmt = 'import' IDENT ('.' IDENT)*
+        // import_stmt = 'import' IDENT ('.' IDENT)* ('.' '{' IDENT (',' IDENT)* '}')?
+        let import_names = just(Token::Dot).ignore_then(
+            select! { Token::Ident(name) => name }
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        );
+
         let import_stmt = just(Token::Import)
             .ignore_then(
                 select! { Token::Ident(name) => name }
@@ -722,8 +730,11 @@ where
                     .at_least(1)
                     .collect::<Vec<_>>(),
             )
+            .then(import_names.or_not())
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|path, ex| Spanned::new(Stmt::Import { path }, span(&ex.span())));
+            .map_with(|(path, names), ex| {
+                Spanned::new(Stmt::Import { path, names }, span(&ex.span()))
+            });
 
         import_stmt
             .or(enum_def)
