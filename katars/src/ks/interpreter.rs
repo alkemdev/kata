@@ -707,6 +707,7 @@ impl Interpreter {
 
     fn eval_match(
         &mut self,
+        keyword_span: Span,
         subject: &Spanned<Expr>,
         arms: &[MatchArm],
         out: &mut impl Write,
@@ -726,7 +727,7 @@ impl Interpreter {
         }
 
         Err(RuntimeError::new(ErrorKind::NoMatchArm)
-            .at(subject.span)
+            .at(keyword_span)
             .label(
                 subject.span,
                 format!("this value: {}", val.display(&self.types)),
@@ -918,8 +919,12 @@ impl Interpreter {
                 .eval_arr_lit(elements, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
 
-            Expr::Match { subject, arms } => self
-                .eval_match(subject, arms, out)
+            Expr::Match {
+                keyword,
+                subject,
+                arms,
+            } => self
+                .eval_match(*keyword, subject, arms, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
 
             Expr::Try(inner) => {

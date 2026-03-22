@@ -3,7 +3,7 @@ source: katars/tests/snaps/errors.rs
 expression: "helpers::run_error(\"match 42 { 0 -> \\\"zero\\\" }\")"
 ---
 Error: no match arm matched
-   ╭─[<test>:1:7]
+   ╭─[<test>:1:1]
    │
  1 │ match 42 { 0 -> "zero" }
    │        │  

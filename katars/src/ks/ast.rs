@@ -253,6 +253,7 @@ pub enum Expr {
     Unsafe { body: Vec<Spanned<Stmt>> },
     /// `match expr { pattern -> body, ... }` — pattern matching.
     Match {
+        keyword: Span,
         subject: Box<Spanned<Expr>>,
         arms: Vec<MatchArm>,
     },

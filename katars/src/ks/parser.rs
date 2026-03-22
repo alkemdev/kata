@@ -322,7 +322,8 @@ where
                 .map(|(pattern, body)| MatchArm { pattern, body });
 
             let match_expr = just(Token::Match)
-                .ignore_then(expr.clone())
+                .map_with(|_, ex| span(&ex.span()))
+                .then(expr.clone())
                 .then(
                     match_arm
                         .separated_by(just(Token::Comma))
@@ -330,9 +331,10 @@ where
                         .collect::<Vec<_>>()
                         .delimited_by(just(Token::LBrace), just(Token::RBrace)),
                 )
-                .map_with(|(subject, arms), ex| {
+                .map_with(|((keyword, subject), arms), ex| {
                     Spanned::new(
                         Expr::Match {
+                            keyword,
                             subject: Box::new(subject),
                             arms,
                         },
