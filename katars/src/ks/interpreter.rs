@@ -628,7 +628,8 @@ impl Interpreter {
                     actual: tid,
                 })
                 .at(elements[i].span)
-                .label(elements[0].span, self.types.display_name(elem_tid)));
+                .label(elements[0].span, self.types.display_name(elem_tid))
+                .label(elements[i].span, self.types.display_name(tid)));
             }
         }
 

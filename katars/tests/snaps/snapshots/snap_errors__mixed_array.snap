@@ -6,6 +6,8 @@ Error: type mismatch: expected Int, got Str
    ╭─[<test>:1:13]
    │
  1 │ let a = [1, "two", 3]
-   │          ┬  ─────  
+   │          ┬  ──┬──  
    │          ╰───────── Int
+   │               │    
+   │               ╰──── Str
 ───╯
