@@ -1,8 +1,8 @@
 # Decision: memory management architecture
 **ID:** memory-management
-**Status:** open
+**Status:** decided
 **Date opened:** 2026-03-21
-**Date done:** —
+**Date done:** 2026-03-22
 **Affects:** interpreter, syntax, stdlib, types
 
 ## Question

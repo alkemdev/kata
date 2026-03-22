@@ -1,8 +1,8 @@
 # Decision: lifecycle protocols (Drop, Copy, Dupe)
 **ID:** lifecycle-protocols
-**Status:** open
+**Status:** decided
 **Date opened:** 2026-03-21
-**Date done:** —
+**Date done:** 2026-03-22
 **Affects:** interpreter, types, stdlib
 
 ## Question
