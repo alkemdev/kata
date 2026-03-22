@@ -3,11 +3,11 @@ source: katars/tests/snaps/errors.rs
 expression: "helpers::run_error(\"match 42 { 0 -> \\\"zero\\\" }\")"
 ---
 Error: no match arm matched
-   ╭─[<test>:1:1]
+   ╭─[<test>:1:7]
    │
  1 │ match 42 { 0 -> "zero" }
-   │ ────────────┬───────────  
-   │             ╰───────────── no match arm matched
+   │        │  
+   │        ╰── this value: 42
    │ 
    │ Help: add a wildcard arm: _ -> ...
 ───╯

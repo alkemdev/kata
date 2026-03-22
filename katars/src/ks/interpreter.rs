@@ -725,7 +725,13 @@ impl Interpreter {
             }
         }
 
-        Err(RuntimeError::new(ErrorKind::NoMatchArm).help("add a wildcard arm: _ -> ..."))
+        Err(RuntimeError::new(ErrorKind::NoMatchArm)
+            .at(subject.span)
+            .label(
+                subject.span,
+                format!("this value: {}", val.display(&self.types)),
+            )
+            .help("add a wildcard arm: _ -> ..."))
     }
 
     fn match_pattern(&self, val: &Value, pattern: &Pattern) -> Option<Vec<(String, Value)>> {
