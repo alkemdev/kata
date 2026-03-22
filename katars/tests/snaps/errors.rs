@@ -122,6 +122,11 @@ fn use_after_free() {
 }
 
 // ── Postfix span tests ──────────────────────────────────────────
+#[test]
+fn unknown_root_module() {
+    insta::assert_snapshot!(helpers::run_error("import foo.bar"));
+}
+
 // These verify that error spans cover the full postfix expression,
 // not just the leftmost atom.
 

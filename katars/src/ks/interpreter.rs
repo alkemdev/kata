@@ -411,18 +411,7 @@ impl Interpreter {
             }
 
             Stmt::Import { path, names } => {
-                let path_strs: Vec<&str> = path.iter().map(|s| s.node.as_str()).collect();
-                let name_strs: Option<Vec<&str>> = names
-                    .as_ref()
-                    .map(|ns| ns.iter().map(|s| s.node.as_str()).collect());
-                // Span covers the path segments, not the `import` keyword.
-                let path_span = if let (Some(first), Some(last)) = (path.first(), path.last()) {
-                    (first.span.0, last.span.1)
-                } else {
-                    stmt.span
-                };
-                self.exec_import(&path_strs, name_strs.as_deref(), out)
-                    .map_err(|e| e.at(path_span))?;
+                self.exec_import(path, names.as_deref(), out)?;
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -440,27 +429,32 @@ impl Interpreter {
 
     fn exec_import(
         &mut self,
-        path: &[&str],
-        names: Option<&[&str]>,
+        path: &[Spanned<String>],
+        names: Option<&[Spanned<String>]>,
         out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
-        let module_key = path.join(".");
-
-        // Load the module if not already loaded.
-        let module_id = self.load_module(&module_key, out)?;
+        // Resolve the module, loading it if necessary.
+        let module_id = self.resolve_module_path(path, out)?;
+        let module_key = path
+            .iter()
+            .map(|s| s.node.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
 
         match names {
             // Selective: `import std.mem.{Ptr, Buf}` — pull names into scope.
             Some(selected) => {
                 let module = self.native_registry.get_module(module_id);
                 let mut exports = Vec::new();
-                for &name in selected {
-                    let val = module.entries.get(name).cloned().ok_or_else(|| {
+                for spanned_name in selected {
+                    let name = &spanned_name.node;
+                    let val = module.entries.get(name.as_str()).cloned().ok_or_else(|| {
                         RuntimeError::new(ErrorKind::Other(format!(
                             "module '{module_key}' has no export '{name}'"
                         )))
+                        .at(spanned_name.span)
                     })?;
-                    exports.push((name.to_string(), val));
+                    exports.push((name.clone(), val));
                 }
                 for (name, val) in exports {
                     self.set(name, val);
@@ -468,32 +462,71 @@ impl Interpreter {
             }
             // Scoped: `import std.mem` — add to the module tree in scope.
             None => {
-                self.ensure_module_path(path, module_id);
+                let path_strs: Vec<&str> = path.iter().map(|s| s.node.as_str()).collect();
+                self.ensure_module_path(&path_strs, module_id);
             }
         }
 
         Ok(())
     }
 
-    /// Load a module by key (e.g., "std.mem"), returning its ModuleId.
-    /// Caches loaded modules so each is only executed once.
-    fn load_module(
+    /// Resolve a dotted module path segment by segment.
+    /// Loads the module from embedded source if not already loaded.
+    /// Errors point to the exact segment that failed.
+    fn resolve_module_path(
         &mut self,
-        module_key: &str,
+        path: &[Spanned<String>],
         out: &mut impl Write,
     ) -> Result<native::ModuleId, RuntimeError> {
+        let module_key = path
+            .iter()
+            .map(|s| s.node.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
+
         // Return cached if already loaded.
-        if let Some(&mid) = self.loaded_modules.get(module_key) {
+        if let Some(&mid) = self.loaded_modules.get(&module_key) {
             return Ok(mid);
         }
 
-        // Look up the embedded source.
-        let source = self
-            .std_modules
-            .get(module_key)
-            .ok_or_else(|| -> RuntimeError {
-                ErrorKind::Other(format!("unknown module '{module_key}'")).into()
-            })?;
+        // Look up the embedded source. If not found, walk the path
+        // segment by segment to find which one fails.
+        let source = match self.std_modules.get(&module_key) {
+            Some(s) => s,
+            None => {
+                let mut existing = String::new();
+                for seg in path.iter() {
+                    let partial = if existing.is_empty() {
+                        seg.node.clone()
+                    } else {
+                        format!("{existing}.{}", seg.node)
+                    };
+                    // A segment is "known" if it has embedded source, is loaded,
+                    // or exists as a module value in scope (e.g., native `std`).
+                    let known = self.std_modules.contains_key(&partial)
+                        || self.loaded_modules.contains_key(&partial)
+                        || matches!(self.get(&partial), Some(Value::Module(_)));
+                    if !known {
+                        let msg = if existing.is_empty() {
+                            format!("unknown module '{}'", seg.node)
+                        } else {
+                            format!("module '{}' has no submodule '{}'", existing, seg.node)
+                        };
+                        return Err(RuntimeError::new(ErrorKind::Other(msg)).at(seg.span));
+                    }
+                    existing = partial;
+                }
+                // All segments known individually but full key has no source.
+                let last = path.last().unwrap();
+                let parent = path[..path.len() - 1]
+                    .iter()
+                    .map(|s| s.node.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let msg = format!("module '{}' has no submodule '{}'", parent, last.node);
+                return Err(RuntimeError::new(ErrorKind::Other(msg)).at(last.span));
+            }
+        };
 
         // Parse and execute in a fresh scope to collect exports.
         let filename = format!("<{module_key}>");
@@ -509,7 +542,7 @@ impl Interpreter {
 
         // Collect the scope into a module.
         let frame = self.frames.pop().unwrap();
-        let module_id = self.native_registry.create_module(module_key);
+        let module_id = self.native_registry.create_module(&module_key);
         for (name, value) in frame {
             self.native_registry.add_value(module_id, name, value);
         }
