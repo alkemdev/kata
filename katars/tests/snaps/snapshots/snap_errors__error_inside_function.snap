@@ -1,0 +1,13 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"func double(x: Int): Int {\\n    ret x + \\\"bad\\\"\\n}\\ndouble(1)\")"
+---
+Error: cannot apply '+' to Int and Str
+   ╭─[<test>:2:9]
+   │
+ 2 │     ret x + "bad"
+   │         ┬─────┬──  
+   │         ╰────────── Int
+   │               │    
+   │               ╰──── Str
+───╯

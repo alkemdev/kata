@@ -1,0 +1,13 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let a = 1\\nlet b = 2\\nlet c = 3\\nlet d = a + \\\"oops\\\"\")"
+---
+Error: cannot apply '+' to Int and Str
+   ╭─[<test>:4:9]
+   │
+ 4 │ let d = a + "oops"
+   │         ┬──────┬──  
+   │         ╰─────────── Int
+   │                │    
+   │                ╰──── Str
+───╯

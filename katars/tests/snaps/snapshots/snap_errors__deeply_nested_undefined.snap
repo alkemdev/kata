@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"print(1 + foo * 2)\")"
+---
+Error: undefined variable 'foo'
+   ╭─[<test>:1:11]
+   │
+ 1 │ print(1 + foo * 2)
+   │           ─┬─  
+   │            ╰─── undefined variable 'foo'
+───╯

@@ -1,0 +1,13 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"print(\\\"result: {1 + true}\\\")\")"
+---
+Error: cannot apply '+' to Int and Bool
+   ╭─[<test>:1:17]
+   │
+ 1 │ print("result: {1 + true}")
+   │                 ┬─────┬─  
+   │                 ╰───────── Int
+   │                       │   
+   │                       ╰─── Bool
+───╯

@@ -1,0 +1,13 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let x = Opt[Int].Val(42)\\nmatch x {\\n    Val(n) -> n + \\\"bad\\\",\\n    Non -> 0,\\n}\")"
+---
+Error: cannot apply '+' to Int and Str
+   ╭─[<test>:3:15]
+   │
+ 3 │     Val(n) -> n + "bad",
+   │               ┬─────┬──  
+   │               ╰────────── Int
+   │                     │    
+   │                     ╰──── Str
+───╯

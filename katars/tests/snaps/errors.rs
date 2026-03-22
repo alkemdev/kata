@@ -157,3 +157,51 @@ fn span_type_args() {
     // Arrow should cover Foo[Int], not just Foo
     insta::assert_snapshot!(helpers::run_error("Nonexistent[Int]"));
 }
+
+// ── Multi-line and complex errors ───────────────────────────────
+
+#[test]
+fn error_on_later_line() {
+    insta::assert_snapshot!(helpers::run_error(
+        "let a = 1\nlet b = 2\nlet c = 3\nlet d = a + \"oops\""
+    ));
+}
+
+#[test]
+fn error_inside_function() {
+    insta::assert_snapshot!(helpers::run_error(
+        "func double(x: Int): Int {\n    ret x + \"bad\"\n}\ndouble(1)"
+    ));
+}
+
+#[test]
+fn nested_expr_error() {
+    // Error in subexpression — should point to the inner error
+    insta::assert_snapshot!(helpers::run_error("1 + 2 * true"));
+}
+
+#[test]
+fn interp_type_error() {
+    // Type error inside string interpolation
+    insta::assert_snapshot!(helpers::run_error("print(\"result: {1 + true}\")"));
+}
+
+#[test]
+fn generic_method_type_error() {
+    // Pushing wrong type into a typed array
+    insta::assert_snapshot!(helpers::run_error("let a = [1, 2, 3]\na.push(\"wrong\")"));
+}
+
+#[test]
+fn match_body_error() {
+    // Error inside a match arm body
+    insta::assert_snapshot!(helpers::run_error(
+        "let x = Opt[Int].Val(42)\nmatch x {\n    Val(n) -> n + \"bad\",\n    Non -> 0,\n}"
+    ));
+}
+
+#[test]
+fn deeply_nested_undefined() {
+    // Undefined var deep in an expression
+    insta::assert_snapshot!(helpers::run_error("print(1 + foo * 2)"));
+}
