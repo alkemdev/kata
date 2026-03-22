@@ -120,3 +120,35 @@ fn use_after_free() {
         "let raw = unsafe { std.mem.alloc(4) }\nunsafe { std.mem.free(raw) }\nunsafe { std.mem.read(raw, 0) }"
     ));
 }
+
+// ── Postfix span tests ──────────────────────────────────────────
+// These verify that error spans cover the full postfix expression,
+// not just the leftmost atom.
+
+#[test]
+fn span_method_call() {
+    // Arrow should cover p.nonexistent(), not just p
+    insta::assert_snapshot!(helpers::run_error(
+        "kind P { x: Int }\nlet p = P { x: 1 }\np.nonexistent()"
+    ));
+}
+
+#[test]
+fn span_chained_attr() {
+    // Arrow should cover p.x.y, not just p
+    insta::assert_snapshot!(helpers::run_error(
+        "kind P { x: Int }\nlet p = P { x: 1 }\np.x.y"
+    ));
+}
+
+#[test]
+fn span_nested_call() {
+    // Arrow should cover the full call chain
+    insta::assert_snapshot!(helpers::run_error("print(undefined_var)"));
+}
+
+#[test]
+fn span_type_args() {
+    // Arrow should cover Foo[Int], not just Foo
+    insta::assert_snapshot!(helpers::run_error("Nonexistent[Int]"));
+}

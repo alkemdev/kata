@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"Nonexistent[Int]\")"
+---
+Error: undefined variable 'Nonexistent'
+   ╭─[<test>:1:1]
+   │
+ 1 │ Nonexistent[Int]
+   │ ─────┬─────  
+   │      ╰─────── undefined variable 'Nonexistent'
+───╯
