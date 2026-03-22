@@ -1,0 +1,13 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"bail\")"
+---
+Error: bail outside of loop
+   ╭─[<test>:1:1]
+   │
+ 1 │ bail
+   │ ──┬─  
+   │   ╰─── bail outside of loop
+   │ 
+   │ Note: bail can only be used inside while or for loops
+───╯

@@ -80,10 +80,10 @@ pub enum Token {
     Type,
     #[token("as")]
     As,
-    #[token("break")]
-    Break,
-    #[token("continue")]
-    Continue,
+    #[token("bail")]
+    Bail,
+    #[token("cont")]
+    Cont,
     #[token("ret")]
     Ret,
     #[token("unsafe")]
@@ -150,7 +150,7 @@ pub enum Token {
     #[token("!")]
     Bang,
     #[token("?")]
-    Question,
+    Ques,
     #[token("&&")]
     And,
     #[token("||")]
@@ -352,8 +352,8 @@ impl fmt::Display for Token {
             Token::Impl => write!(f, "impl"),
             Token::Type => write!(f, "type"),
             Token::As => write!(f, "as"),
-            Token::Break => write!(f, "break"),
-            Token::Continue => write!(f, "continue"),
+            Token::Bail => write!(f, "bail"),
+            Token::Cont => write!(f, "cont"),
             Token::Ret => write!(f, "ret"),
             Token::Unsafe => write!(f, "unsafe"),
             Token::Import => write!(f, "import"),
@@ -383,7 +383,7 @@ impl fmt::Display for Token {
             Token::Star => write!(f, "*"),
             Token::Slash => write!(f, "/"),
             Token::Bang => write!(f, "!"),
-            Token::Question => write!(f, "?"),
+            Token::Ques => write!(f, "?"),
             Token::And => write!(f, "&&"),
             Token::Or => write!(f, "||"),
             Token::Error => write!(f, "<invalid>"),
@@ -491,8 +491,8 @@ mod tests {
         assert_eq!(one("impl"), Token::Impl);
         assert_eq!(one("type"), Token::Type);
         assert_eq!(one("as"), Token::As);
-        assert_eq!(one("break"), Token::Break);
-        assert_eq!(one("continue"), Token::Continue);
+        assert_eq!(one("bail"), Token::Bail);
+        assert_eq!(one("cont"), Token::Cont);
         assert_eq!(one("ret"), Token::Ret);
     }
 

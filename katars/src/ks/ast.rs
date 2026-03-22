@@ -63,10 +63,10 @@ pub enum Stmt {
         path: Vec<Spanned<String>>,
         names: Option<Vec<Spanned<String>>>,
     },
-    /// `break` — exit the current loop. Span is the `break` keyword.
-    Break { keyword: Span },
-    /// `continue` — skip to the next loop iteration. Span is the `continue` keyword.
-    Continue { keyword: Span },
+    /// `bail` — exit the current loop. Span is the `bail` keyword.
+    Bail { keyword: Span },
+    /// `cont` — skip to the next loop iteration. Span is the `cont` keyword.
+    Cont { keyword: Span },
     /// `ret <expr>` — explicit return. Span is the `ret` keyword.
     Ret { keyword: Span, value: Spanned<Expr> },
 }
@@ -291,8 +291,10 @@ pub enum Expr {
         op: UnaryOp,
         operand: Box<Spanned<Expr>>,
     },
-    /// Postfix `?` — unwrap Opt.Val or early-return Opt.Non.
-    Try(Box<Spanned<Expr>>),
+    /// Postfix `?` — unwrap Val or propagate Non/Err.
+    Ques(Box<Spanned<Expr>>),
+    /// Postfix `!` — unwrap Val or panic on Non/Err.
+    Bang(Box<Spanned<Expr>>),
     /// `if cond { body } else { body }` — expression-oriented, returns last value.
     If {
         cond: Box<Spanned<Expr>>,

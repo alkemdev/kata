@@ -1,0 +1,13 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"cont\")"
+---
+Error: cont outside of loop
+   ╭─[<test>:1:1]
+   │
+ 1 │ cont
+   │ ──┬─  
+   │   ╰─── cont outside of loop
+   │ 
+   │ Note: cont can only be used inside while or for loops
+───╯

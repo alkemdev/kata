@@ -22,15 +22,19 @@
 - [x] `kind` (product types, generics, field access/mutation)
 - [x] `impl` blocks + method dispatch
 - [x] Mutable self (copy-in copy-out)
-- [x] `break`/`continue`
+- [x] `bail`/`cont` (loop control flow)
 - [x] `type` interfaces + `impl K as T` conformance
 - [x] `for` loops + iteration protocol
 - [x] Structured runtime errors (`ErrorKind` enum)
 - [x] Functions (`func`, closures, first-class)
-- [ ] Strings with interpolation
-- [ ] Lists and maps
-- [ ] Error handling (`try`/`catch` or `Result`)
-- [ ] Module system (`import`)
+- [x] Strings with interpolation + escape sequences
+- [x] Module system (`import`)
+- [x] Memory stack (Ptr/Buf/Arr), arrays, array literals
+- [x] Match expressions + `?` operator
+- [x] Error handling (`Res[T,E]`, `?` propagate, `!` unwrap)
+- [x] Indexing (`a[i]`, `a[i] = v`) via GetItem/SetItem
+- [ ] Maps
+- [ ] String methods
 
 ---
 

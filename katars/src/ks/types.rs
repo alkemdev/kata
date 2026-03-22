@@ -100,6 +100,15 @@ pub enum TypeExpr {
     Generic { base: TypeId, args: Vec<TypeExpr> },
 }
 
+/// Classification of an enum for the `?` operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryShape {
+    /// Opt-like: 2-variant enum with Val(T) + Non.
+    OptLike,
+    /// Res-like: 2-variant enum with Val(T) + Err(E).
+    ResLike,
+}
+
 /// A variant in an instantiated enum. All fields are concrete.
 #[derive(Debug, Clone)]
 pub struct ResolvedVariantDef {
@@ -499,6 +508,26 @@ impl TypeRegistry {
                 type_id,
                 expected: TypeKindExpectation::StructType,
             }),
+        }
+    }
+
+    /// Classify an enum for the `?` operator.
+    /// 2-variant enum with Val+Non → OptLike, Val+Err → ResLike.
+    pub fn try_shape(&self, type_id: TypeId) -> Option<TryShape> {
+        let TypeDef::EnumInstance { variants, .. } = self.get(type_id) else {
+            return None;
+        };
+        let has_val = variants.get("Val").map_or(false, |v| v.fields.len() == 1);
+        if variants.len() == 2 && has_val {
+            if variants.contains_key("Non") {
+                Some(TryShape::OptLike)
+            } else if variants.contains_key("Err") {
+                Some(TryShape::ResLike)
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 

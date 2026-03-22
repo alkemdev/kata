@@ -3,7 +3,7 @@ while i < 3 {
     let j = 0
     while true {
         if j == 2 {
-            break
+            bail
         }
         print(j)
         j = j + 1

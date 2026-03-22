@@ -1,7 +1,7 @@
 let i = 0
 while true {
     if i == 3 {
-        break
+        bail
     }
     print(i)
     i = i + 1

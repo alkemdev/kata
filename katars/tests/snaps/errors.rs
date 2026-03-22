@@ -41,8 +41,8 @@ fn empty_array() {
 }
 
 #[test]
-fn break_outside_loop() {
-    insta::assert_snapshot!(helpers::run_error("break"));
+fn bail_outside_loop() {
+    insta::assert_snapshot!(helpers::run_error("bail"));
 }
 
 #[test]
@@ -105,8 +105,8 @@ fn variant_wrong_arity() {
 }
 
 #[test]
-fn continue_outside_loop() {
-    insta::assert_snapshot!(helpers::run_error("continue"));
+fn cont_outside_loop() {
+    insta::assert_snapshot!(helpers::run_error("cont"));
 }
 
 #[test]

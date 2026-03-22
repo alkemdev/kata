@@ -179,7 +179,7 @@ Operators went through a similar evolution: hardcoded prim dispatch now, user-de
 
 `for x in expr { body }` desugars to: call `.to_iter()` on the iterable, then loop calling `.next()` on the iterator. `.next()` returns `Opt[T]` — `Val(value)` continues, `Non` breaks.
 
-The prelude defines abstract interfaces `Iter[T]` and `ToIter[T]`. Types opt in by implementing these via `impl`. `break` and `continue` work inside `for` loops via `Flow::Break`/`Flow::Continue` signals in the interpreter.
+The prelude defines abstract interfaces `Iter[T]` and `ToIter[T]`. Types opt in by implementing these via `impl`. `break` and `continue` work inside `for` loops via `Flow::Bail`/`Flow::Cont` signals in the interpreter.
 
 The iterator object lives as a Rust-local variable (not a KS scope variable). Copy-out semantics apply: after each `.next()` call, the mutated iterator self is written back to the local. This enables stateful iterators (e.g., a counter struct whose `next` increments a field).
 

@@ -1,4 +1,4 @@
-# continue skips the current iteration
+# cont skips the current iteration
 kind Counter { n: Int }
 kind CounterIter { current: Int, max: Int }
 
@@ -21,7 +21,7 @@ impl CounterIter {
 
 for x in Counter { n: 5 } {
     if x == 2 || x == 4 {
-        continue
+        cont
     }
     print(x)
 }

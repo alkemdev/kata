@@ -1,8 +1,8 @@
 # Decision: error handling strategy
 **ID:** error-handling
-**Status:** open
+**Status:** decided
 **Date opened:** 2026-03-14
-**Date done:** —
+**Date done:** 2026-03-22
 **Affects:** eval, syntax, stdlib
 
 ## Question
@@ -58,7 +58,8 @@ Option B (`try/catch`) is the path of least resistance for a dynamic scripting l
 Worth noting: if KataScript gets `kind`-based structural typing, the distinction between Options A and D blurs — `Res` and `try/catch` could unify under a "Fallible" kind.
 
 ## Decision
-<!-- blank while open -->
+
+Option A: `Res[T, E]` as primary error mechanism. No try/catch, no stack unwinding. `?` extended to work on both Opt and Res via structural variant checking. Panic is strictly fatal. See [spec: error-handling](../../docs/spec/error-handling.md).
 
 ## References
 - [spec: type-system](../../docs/spec/type-system.md) — overall type architecture

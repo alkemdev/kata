@@ -20,7 +20,7 @@ impl IntRangeIter {
 
 for x in IntRange { start: 0, end: 10 } {
     if x == 3 {
-        break
+        bail
     }
     print(x)
 }

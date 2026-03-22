@@ -2,12 +2,10 @@
 source: katars/tests/snaps/errors.rs
 expression: "helpers::run_error(\"let x = 42?\")"
 ---
-Error: ? operator requires an Opt value (enum with Val/Non variants)
+Error: ? requires an Opt[T] or Res[T, E] value
    ╭─[<test>:1:9]
    │
  1 │ let x = 42?
    │         ─┬─  
-   │          ╰─── ? operator requires an Opt value (enum with Val/Non variants)
-   │ 
-   │ Help: ? only works on Opt[T] values (Val/Non)
+   │          ╰─── ? requires an Opt[T] or Res[T, E] value
 ───╯

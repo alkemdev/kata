@@ -14,12 +14,15 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in std.core
 - **Methods**: impl blocks (generic: `impl Foo[T]`), method dispatch with base-type fallback, mutable self (copy-in copy-out), `self`/`Self` keywords
 - **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe in std.core
-- **Control flow**: if/elif/else (expression), while, for (iterator protocol), break, continue, && || (short-circuit)
+- **Control flow**: if/elif/else (expression), while, for (iterator protocol), bail, cont, && || (short-circuit)
 - **Blocks**: with (scoped bindings), unsafe (gates std.mem intrinsics)
 - **Memory**: RawPtr (opaque prim), Ptr[T], Buf[T], Arr[T] — layered stack with Allocator interface
 - **Modules**: import std.mem (scoped), import std.mem.{Ptr, Buf} (selective). Hierarchical std: std.core, std.mem, std.dsa
 - **Lifecycle**: Drop protocol (auto-called on scope exit), Self type in impl blocks
-- **Not yet**: maps, const, error handling, pattern matching, array literals
+- **Error handling**: Res[T,E] + postfix `?` (unwrap or propagate) + postfix `!` (unwrap or panic), Res methods (unwrap, unwrap_or, is_val, is_err)
+- **Pattern matching**: match expression with variant/literal/wildcard/binding patterns
+- **Collections**: array literals `[1, 2, 3]`, `a[i]`/`a[i] = v` indexing via GetItem/SetItem protocols
+- **Not yet**: maps, const, string methods
 
 ## Project layout
 

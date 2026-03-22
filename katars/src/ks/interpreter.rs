@@ -31,12 +31,40 @@ const VARIANT_NONE: &str = "Non";
 pub enum Flow {
     /// Statement completed normally. Carries the value for expression-statements.
     Next(Value),
-    /// A `ret` statement was hit; carry the value up to the call site.
-    Return(Value),
-    /// A `break` was hit; exit the current loop.
-    Break,
-    /// A `continue` was hit; skip to the next loop iteration.
-    Continue,
+    /// Explicit `ret` statement. Span is the `ret` keyword.
+    Return { value: Value, span: Span },
+    /// `?` operator propagation — unwrap failed, propagating Non/Err upward.
+    /// Distinct from Return: different error messages, potentially different
+    /// future semantics (e.g., caught by different constructs).
+    Propagate { value: Value, span: Span },
+    /// A `bail` was hit; exit the current loop. Span is the `bail` keyword.
+    Bail(Span),
+    /// A `cont` was hit; skip to the next loop iteration. Span is the keyword.
+    Cont(Span),
+}
+
+/// Evaluate a sub-expression and extract its value.
+///
+/// Propagates non-normal flows (`Return`, `Break`, `Continue`) instead of
+/// collapsing them, so the `?` operator's early-return works correctly
+/// in all expression contexts.
+macro_rules! eval {
+    ($self:expr, $expr:expr, $out:expr) => {
+        match $self.eval_expr($expr, $out)? {
+            Flow::Next(v) => v,
+            flow @ (Flow::Return { .. } | Flow::Propagate { .. }) => return Ok(flow),
+            Flow::Bail(span) => {
+                return Err(
+                    RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::BailOutsideLoop)).at(span),
+                )
+            }
+            Flow::Cont(span) => {
+                return Err(
+                    RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::ContOutsideLoop)).at(span),
+                )
+            }
+        }
+    };
 }
 
 // ── Interface storage ────────────────────────────────────────────
@@ -274,11 +302,11 @@ impl Interpreter {
     ) -> Result<(), RuntimeError> {
         if let Some(pre) = prelude {
             debug!(stmts = pre.len(), "loading prelude");
-            self.exec_top_level(pre, "in prelude", out)?;
+            self.exec_top_level(pre, out)?;
         }
 
         debug!(stmts = program.len(), "exec_program");
-        self.exec_top_level(program, "outside of function", out)?;
+        self.exec_top_level(program, out)?;
         Ok(())
     }
 
@@ -388,12 +416,12 @@ impl Interpreter {
                     self.set(name.clone(), val);
                     Ok(Flow::Next(Value::Nil))
                 }
-                ret @ Flow::Return(_) => Ok(ret),
+                flow @ (Flow::Return { .. } | Flow::Propagate { .. }) => Ok(flow),
                 _ => Ok(Flow::Next(Value::Nil)),
             },
 
             Stmt::Assign { target, value } => {
-                let val = self.eval_value(value, out)?;
+                let val = eval!(self, value, out);
                 match target {
                     AssignTarget::Name(name) => {
                         let old = self
@@ -418,12 +446,15 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::Break { .. } => Ok(Flow::Break),
-            Stmt::Continue { .. } => Ok(Flow::Continue),
+            Stmt::Bail { keyword } => Ok(Flow::Bail(*keyword)),
+            Stmt::Cont { keyword } => Ok(Flow::Cont(*keyword)),
 
-            Stmt::Ret { value, .. } => {
-                let val = self.eval_value(value, out)?;
-                Ok(Flow::Return(val))
+            Stmt::Ret { keyword, value } => {
+                let val = eval!(self, value, out);
+                Ok(Flow::Return {
+                    value: val,
+                    span: *keyword,
+                })
             }
         }
     }
@@ -616,7 +647,7 @@ impl Interpreter {
         // Evaluate all elements.
         let mut vals = Vec::with_capacity(elements.len());
         for elem in elements {
-            vals.push(self.eval_value(elem, out)?);
+            vals.push(eval!(self, elem, out));
         }
 
         // Infer element type from the first element.
@@ -715,7 +746,7 @@ impl Interpreter {
         arms: &[MatchArm],
         out: &mut impl Write,
     ) -> Result<Flow, RuntimeError> {
-        let val = self.eval_value(subject, out)?;
+        let val = eval!(self, subject, out);
 
         for arm in arms {
             if let Some(bindings) = self.match_pattern(&val, &arm.pattern.node) {
@@ -829,7 +860,10 @@ impl Interpreter {
         for stmt in stmts {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(v) => last_val = v,
-                flow @ (Flow::Return(_) | Flow::Break | Flow::Continue) => return Ok(flow),
+                flow @ (Flow::Return { .. }
+                | Flow::Propagate { .. }
+                | Flow::Bail(_)
+                | Flow::Cont(_)) => return Ok(flow),
             }
         }
         Ok(Flow::Next(last_val))
@@ -879,9 +913,10 @@ impl Interpreter {
                             let flow = self.eval_expr(inner, out)?;
                             let val = match flow {
                                 Flow::Next(v) => v,
-                                Flow::Return(v) => return Ok(Flow::Return(v)),
-                                Flow::Break => return Ok(Flow::Break),
-                                Flow::Continue => return Ok(Flow::Continue),
+                                flow @ (Flow::Return { .. }
+                                | Flow::Propagate { .. }
+                                | Flow::Bail(_)
+                                | Flow::Cont(_)) => return Ok(flow),
                             };
                             result.push_str(&val.display(&self.types));
                         }
@@ -902,7 +937,7 @@ impl Interpreter {
             Expr::With { bindings, body } => {
                 self.push_scope();
                 for (name, val_expr) in bindings {
-                    let val = self.eval_value(val_expr, out)?;
+                    let val = eval!(self, val_expr, out);
                     self.set(name.clone(), val);
                 }
                 let result = self.exec_block(body, out);
@@ -930,8 +965,8 @@ impl Interpreter {
                 .eval_match(*keyword, subject, arms, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
 
-            Expr::Try(inner) => {
-                let val = self.eval_value(inner, out)?;
+            Expr::Ques(inner) => {
+                let val = eval!(self, inner, out);
                 if let Value::Enum {
                     type_id,
                     variant_idx,
@@ -939,17 +974,50 @@ impl Interpreter {
                     ..
                 } = val
                 {
-                    let variant_name = self.types.variant_name(type_id, variant_idx);
-                    if variant_name == "Non" {
-                        return Ok(Flow::Return(val));
-                    }
-                    if let Some(inner_val) = fields.first() {
-                        return Ok(Flow::Next(inner_val.clone()));
+                    if self.types.try_shape(type_id).is_some() {
+                        let variant_name = self.types.variant_name(type_id, variant_idx);
+                        if variant_name == "Val" {
+                            if let Some(inner_val) = fields.first() {
+                                return Ok(Flow::Next(inner_val.clone()));
+                            }
+                        } else {
+                            // "Non" (Opt) or "Err" (Res) — propagate upward
+                            return Ok(Flow::Propagate {
+                                value: val,
+                                span: expr.span,
+                            });
+                        }
                     }
                 }
-                Err(RuntimeError::new(ErrorKind::InvalidTry)
-                    .at(expr.span)
-                    .help("? only works on Opt[T] values (Val/Non)"))
+                Err(RuntimeError::new(ErrorKind::InvalidUnwrap { operator: "?" }).at(expr.span))
+            }
+
+            Expr::Bang(inner) => {
+                let val = eval!(self, inner, out);
+                if let Value::Enum {
+                    type_id,
+                    variant_idx,
+                    ref fields,
+                    ..
+                } = val
+                {
+                    if self.types.try_shape(type_id).is_some() {
+                        let variant_name = self.types.variant_name(type_id, variant_idx);
+                        if variant_name == "Val" {
+                            if let Some(inner_val) = fields.first() {
+                                return Ok(Flow::Next(inner_val.clone()));
+                            }
+                        } else {
+                            // "Non" (Opt) or "Err" (Res) — panic
+                            let type_name = self.types.display_name(type_id);
+                            return Err(RuntimeError::new(ErrorKind::Other(format!(
+                                "unwrap on {type_name}.{variant_name}"
+                            )))
+                            .at(expr.span));
+                        }
+                    }
+                }
+                Err(RuntimeError::new(ErrorKind::InvalidUnwrap { operator: "!" }).at(expr.span))
             }
 
             Expr::Attr {
@@ -957,16 +1025,16 @@ impl Interpreter {
                 name,
                 name_span,
             } => {
-                let obj = self.eval_value(object, out)?;
+                let obj = eval!(self, object, out);
                 self.eval_attr(&obj, name)
                     .map_err(|e: RuntimeError| e.at(*name_span))
             }
 
             Expr::Item { object, args } => {
-                let obj = self.eval_value(object, out)?;
+                let obj = eval!(self, object, out);
                 let mut arg_vals = Vec::with_capacity(args.len());
                 for a in args {
-                    arg_vals.push(self.eval_value(a, out)?);
+                    arg_vals.push(eval!(self, a, out));
                 }
 
                 // Type instantiation — no copy-out needed.
@@ -1008,10 +1076,10 @@ impl Interpreter {
                 let mut arg_vals = Vec::with_capacity(args.len());
                 let arg_spans: Vec<Span> = args.iter().map(|a| a.span).collect();
                 for a in args {
-                    arg_vals.push(self.eval_value(a, out)?);
+                    arg_vals.push(eval!(self, a, out));
                 }
 
-                let func = self.eval_value(callee, out)?;
+                let func = eval!(self, callee, out);
 
                 // Method call with copy-in copy-out: if callee was obj.method,
                 // extract the receiver variable name for self write-back.
@@ -1055,8 +1123,8 @@ impl Interpreter {
             }
 
             Expr::BinOp { op, left, right } => {
-                let lv = self.eval_value(left, out)?;
-                let rv = self.eval_value(right, out)?;
+                let lv = eval!(self, left, out);
+                let rv = eval!(self, right, out);
                 let result = native::eval_binop(*op, &lv, &rv).map_err(|e| {
                     let mut err = RuntimeError::from(e);
                     if matches!(err.kind, ErrorKind::BinOpType { .. }) {
@@ -1087,7 +1155,7 @@ impl Interpreter {
                 then_body,
                 else_body,
             } => {
-                let cv = self.eval_value(cond, out)?;
+                let cv = eval!(self, cond, out);
                 if native::truth(&cv) {
                     self.push_scope();
                     let result = self.exec_block(then_body, out);
@@ -1109,7 +1177,7 @@ impl Interpreter {
                 body,
             } => {
                 // 1. Evaluate the iterable expression.
-                let iterable = self.eval_value(iter_expr, out)?;
+                let iterable = eval!(self, iter_expr, out);
 
                 // 2. Call .to_iter() on it.
                 let iter_val = self
@@ -1174,7 +1242,7 @@ impl Interpreter {
 
             Expr::While { cond, body } => {
                 loop {
-                    let cv = self.eval_value(cond, out)?;
+                    let cv = eval!(self, cond, out);
                     if !native::truth(&cv) {
                         break;
                     }
@@ -1188,25 +1256,25 @@ impl Interpreter {
             }
 
             Expr::And { left, right } => {
-                let lv = self.eval_value(left, out)?;
+                let lv = eval!(self, left, out);
                 if !native::truth(&lv) {
                     return Ok(Flow::Next(lv));
                 }
-                let rv = self.eval_value(right, out)?;
+                let rv = eval!(self, right, out);
                 Ok(Flow::Next(rv))
             }
 
             Expr::Or { left, right } => {
-                let lv = self.eval_value(left, out)?;
+                let lv = eval!(self, left, out);
                 if native::truth(&lv) {
                     return Ok(Flow::Next(lv));
                 }
-                let rv = self.eval_value(right, out)?;
+                let rv = eval!(self, right, out);
                 Ok(Flow::Next(rv))
             }
 
             Expr::UnaryOp { op, operand } => {
-                let val = self.eval_value(operand, out)?;
+                let val = eval!(self, operand, out);
                 let result = native::eval_unaryop(*op, &val)
                     .map_err(|e| RuntimeError::from(e).at(expr.span))?;
                 Ok(Flow::Next(result))
@@ -1217,7 +1285,7 @@ impl Interpreter {
                 fields,
                 open_brace,
             } => {
-                let type_val = self.eval_value(type_expr, out)?;
+                let type_val = eval!(self, type_expr, out);
                 let Value::Type(type_id) = type_val else {
                     return Err(RuntimeError::new(ErrorKind::WrongTypeKind {
                         type_id: type_val.type_id(),
@@ -1247,7 +1315,7 @@ impl Interpreter {
                 // Evaluate field values, keeping spans for error reporting.
                 let mut provided: IndexMap<String, (Value, Span)> = IndexMap::new();
                 for (fname, fexpr) in fields {
-                    let val = self.eval_value(fexpr, out)?;
+                    let val = eval!(self, fexpr, out);
                     provided.insert(fname.clone(), (val, fexpr.span));
                 }
 
@@ -1271,25 +1339,6 @@ impl Interpreter {
                     fields: result_fields,
                 }))
             }
-        }
-    }
-
-    /// Evaluate an expression and extract the value (not a return flow).
-    fn eval_value(
-        &mut self,
-        expr: &Spanned<Expr>,
-        out: &mut impl Write,
-    ) -> Result<Value, RuntimeError> {
-        match self.eval_expr(expr, out)? {
-            Flow::Next(v) | Flow::Return(v) => Ok(v),
-            Flow::Break => Err(RuntimeError::new(ErrorKind::FlowMisuse(
-                FlowMisuse::BreakOutsideLoop,
-            ))
-            .at(expr.span)),
-            Flow::Continue => Err(RuntimeError::new(ErrorKind::FlowMisuse(
-                FlowMisuse::ContinueOutsideLoop,
-            ))
-            .at(expr.span)),
         }
     }
 
@@ -1608,7 +1657,7 @@ impl Interpreter {
         // Build args: [key_args..., val]
         let mut call_args = Vec::with_capacity(args.len() + 1);
         for a in args {
-            call_args.push(self.eval_value(a, out)?);
+            call_args.push(eval!(self, a, out));
         }
         call_args.push(val);
 
@@ -1706,7 +1755,9 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         let bound = self.resolve_method(receiver, name)?;
         match self.eval_call(bound, args, &[], out)? {
-            Flow::Next(v) | Flow::Return(v) => Ok(v),
+            Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. } => {
+                Ok(v)
+            }
             _ => Err(ErrorKind::Other(format!("method '{name}' returned abnormal flow")).into()),
         }
     }
@@ -2028,45 +2079,42 @@ impl Interpreter {
             .collect()
     }
 
-    /// Execute a top-level statement list, rejecting ret/break/continue.
+    /// Execute a top-level statement list, rejecting ret/break/continue/?.
     fn exec_top_level(
         &mut self,
         stmts: &[Spanned<Stmt>],
-        context: &str,
         out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
         for stmt in stmts {
-            // Extract keyword span for flow-misuse errors.
-            let keyword_span = match &stmt.node {
-                Stmt::Break { keyword } => Some(*keyword),
-                Stmt::Continue { keyword } => Some(*keyword),
-                Stmt::Ret { keyword, .. } => Some(*keyword),
-                _ => None,
-            };
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(_) => {}
-                Flow::Return(_) => {
+                Flow::Return { span, .. } => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
-                        FlowMisuse::RetOutsideFunction {
-                            context: context.to_string(),
-                        },
+                        FlowMisuse::RetOutsideFunction,
                     ))
-                    .at(keyword_span.unwrap_or(stmt.span))
-                    .note("ret can only be used inside a func body"))
+                    .at(span)
+                    .note("ret can only be used inside a func body"));
                 }
-                Flow::Break => {
+                Flow::Propagate { span, .. } => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
-                        FlowMisuse::BreakOutsideLoop,
+                        FlowMisuse::PropagateOutsideFunction,
                     ))
-                    .at(keyword_span.unwrap_or(stmt.span))
-                    .note("break can only be used inside while or for loops"))
+                    .at(span)
+                    .note("? can only be used inside a func body"));
                 }
-                Flow::Continue => {
+                Flow::Bail(span) => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
-                        FlowMisuse::ContinueOutsideLoop,
+                        FlowMisuse::BailOutsideLoop,
                     ))
-                    .at(keyword_span.unwrap_or(stmt.span))
-                    .note("continue can only be used inside while or for loops"))
+                    .at(span)
+                    .note("bail can only be used inside while or for loops"))
+                }
+                Flow::Cont(span) => {
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::ContOutsideLoop,
+                    ))
+                    .at(span)
+                    .note("cont can only be used inside while or for loops"))
                 }
             }
         }
@@ -2122,14 +2170,20 @@ impl Interpreter {
         }
 
         let result = match self.exec_block(body, out) {
-            Ok(Flow::Next(v) | Flow::Return(v)) => v,
-            Ok(Flow::Break) => {
+            Ok(
+                Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. },
+            ) => v,
+            Ok(Flow::Bail(span)) => {
                 self.pop_scope(out);
-                return Err(ErrorKind::FlowMisuse(FlowMisuse::BreakOutsideLoop).into());
+                return Err(
+                    RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::BailOutsideLoop)).at(span),
+                );
             }
-            Ok(Flow::Continue) => {
+            Ok(Flow::Cont(span)) => {
                 self.pop_scope(out);
-                return Err(ErrorKind::FlowMisuse(FlowMisuse::ContinueOutsideLoop).into());
+                return Err(
+                    RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::ContOutsideLoop)).at(span),
+                );
             }
             Err(e) => {
                 self.pop_scope(out);
@@ -2160,15 +2214,15 @@ impl Interpreter {
     /// Returns `None` to continue looping, `Some(flow)` to exit.
     fn dispatch_loop_flow(&mut self, flow: Flow, out: &mut impl Write) -> Option<Flow> {
         match flow {
-            Flow::Next(_) | Flow::Continue => {
+            Flow::Next(_) | Flow::Cont(_) => {
                 self.pop_scope(out);
                 None
             }
-            Flow::Break => {
+            Flow::Bail(_) => {
                 self.pop_scope(out);
                 Some(Flow::Next(Value::Nil))
             }
-            ret @ Flow::Return(_) => {
+            ret @ (Flow::Return { .. } | Flow::Propagate { .. }) => {
                 self.pop_scope(out);
                 Some(ret)
             }

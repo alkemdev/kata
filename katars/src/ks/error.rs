@@ -71,7 +71,9 @@ pub enum ErrorKind {
     },
     UseAfterFree,
     NoMatchArm,
-    InvalidTry,
+    InvalidUnwrap {
+        operator: &'static str,
+    },
     EmptyArrayLiteral,
     IndexOutOfBounds {
         index: i64,
@@ -223,9 +225,12 @@ impl ErrorKind {
                 }
             },
             ErrorKind::FlowMisuse(misuse) => match misuse {
-                FlowMisuse::BreakOutsideLoop => "break outside of loop".to_string(),
-                FlowMisuse::ContinueOutsideLoop => "continue outside of loop".to_string(),
-                FlowMisuse::RetOutsideFunction { context } => format!("ret {context}"),
+                FlowMisuse::BailOutsideLoop => "bail outside of loop".to_string(),
+                FlowMisuse::ContOutsideLoop => "cont outside of loop".to_string(),
+                FlowMisuse::RetOutsideFunction => "ret outside of function".to_string(),
+                FlowMisuse::PropagateOutsideFunction => {
+                    "? operator used outside of function".to_string()
+                }
             },
             ErrorKind::Unsupported(msg) => msg.to_string(),
             ErrorKind::IteratorProtocol(msg) => msg.to_string(),
@@ -237,8 +242,8 @@ impl ErrorKind {
             }
             ErrorKind::UseAfterFree => "use of deallocated memory".to_string(),
             ErrorKind::NoMatchArm => "no match arm matched".to_string(),
-            ErrorKind::InvalidTry => {
-                "? operator requires an Opt value (enum with Val/Non variants)".to_string()
+            ErrorKind::InvalidUnwrap { operator } => {
+                format!("{operator} requires an Opt[T] or Res[T, E] value")
             }
             ErrorKind::EmptyArrayLiteral => {
                 "empty array literal — cannot infer element type".to_string()
@@ -318,9 +323,10 @@ pub enum ConformanceError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlowMisuse {
-    BreakOutsideLoop,
-    ContinueOutsideLoop,
-    RetOutsideFunction { context: String },
+    BailOutsideLoop,
+    ContOutsideLoop,
+    RetOutsideFunction,
+    PropagateOutsideFunction,
 }
 
 // ── RuntimeError ────────────────────────────────────────────────────────────

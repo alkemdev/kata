@@ -23,8 +23,8 @@ use super::lexer::{StringPart, Token};
 //              | 'impl' IDENT type_params? ('as' expr)? '{' func_def* '}' -- impl block
 //              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}'  -- function def
 //              | 'let' IDENT '=' expr ';'?                            -- variable binding
-//              | 'break' ';'?                                          -- break out of loop
-//              | 'continue' ';'?                                       -- next loop iteration
+//              | 'bail' ';'?                                           -- exit current loop
+//              | 'cont' ';'?                                           -- next loop iteration
 //              | 'ret' expr ';'?                                       -- explicit return
 //              | expr_or_assign ';'?                                   -- expr or assignment
 //   type_params = '[' IDENT (',' IDENT)* ']'
@@ -48,7 +48,7 @@ use super::lexer::{StringPart, Token};
 //   binop      = '+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>='
 //              | '&&' | '||'
 //   unary      = ('-' | '!') unary | postfix
-//   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}')*
+//   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}' | '?' | '!')*
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
 //   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')' | arr_lit
@@ -447,7 +447,8 @@ where
                 Item(Vec<Spanned<Expr>>, usize),
                 Call(Vec<Spanned<Expr>>, Span, usize), // args, args_span, end
                 Construct(Vec<(String, Spanned<Expr>)>, Span, usize), // fields, brace_span, end
-                Try(usize),
+                Ques(usize),
+                Bang(usize),
             }
 
             impl Postfix {
@@ -457,7 +458,8 @@ where
                         | Postfix::Item(_, e)
                         | Postfix::Call(_, _, e)
                         | Postfix::Construct(_, _, e)
-                        | Postfix::Try(e) => *e,
+                        | Postfix::Ques(e)
+                        | Postfix::Bang(e) => *e,
                     }
                 }
             }
@@ -507,9 +509,10 @@ where
                     Postfix::Construct(fields, brace_span, span(&ex.span()).1)
                 });
 
-            let try_op = just(Token::Question).map_with(|_, ex| Postfix::Try(span(&ex.span()).1));
+            let ques_op = just(Token::Ques).map_with(|_, ex| Postfix::Ques(span(&ex.span()).1));
+            let bang_op = just(Token::Bang).map_with(|_, ex| Postfix::Bang(span(&ex.span()).1));
 
-            let postfix = attr.or(item).or(call).or(construct).or(try_op);
+            let postfix = attr.or(item).or(call).or(construct).or(ques_op).or(bang_op);
 
             let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
                 let s = (lhs.span.0, op.end()); // full span: lhs start to postfix end
@@ -545,7 +548,8 @@ where
                         },
                         s,
                     ),
-                    Postfix::Try(_) => Spanned::new(Expr::Try(Box::new(lhs)), s),
+                    Postfix::Ques(_) => Spanned::new(Expr::Ques(Box::new(lhs)), s),
+                    Postfix::Bang(_) => Spanned::new(Expr::Bang(Box::new(lhs)), s),
                 }
             });
 
@@ -853,15 +857,15 @@ where
                 Spanned::new(Stmt::Let { name, value }, span(&ex.span()))
             });
 
-        let break_stmt = just(Token::Break)
+        let bail_stmt = just(Token::Bail)
             .map_with(|_, ex| span(&ex.span())) // capture keyword span
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|keyword, ex| Spanned::new(Stmt::Break { keyword }, span(&ex.span())));
+            .map_with(|keyword, ex| Spanned::new(Stmt::Bail { keyword }, span(&ex.span())));
 
-        let continue_stmt = just(Token::Continue)
+        let cont_stmt = just(Token::Cont)
             .map_with(|_, ex| span(&ex.span()))
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|keyword, ex| Spanned::new(Stmt::Continue { keyword }, span(&ex.span())));
+            .map_with(|keyword, ex| Spanned::new(Stmt::Cont { keyword }, span(&ex.span())));
 
         let ret_stmt = just(Token::Ret)
             .map_with(|_, ex| span(&ex.span())) // capture keyword span
@@ -932,8 +936,8 @@ where
             .or(impl_block)
             .or(func_def)
             .or(let_stmt)
-            .or(break_stmt)
-            .or(continue_stmt)
+            .or(bail_stmt)
+            .or(cont_stmt)
             .or(ret_stmt)
             .or(expr_or_assign)
     })
