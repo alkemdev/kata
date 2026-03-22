@@ -949,10 +949,14 @@ impl Interpreter {
                     .help("? only works on Opt[T] values (Val/Non)"))
             }
 
-            Expr::Attr { object, name } => {
+            Expr::Attr {
+                object,
+                name,
+                name_span,
+            } => {
                 let obj = self.eval_value(object, out)?;
                 self.eval_attr(&obj, name)
-                    .map_err(|e: RuntimeError| e.at(expr.span))
+                    .map_err(|e: RuntimeError| e.at(*name_span))
             }
 
             Expr::Item { object, args } => {

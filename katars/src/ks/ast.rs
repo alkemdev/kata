@@ -263,6 +263,7 @@ pub enum Expr {
     Attr {
         object: Box<Spanned<Expr>>,
         name: String,
+        name_span: Span,
     },
     /// Item access / type args: `a[b, c]`
     Item {

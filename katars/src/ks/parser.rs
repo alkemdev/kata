@@ -9,7 +9,7 @@ use tracing::{debug, info};
 
 use super::ast::{
     AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MatchArm,
-    MethodSig, Param, Pattern, Program, Spanned, Stmt, UnaryOp,
+    MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, UnaryOp,
 };
 use super::lexer::{StringPart, Token};
 
@@ -443,7 +443,7 @@ where
             // compute the full span from lhs.start to postfix.end.
             #[derive(Clone)]
             enum Postfix {
-                Attr(String, usize),
+                Attr(String, Span, usize), // name, name_span, end
                 Item(Vec<Spanned<Expr>>, usize),
                 Call(Vec<Spanned<Expr>>, usize),
                 Construct(Vec<(String, Spanned<Expr>)>, usize),
@@ -453,7 +453,7 @@ where
             impl Postfix {
                 fn end(&self) -> usize {
                     match self {
-                        Postfix::Attr(_, e)
+                        Postfix::Attr(_, _, e)
                         | Postfix::Item(_, e)
                         | Postfix::Call(_, e)
                         | Postfix::Construct(_, e)
@@ -463,8 +463,13 @@ where
             }
 
             let attr = just(Token::Dot)
-                .ignore_then(select! { Token::Ident(name) => name })
-                .map_with(|name, ex| Postfix::Attr(name, span(&ex.span()).1));
+                .ignore_then(
+                    select! { Token::Ident(name) => name }
+                        .map_with(|name, ex| (name, span(&ex.span()))),
+                )
+                .map_with(|(name, name_span), ex| {
+                    Postfix::Attr(name, name_span, span(&ex.span()).1)
+                });
 
             let item = expr
                 .clone()
@@ -500,10 +505,11 @@ where
             let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
                 let s = (lhs.span.0, op.end()); // full span: lhs start to postfix end
                 match op {
-                    Postfix::Attr(name, _) => Spanned::new(
+                    Postfix::Attr(name, name_span, _) => Spanned::new(
                         Expr::Attr {
                             object: Box::new(lhs),
                             name,
+                            name_span,
                         },
                         s,
                     ),
@@ -867,7 +873,7 @@ where
                     Some(value) => {
                         let target = match lhs.node {
                             Expr::Name(name) => AssignTarget::Name(name),
-                            Expr::Attr { object, name } => {
+                            Expr::Attr { object, name, .. } => {
                                 AssignTarget::Attr { object, attr: name }
                             }
                             _ => {
