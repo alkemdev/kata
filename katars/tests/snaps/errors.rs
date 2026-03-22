@@ -121,6 +121,23 @@ fn use_after_free() {
     ));
 }
 
+// ── Index errors ────────────────────────────────────────────────
+
+#[test]
+fn index_out_of_bounds() {
+    insta::assert_snapshot!(helpers::run_error("let a = [10, 20, 30]\nprint(a[5])"));
+}
+
+#[test]
+fn index_not_indexable() {
+    insta::assert_snapshot!(helpers::run_error("let x = 42\nx[0]"));
+}
+
+#[test]
+fn index_set_out_of_bounds() {
+    insta::assert_snapshot!(helpers::run_error("let a = [10, 20, 30]\na[5] = 99"));
+}
+
 // ── Postfix span tests ──────────────────────────────────────────
 #[test]
 fn unknown_root_module() {

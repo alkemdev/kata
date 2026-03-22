@@ -121,6 +121,10 @@ pub enum AssignTarget {
         object: Box<Spanned<Expr>>,
         attr: String,
     },
+    Item {
+        object: Box<Spanned<Expr>>,
+        args: Vec<Spanned<Expr>>,
+    },
 }
 
 /// A segment of a string interpolation expression.
@@ -320,6 +324,8 @@ pub enum Expr {
     Construct {
         type_expr: Box<Spanned<Expr>>,
         fields: Vec<(String, Spanned<Expr>)>,
+        /// Span of the opening `{` — used for error reporting on missing fields.
+        open_brace: Span,
     },
 }
 

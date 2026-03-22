@@ -407,6 +407,9 @@ impl Interpreter {
                     AssignTarget::Attr { object, attr } => self
                         .exec_attr_assign(object, attr, val)
                         .map_err(|e| e.at(stmt.span)),
+                    AssignTarget::Item { object, args } => self
+                        .exec_item_assign(object, args, val, out)
+                        .map_err(|e| e.at(stmt.span)),
                 }
             }
 
@@ -965,8 +968,35 @@ impl Interpreter {
                 for a in args {
                     arg_vals.push(self.eval_value(a, out)?);
                 }
-                self.eval_item(&obj, &arg_vals)
-                    .map_err(|e: RuntimeError| e.at(expr.span))
+
+                // Type instantiation — no copy-out needed.
+                if matches!(obj, Value::Type(_)) {
+                    return self
+                        .eval_item(&obj, &arg_vals, out)
+                        .map_err(|e: RuntimeError| e.at(expr.span));
+                }
+
+                // Indexing: extract receiver variable name for copy-out.
+                let receiver_var = if let Expr::Name(var) = &object.node {
+                    Some(var.clone())
+                } else {
+                    None
+                };
+
+                let result = self
+                    .eval_item(&obj, &arg_vals, out)
+                    .map_err(|e: RuntimeError| e.at(expr.span))?;
+
+                // Copy-out: write mutated self back to receiver variable.
+                if let Some(var_name) = receiver_var {
+                    if let Some(mutated_self) = self.last_method_self.take() {
+                        let _ = self
+                            .update_in_scope(&var_name, mutated_self)
+                            .map_err(|e: RuntimeError| e.at(expr.span))?;
+                    }
+                }
+
+                Ok(result)
             }
 
             Expr::Call {
@@ -1182,7 +1212,11 @@ impl Interpreter {
                 Ok(Flow::Next(result))
             }
 
-            Expr::Construct { type_expr, fields } => {
+            Expr::Construct {
+                type_expr,
+                fields,
+                open_brace,
+            } => {
                 let type_val = self.eval_value(type_expr, out)?;
                 let Value::Type(type_id) = type_val else {
                     return Err(RuntimeError::new(ErrorKind::WrongTypeKind {
@@ -1225,7 +1259,7 @@ impl Interpreter {
                                 type_id,
                                 field: fname.clone(),
                             })
-                            .at(expr.span)
+                            .at((type_expr.span.0, open_brace.1))
                         })?;
                     self.check_type(&val, *expected_tid)
                         .map_err(|e| e.at(val_span))?;
@@ -1560,6 +1594,59 @@ impl Interpreter {
         .into())
     }
 
+    fn exec_item_assign(
+        &mut self,
+        object: &Spanned<Expr>,
+        args: &[Spanned<Expr>],
+        val: Value,
+        out: &mut impl Write,
+    ) -> Result<Flow, RuntimeError> {
+        let Expr::Name(var_name) = &object.node else {
+            return Err(ErrorKind::Unsupported("nested index assignment not yet supported").into());
+        };
+
+        // Build args: [key_args..., val]
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        for a in args {
+            call_args.push(self.eval_value(a, out)?);
+        }
+        call_args.push(val);
+
+        let receiver = self
+            .get(var_name)
+            .ok_or_else(|| -> RuntimeError {
+                ErrorKind::Undefined {
+                    kind: NameKind::Variable,
+                    name: var_name.clone(),
+                }
+                .into()
+            })?
+            .clone();
+
+        self.call_method(&receiver, "set_item", &call_args, out)
+            .map_err(|e| {
+                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == "set_item") {
+                    RuntimeError::from(ErrorKind::NotIndexable {
+                        type_id: receiver.type_id(),
+                    })
+                } else {
+                    // Strip internal spans so the user's expression span wins.
+                    RuntimeError {
+                        span: None,
+                        labels: Vec::new(),
+                        ..e
+                    }
+                }
+            })?;
+
+        // Copy-out: write mutated self back to the variable in scope.
+        if let Some(mutated_self) = self.last_method_self.take() {
+            let _ = self.update_in_scope(var_name, mutated_self)?;
+        }
+
+        Ok(Flow::Next(Value::Nil))
+    }
+
     // ── Method helpers ────────────────────────────────────────────────
 
     /// Look up a method by name. Falls back from instance to base type
@@ -1712,7 +1799,12 @@ impl Interpreter {
 
     // ── Item: a[b] ───────────────────────────────────────────────────────
 
-    fn eval_item(&mut self, object: &Value, args: &[Value]) -> Result<Flow, RuntimeError> {
+    fn eval_item(
+        &mut self,
+        object: &Value,
+        args: &[Value],
+        out: &mut impl Write,
+    ) -> Result<Flow, RuntimeError> {
         match object {
             Value::Type(base_id) => {
                 let type_args: Vec<TypeId> = args
@@ -1743,11 +1835,24 @@ impl Interpreter {
                 };
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
-            other => Err(ErrorKind::WrongTypeKind {
-                type_id: other.type_id(),
-                expected: TypeKindExpectation::Indexable,
-            }
-            .into()),
+            other => match self.call_method(other, "get_item", args, out) {
+                Ok(val) => Ok(Flow::Next(val)),
+                Err(e) => {
+                    // Convert "no method 'get_item'" → "not indexable".
+                    if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == "get_item") {
+                        Err(RuntimeError::from(ErrorKind::NotIndexable {
+                            type_id: other.type_id(),
+                        }))
+                    } else {
+                        // Strip internal spans so the user's expression span wins.
+                        Err(RuntimeError {
+                            span: None,
+                            labels: Vec::new(),
+                            ..e
+                        })
+                    }
+                }
+            },
         }
     }
 

@@ -73,6 +73,13 @@ pub enum ErrorKind {
     NoMatchArm,
     InvalidTry,
     EmptyArrayLiteral,
+    IndexOutOfBounds {
+        index: i64,
+        len: i64,
+    },
+    NotIndexable {
+        type_id: TypeId,
+    },
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
 }
@@ -235,6 +242,13 @@ impl ErrorKind {
             }
             ErrorKind::EmptyArrayLiteral => {
                 "empty array literal — cannot infer element type".to_string()
+            }
+            ErrorKind::IndexOutOfBounds { index, len } => {
+                format!("index out of bounds: index is {index} but length is {len}")
+            }
+            ErrorKind::NotIndexable { type_id } => {
+                let name = types.display_name(*type_id);
+                format!("'{name}' does not support indexing")
             }
             ErrorKind::Other(msg) => msg.clone(),
         }

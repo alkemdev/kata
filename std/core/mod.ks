@@ -55,3 +55,13 @@ type Copy {
 type Dupe {
     func dupe(self): Self
 }
+
+# ── Indexing protocols ─────────────────────────────────────────
+
+type GetItem[K, V] {
+    func get_item(self, key: K): V
+}
+
+type SetItem[K, V] {
+    func set_item(self, key: K, val: V)
+}

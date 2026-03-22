@@ -2,7 +2,7 @@
 #
 # Arr[T] — safe, iterable, growable array
 
-import std.core.{Opt}
+import std.core.{Opt, GetItem, SetItem}
 import std.mem.{Ptr, Buf, heap}
 
 # ── Arr[T] — safe, iterable array ────────────────────────────────
@@ -62,6 +62,24 @@ impl ArrIter[T] {
         let val = self.arr.buf.read(self.idx)
         self.idx = self.idx + 1
         ret Opt[T].Val(val)
+    }
+}
+
+impl Arr[T] as GetItem[Int, T] {
+    func get_item(self, key: Int): T {
+        if key < 0 || key >= self.len {
+            panic("index out of bounds: {key}, len {self.len}")
+        }
+        ret self.buf.read(key)
+    }
+}
+
+impl Arr[T] as SetItem[Int, T] {
+    func set_item(self, key: Int, val: T) {
+        if key < 0 || key >= self.len {
+            panic("index out of bounds: {key}, len {self.len}")
+        }
+        self.buf.write(key, val)
     }
 }
 

@@ -446,7 +446,7 @@ where
                 Attr(String, Span, usize), // name, name_span, end
                 Item(Vec<Spanned<Expr>>, usize),
                 Call(Vec<Spanned<Expr>>, Span, usize), // args, args_span, end
-                Construct(Vec<(String, Spanned<Expr>)>, usize),
+                Construct(Vec<(String, Spanned<Expr>)>, Span, usize), // fields, brace_span, end
                 Try(usize),
             }
 
@@ -456,7 +456,7 @@ where
                         Postfix::Attr(_, _, e)
                         | Postfix::Item(_, e)
                         | Postfix::Call(_, _, e)
-                        | Postfix::Construct(_, e)
+                        | Postfix::Construct(_, _, e)
                         | Postfix::Try(e) => *e,
                     }
                 }
@@ -494,12 +494,18 @@ where
                 .then_ignore(just(Token::Colon))
                 .then(expr.clone());
 
-            let construct = field_init
-                .separated_by(just(Token::Comma))
-                .allow_trailing()
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace))
-                .map_with(|fields, ex| Postfix::Construct(fields, span(&ex.span()).1));
+            let construct = just(Token::LBrace)
+                .map_with(|_, ex| span(&ex.span()))
+                .then(
+                    field_init
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(Token::RBrace))
+                .map_with(|(brace_span, fields), ex| {
+                    Postfix::Construct(fields, brace_span, span(&ex.span()).1)
+                });
 
             let try_op = just(Token::Question).map_with(|_, ex| Postfix::Try(span(&ex.span()).1));
 
@@ -531,10 +537,11 @@ where
                         },
                         s,
                     ),
-                    Postfix::Construct(fields, _) => Spanned::new(
+                    Postfix::Construct(fields, brace_span, _) => Spanned::new(
                         Expr::Construct {
                             type_expr: Box::new(lhs),
                             fields,
+                            open_brace: brace_span,
                         },
                         s,
                     ),
@@ -880,6 +887,7 @@ where
                             Expr::Attr { object, name, .. } => {
                                 AssignTarget::Attr { object, attr: name }
                             }
+                            Expr::Item { object, args } => AssignTarget::Item { object, args },
                             _ => {
                                 emitter
                                     .emit(Rich::custom(extra.span(), "invalid assignment target"));

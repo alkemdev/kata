@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let x = 42\\nx[0]\")"
+---
+Error: 'Int' does not support indexing
+   ╭─[<test>:2:1]
+   │
+ 2 │ x[0]
+   │ ──┬─  
+   │   ╰─── 'Int' does not support indexing
+───╯

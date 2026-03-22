@@ -1,0 +1,11 @@
+---
+source: katars/tests/snaps/errors.rs
+expression: "helpers::run_error(\"let a = [10, 20, 30]\\nprint(a[5])\")"
+---
+Error: index out of bounds: 5, len 3
+   ╭─[<test>:2:7]
+   │
+ 2 │ print(a[5])
+   │       ──┬─  
+   │         ╰─── index out of bounds: 5, len 3
+───╯
