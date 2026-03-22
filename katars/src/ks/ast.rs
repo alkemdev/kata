@@ -274,6 +274,7 @@ pub enum Expr {
     Call {
         callee: Box<Spanned<Expr>>,
         args: Vec<Spanned<Expr>>,
+        args_span: Span, // span of `(...)` for arity error reporting
     },
     /// Binary operator: `a + b`, `a == b`, etc.
     BinOp {
@@ -338,6 +339,7 @@ mod tests {
         let expr = Expr::Call {
             callee: Box::new(Spanned::new(Expr::Name("print".into()), (0, 5))),
             args: vec![Spanned::new(Expr::Str("hello".into()), (6, 13))],
+            args_span: (5, 14),
         };
         let json = serde_json::to_string(&expr).unwrap();
         let back: Expr = serde_json::from_str(&json).unwrap();

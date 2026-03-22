@@ -445,7 +445,7 @@ where
             enum Postfix {
                 Attr(String, Span, usize), // name, name_span, end
                 Item(Vec<Spanned<Expr>>, usize),
-                Call(Vec<Spanned<Expr>>, usize),
+                Call(Vec<Spanned<Expr>>, Span, usize), // args, args_span, end
                 Construct(Vec<(String, Spanned<Expr>)>, usize),
                 Try(usize),
             }
@@ -455,7 +455,7 @@ where
                     match self {
                         Postfix::Attr(_, _, e)
                         | Postfix::Item(_, e)
-                        | Postfix::Call(_, e)
+                        | Postfix::Call(_, _, e)
                         | Postfix::Construct(_, e)
                         | Postfix::Try(e) => *e,
                     }
@@ -485,7 +485,10 @@ where
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
-                .map_with(|args, ex| Postfix::Call(args, span(&ex.span()).1));
+                .map_with(|args, ex| {
+                    let s = span(&ex.span());
+                    Postfix::Call(args, s, s.1)
+                });
 
             let field_init = select! { Token::Ident(name) => name }
                 .then_ignore(just(Token::Colon))
@@ -520,10 +523,11 @@ where
                         },
                         s,
                     ),
-                    Postfix::Call(args, _) => Spanned::new(
+                    Postfix::Call(args, args_span, _) => Spanned::new(
                         Expr::Call {
                             callee: Box::new(lhs),
                             args,
+                            args_span,
                         },
                         s,
                     ),
@@ -1028,6 +1032,7 @@ mod tests {
         let Expr::Call {
             ref callee,
             ref args,
+            ..
         } = expr.node
         else {
             panic!("expected Call, got {:?}", expr.node);

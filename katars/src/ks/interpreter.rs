@@ -969,7 +969,11 @@ impl Interpreter {
                     .map_err(|e: RuntimeError| e.at(expr.span))
             }
 
-            Expr::Call { callee, args } => {
+            Expr::Call {
+                callee,
+                args,
+                args_span,
+            } => {
                 // Evaluate args once, keeping spans for error reporting.
                 let mut arg_vals = Vec::with_capacity(args.len());
                 let arg_spans: Vec<Span> = args.iter().map(|a| a.span).collect();
@@ -995,9 +999,16 @@ impl Interpreter {
                     None
                 };
 
-                let result = self
-                    .eval_call(func, &arg_vals, &arg_spans, out)
-                    .map_err(|e: RuntimeError| e.at(expr.span))?;
+                let result = self.eval_call(func, &arg_vals, &arg_spans, out).map_err(
+                    |e: RuntimeError| {
+                        // Arity errors point to args list; type errors already have spans.
+                        if matches!(e.kind, ErrorKind::ArityMismatch { .. }) {
+                            e.at(*args_span)
+                        } else {
+                            e.at(expr.span)
+                        }
+                    },
+                )?;
 
                 // Copy-in copy-out: write mutated self back to the receiver variable.
                 if let Some(var_name) = receiver_var {
@@ -2077,6 +2088,7 @@ mod tests {
         s(Stmt::Expr(s(Expr::Call {
             callee: Box::new(s(Expr::Name(callee.to_string()))),
             args,
+            args_span: (0, 0),
         })))
     }
 
@@ -2189,6 +2201,7 @@ mod tests {
             vec![s(Expr::Call {
                 callee: Box::new(s(Expr::Name("typeof".into()))),
                 args: vec![s(Expr::Int("42".into()))],
+                args_span: (0, 0),
             })],
         )]);
         let mut interp = Interpreter::new();
