@@ -835,17 +835,22 @@ where
             });
 
         let break_stmt = just(Token::Break)
+            .map_with(|_, ex| span(&ex.span())) // capture keyword span
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|_, ex| Spanned::new(Stmt::Break, span(&ex.span())));
+            .map_with(|keyword, ex| Spanned::new(Stmt::Break { keyword }, span(&ex.span())));
 
         let continue_stmt = just(Token::Continue)
+            .map_with(|_, ex| span(&ex.span()))
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|_, ex| Spanned::new(Stmt::Continue, span(&ex.span())));
+            .map_with(|keyword, ex| Spanned::new(Stmt::Continue { keyword }, span(&ex.span())));
 
         let ret_stmt = just(Token::Ret)
-            .ignore_then(expr.clone())
+            .map_with(|_, ex| span(&ex.span())) // capture keyword span
+            .then(expr.clone())
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|expr, ex| Spanned::new(Stmt::Ret(expr), span(&ex.span())));
+            .map_with(|(keyword, value), ex| {
+                Spanned::new(Stmt::Ret { keyword, value }, span(&ex.span()))
+            });
 
         // expr_or_assign: parse expr, then optionally '=' expr for assignment.
         // If '=' follows, convert lhs to AssignTarget.
@@ -1091,17 +1096,17 @@ mod tests {
     fn parse_ret_stmt() {
         let prog = parse_ok("ret 42");
         assert_eq!(prog.len(), 1);
-        let Stmt::Ret(ref expr) = prog[0].node else {
+        let Stmt::Ret { ref value, .. } = prog[0].node else {
             panic!("expected Ret, got {:?}", prog[0].node)
         };
-        assert!(matches!(expr.node, Expr::Int(ref s) if s == "42"));
+        assert!(matches!(value.node, Expr::Int(ref s) if s == "42"));
     }
 
     #[test]
     fn parse_ret_with_semicolon() {
         let prog = parse_ok("ret true;");
         assert_eq!(prog.len(), 1);
-        assert!(matches!(prog[0].node, Stmt::Ret(_)));
+        assert!(matches!(prog[0].node, Stmt::Ret { .. }));
     }
 
     #[test]

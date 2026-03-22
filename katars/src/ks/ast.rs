@@ -63,12 +63,12 @@ pub enum Stmt {
         path: Vec<Spanned<String>>,
         names: Option<Vec<Spanned<String>>>,
     },
-    /// `break` — exit the current loop.
-    Break,
-    /// `continue` — skip to the next loop iteration.
-    Continue,
-    /// `ret <expr>` — explicit return from the enclosing function.
-    Ret(Spanned<Expr>),
+    /// `break` — exit the current loop. Span is the `break` keyword.
+    Break { keyword: Span },
+    /// `continue` — skip to the next loop iteration. Span is the `continue` keyword.
+    Continue { keyword: Span },
+    /// `ret <expr>` — explicit return. Span is the `ret` keyword.
+    Ret { keyword: Span, value: Spanned<Expr> },
 }
 
 /// A function parameter with optional type annotation.

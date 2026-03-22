@@ -415,11 +415,11 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::Break => Ok(Flow::Break),
-            Stmt::Continue => Ok(Flow::Continue),
+            Stmt::Break { .. } => Ok(Flow::Break),
+            Stmt::Continue { .. } => Ok(Flow::Continue),
 
-            Stmt::Ret(expr) => {
-                let val = self.eval_value(expr, out)?;
+            Stmt::Ret { value, .. } => {
+                let val = self.eval_value(value, out)?;
                 Ok(Flow::Return(val))
             }
         }
@@ -1878,6 +1878,13 @@ impl Interpreter {
         out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
         for stmt in stmts {
+            // Extract keyword span for flow-misuse errors.
+            let keyword_span = match &stmt.node {
+                Stmt::Break { keyword } => Some(*keyword),
+                Stmt::Continue { keyword } => Some(*keyword),
+                Stmt::Ret { keyword, .. } => Some(*keyword),
+                _ => None,
+            };
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(_) => {}
                 Flow::Return(_) => {
@@ -1886,19 +1893,19 @@ impl Interpreter {
                             context: context.to_string(),
                         },
                     ))
-                    .at(stmt.span))
+                    .at(keyword_span.unwrap_or(stmt.span)))
                 }
                 Flow::Break => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
                         FlowMisuse::BreakOutsideLoop,
                     ))
-                    .at(stmt.span))
+                    .at(keyword_span.unwrap_or(stmt.span)))
                 }
                 Flow::Continue => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
                         FlowMisuse::ContinueOutsideLoop,
                     ))
-                    .at(stmt.span))
+                    .at(keyword_span.unwrap_or(stmt.span)))
                 }
             }
         }
@@ -2112,7 +2119,10 @@ mod tests {
 
     #[test]
     fn eval_ret_outside_function_is_error() {
-        let prog = program(vec![s(Stmt::Ret(s(Expr::Int("42".into()))))]);
+        let prog = program(vec![s(Stmt::Ret {
+            keyword: (0, 3),
+            value: s(Expr::Int("42".into())),
+        })]);
         let mut interp = Interpreter::new();
         let err = interp
             .exec_program(&prog, None, &mut Vec::new())

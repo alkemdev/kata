@@ -6,6 +6,6 @@ Error: ret outside of function
    ╭─[<test>:1:1]
    │
  1 │ ret 1
-   │ ──┬──  
-   │   ╰──── ret outside of function
+   │ ─┬─  
+   │  ╰─── ret outside of function
 ───╯
