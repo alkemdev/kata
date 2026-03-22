@@ -618,15 +618,16 @@ impl Interpreter {
         // Infer element type from the first element.
         let elem_tid = vals[0].type_id();
 
-        // Type-check remaining elements.
+        // Type-check remaining elements — point to the offending element.
         for (i, val) in vals.iter().enumerate().skip(1) {
             let tid = val.type_id();
             if tid != elem_tid {
-                return Err(ErrorKind::TypeMismatch {
+                return Err(RuntimeError::new(ErrorKind::TypeMismatch {
                     expected: elem_tid,
                     actual: tid,
-                }
-                .into());
+                })
+                .at(elements[i].span)
+                .label(elements[0].span, self.types.display_name(elem_tid)));
             }
         }
 
@@ -1158,24 +1159,25 @@ impl Interpreter {
                     }
                 }
 
-                // Check for missing fields and build in definition order.
-                let mut provided: IndexMap<String, Value> = IndexMap::new();
+                // Evaluate field values, keeping spans for error reporting.
+                let mut provided: IndexMap<String, (Value, Span)> = IndexMap::new();
                 for (fname, fexpr) in fields {
                     let val = self.eval_value(fexpr, out)?;
-                    provided.insert(fname.clone(), val);
+                    provided.insert(fname.clone(), (val, fexpr.span));
                 }
 
                 let mut result_fields = IndexMap::new();
                 for (fname, expected_tid) in &expected_fields {
-                    let val = provided.shift_remove(fname.as_str()).ok_or_else(|| {
-                        RuntimeError::new(ErrorKind::MissingField {
-                            type_id,
-                            field: fname.clone(),
-                        })
-                        .at(expr.span)
-                    })?;
+                    let (val, val_span) =
+                        provided.shift_remove(fname.as_str()).ok_or_else(|| {
+                            RuntimeError::new(ErrorKind::MissingField {
+                                type_id,
+                                field: fname.clone(),
+                            })
+                            .at(expr.span)
+                        })?;
                     self.check_type(&val, *expected_tid)
-                        .map_err(|e| e.at(expr.span))?;
+                        .map_err(|e| e.at(val_span))?;
                     result_fields.insert(fname.clone(), val);
                 }
 
