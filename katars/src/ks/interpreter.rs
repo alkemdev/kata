@@ -995,17 +995,21 @@ impl Interpreter {
                 let lv = self.eval_value(left, out)?;
                 let rv = self.eval_value(right, out)?;
                 let result = native::eval_binop(*op, &lv, &rv).map_err(|e| {
-                    let left_type = self.types.display_name(lv.type_id());
-                    let right_type = self.types.display_name(rv.type_id());
-                    let mut err = RuntimeError::from(e)
-                        .at(expr.span)
-                        .label(left.span, left_type.clone())
-                        .label(right.span, right_type.clone());
-                    if left_type != right_type {
-                        err = err.help(format!(
-                            "'{sym}' works on matching types: Int{sym}Int, Float{sym}Float, or Str{sym}Str",
-                            sym = op.symbol()
-                        ));
+                    let mut err = RuntimeError::from(e).at(expr.span);
+                    // Only label operand types for type mismatch errors,
+                    // not for value errors like division by zero.
+                    if matches!(err.kind, ErrorKind::BinOpType { .. }) {
+                        let left_type = self.types.display_name(lv.type_id());
+                        let right_type = self.types.display_name(rv.type_id());
+                        err = err
+                            .label(left.span, left_type.clone())
+                            .label(right.span, right_type.clone());
+                        if left_type != right_type {
+                            err = err.help(format!(
+                                "'{sym}' works on matching types: Int{sym}Int, Float{sym}Float, or Str{sym}Str",
+                                sym = op.symbol()
+                            ));
+                        }
                     }
                     err
                 })?;
