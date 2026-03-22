@@ -7,7 +7,7 @@ Error: type mismatch: expected Int, got Str
    │
  1 │ let a = [1, "two", 3]
    │          ┬  ──┬──  
-   │          ╰───────── Int
+   │          ╰───────── expected Int (inferred from first element)
    │               │    
    │               ╰──── Str
 ───╯
