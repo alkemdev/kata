@@ -6,7 +6,7 @@ Error: cannot apply '+' to Int and Str
    ╭─[<test>:3:15]
    │
  3 │     Val(n) -> n + "bad",
-   │               ┬─────┬──  
+   │               │     │    
    │               ╰────────── Int
    │                     │    
    │                     ╰──── Str

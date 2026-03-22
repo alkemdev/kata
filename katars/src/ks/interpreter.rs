@@ -995,13 +995,13 @@ impl Interpreter {
                 let lv = self.eval_value(left, out)?;
                 let rv = self.eval_value(right, out)?;
                 let result = native::eval_binop(*op, &lv, &rv).map_err(|e| {
-                    let mut err = RuntimeError::from(e).at(expr.span);
-                    // Only label operand types for type mismatch errors,
-                    // not for value errors like division by zero.
+                    let mut err = RuntimeError::from(e);
                     if matches!(err.kind, ErrorKind::BinOpType { .. }) {
+                        // Type mismatch: label each operand, no primary span.
                         let left_type = self.types.display_name(lv.type_id());
                         let right_type = self.types.display_name(rv.type_id());
                         err = err
+                            .at(left.span) // primary on left operand for ariadne line ref
                             .label(left.span, left_type.clone())
                             .label(right.span, right_type.clone());
                         if left_type != right_type {
@@ -1010,6 +1010,9 @@ impl Interpreter {
                                 sym = op.symbol()
                             ));
                         }
+                    } else {
+                        // Value errors (div by zero, NaN): span the full expression.
+                        err = err.at(expr.span);
                     }
                     err
                 })?;

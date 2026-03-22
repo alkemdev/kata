@@ -6,7 +6,7 @@ Error: cannot apply '+' to Int and Str
    ╭─[<test>:4:9]
    │
  4 │ let d = a + "oops"
-   │         ┬──────┬──  
+   │         │      │    
    │         ╰─────────── Int
    │                │    
    │                ╰──── Str
