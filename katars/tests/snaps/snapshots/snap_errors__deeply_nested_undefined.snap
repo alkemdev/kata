@@ -8,4 +8,6 @@ Error: undefined variable 'foo'
  1 │ print(1 + foo * 2)
    │           ─┬─  
    │            ╰─── undefined variable 'foo'
+   │ 
+   │ Help: check the spelling, or define 'foo' with 'let'
 ───╯

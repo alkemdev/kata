@@ -79,6 +79,13 @@ fn render_error(err: &RuntimeError, types: &TypeRegistry, source: &str, filename
             );
         }
 
+        if let Some(ref help) = err.help {
+            report = report.with_help(help);
+        }
+        if let Some(ref note) = err.note {
+            report = report.with_note(note);
+        }
+
         report
             .finish()
             .eprint((filename, Source::from(source)))

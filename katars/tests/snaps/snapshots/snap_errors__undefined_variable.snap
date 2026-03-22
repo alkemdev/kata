@@ -8,4 +8,6 @@ Error: undefined variable 'y'
  1 │ let x = y
    │         ┬  
    │         ╰── undefined variable 'y'
+   │ 
+   │ Help: check the spelling, or define 'y' with 'let'
 ───╯

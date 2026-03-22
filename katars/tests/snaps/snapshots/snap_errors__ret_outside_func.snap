@@ -8,4 +8,6 @@ Error: ret outside of function
  1 │ ret 1
    │ ─┬─  
    │  ╰─── ret outside of function
+   │ 
+   │ Note: ret can only be used inside a func body
 ───╯

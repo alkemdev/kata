@@ -8,4 +8,6 @@ Error: break outside of loop
  1 │ break
    │ ──┬──  
    │   ╰──── break outside of loop
+   │ 
+   │ Note: break can only be used inside while or for loops
 ───╯

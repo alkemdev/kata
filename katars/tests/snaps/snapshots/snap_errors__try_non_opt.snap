@@ -8,4 +8,6 @@ Error: ? operator requires an Opt value (enum with Val/Non variants)
  1 │ let x = 42?
    │         ─┬─  
    │          ╰─── ? operator requires an Opt value (enum with Val/Non variants)
+   │ 
+   │ Help: ? only works on Opt[T] values (Val/Non)
 ───╯

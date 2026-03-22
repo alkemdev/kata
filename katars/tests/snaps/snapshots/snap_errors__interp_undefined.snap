@@ -8,4 +8,6 @@ Error: undefined variable 'x'
  1 │ print("hello {x}")
    │               ┬  
    │               ╰── undefined variable 'x'
+   │ 
+   │ Help: check the spelling, or define 'x' with 'let'
 ───╯

@@ -60,6 +60,12 @@ pub fn run_error(source: &str) -> String {
                         Label::new((filename, label_span.0..label_span.1)).with_message(label_msg),
                     );
                 }
+                if let Some(ref help) = e.help {
+                    report = report.with_help(help);
+                }
+                if let Some(ref note) = e.note {
+                    report = report.with_note(note);
+                }
                 report
                     .with_config(ariadne::Config::default().with_color(false))
                     .finish()

@@ -8,4 +8,6 @@ Error: no match arm matched
  1 │ match 42 { 0 -> "zero" }
    │ ────────────┬───────────  
    │             ╰───────────── no match arm matched
+   │ 
+   │ Help: add a wildcard arm: _ -> ...
 ───╯

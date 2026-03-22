@@ -10,4 +10,6 @@ Error: cannot apply '+' to Int and Str
    │               ╰────────── Int
    │                     │    
    │                     ╰──── Str
+   │ 
+   │ Help: '+' works on matching types: Int+Int, Float+Float, or Str+Str
 ───╯

@@ -606,7 +606,8 @@ impl Interpreter {
         out: &mut impl Write,
     ) -> Result<Flow, RuntimeError> {
         if elements.is_empty() {
-            return Err(ErrorKind::EmptyArrayLiteral.into());
+            return Err(RuntimeError::new(ErrorKind::EmptyArrayLiteral)
+                .help("array literals need at least one element to infer the type"));
         }
 
         // Evaluate all elements.
@@ -717,7 +718,7 @@ impl Interpreter {
             }
         }
 
-        Err(ErrorKind::NoMatchArm.into())
+        Err(RuntimeError::new(ErrorKind::NoMatchArm).help("add a wildcard arm: _ -> ..."))
     }
 
     fn match_pattern(&self, val: &Value, pattern: &Pattern) -> Option<Vec<(String, Value)>> {
@@ -878,6 +879,7 @@ impl Interpreter {
                     name: name.clone(),
                 })
                 .at(expr.span)
+                .help(format!("check the spelling, or define '{name}' with 'let'"))
             }),
 
             Expr::With { bindings, body } => {
@@ -924,7 +926,9 @@ impl Interpreter {
                         return Ok(Flow::Next(inner_val.clone()));
                     }
                 }
-                Err(RuntimeError::new(ErrorKind::InvalidTry).at(expr.span))
+                Err(RuntimeError::new(ErrorKind::InvalidTry)
+                    .at(expr.span)
+                    .help("? only works on Opt[T] values (Val/Non)"))
             }
 
             Expr::Attr { object, name } => {
@@ -993,10 +997,17 @@ impl Interpreter {
                 let result = native::eval_binop(*op, &lv, &rv).map_err(|e| {
                     let left_type = self.types.display_name(lv.type_id());
                     let right_type = self.types.display_name(rv.type_id());
-                    RuntimeError::from(e)
+                    let mut err = RuntimeError::from(e)
                         .at(expr.span)
-                        .label(left.span, left_type)
-                        .label(right.span, right_type)
+                        .label(left.span, left_type.clone())
+                        .label(right.span, right_type.clone());
+                    if left_type != right_type {
+                        err = err.help(format!(
+                            "'{sym}' works on matching types: Int{sym}Int, Float{sym}Float, or Str{sym}Str",
+                            sym = op.symbol()
+                        ));
+                    }
+                    err
                 })?;
                 Ok(Flow::Next(result))
             }
@@ -1819,10 +1830,10 @@ impl Interpreter {
             Value::NativeFn(fn_id) => {
                 let entry = self.native_registry.get(fn_id);
                 if entry.requires_unsafe && !self.in_unsafe {
-                    return Err(ErrorKind::UnsafeRequired {
+                    return Err(RuntimeError::new(ErrorKind::UnsafeRequired {
                         intrinsic: entry.name.to_string(),
-                    }
-                    .into());
+                    })
+                    .help("wrap the call in an unsafe { ... } block"));
                 }
                 let handler = entry.handler;
                 let mut ctx = NativeCtx {
@@ -1895,19 +1906,22 @@ impl Interpreter {
                             context: context.to_string(),
                         },
                     ))
-                    .at(keyword_span.unwrap_or(stmt.span)))
+                    .at(keyword_span.unwrap_or(stmt.span))
+                    .note("ret can only be used inside a func body"))
                 }
                 Flow::Break => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
                         FlowMisuse::BreakOutsideLoop,
                     ))
-                    .at(keyword_span.unwrap_or(stmt.span)))
+                    .at(keyword_span.unwrap_or(stmt.span))
+                    .note("break can only be used inside while or for loops"))
                 }
                 Flow::Continue => {
                     return Err(RuntimeError::new(ErrorKind::FlowMisuse(
                         FlowMisuse::ContinueOutsideLoop,
                     ))
-                    .at(keyword_span.unwrap_or(stmt.span)))
+                    .at(keyword_span.unwrap_or(stmt.span))
+                    .note("continue can only be used inside while or for loops"))
                 }
             }
         }

@@ -8,4 +8,6 @@ Error: empty array literal — cannot infer element type
  1 │ let a = []
    │         ─┬  
    │          ╰── empty array literal — cannot infer element type
+   │ 
+   │ Help: array literals need at least one element to infer the type
 ───╯

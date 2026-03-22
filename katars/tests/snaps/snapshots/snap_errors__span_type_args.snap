@@ -8,4 +8,6 @@ Error: undefined variable 'Nonexistent'
  1 │ Nonexistent[Int]
    │ ─────┬─────  
    │      ╰─────── undefined variable 'Nonexistent'
+   │ 
+   │ Help: check the spelling, or define 'Nonexistent' with 'let'
 ───╯

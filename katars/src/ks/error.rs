@@ -317,6 +317,8 @@ pub struct RuntimeError {
     pub kind: ErrorKind,
     pub span: Option<Span>,
     pub labels: Vec<(Span, String)>,
+    pub help: Option<String>,
+    pub note: Option<String>,
 }
 
 impl RuntimeError {
@@ -326,6 +328,8 @@ impl RuntimeError {
             kind,
             span: None,
             labels: Vec::new(),
+            help: None,
+            note: None,
         }
     }
 
@@ -344,9 +348,20 @@ impl RuntimeError {
     }
 
     /// Add a secondary annotation label.
-    #[allow(dead_code)]
     pub fn label(mut self, span: Span, msg: impl Into<String>) -> Self {
         self.labels.push((span, msg.into()));
+        self
+    }
+
+    /// Add an actionable suggestion (rendered as "help: ..." by ariadne).
+    pub fn help(mut self, msg: impl Into<String>) -> Self {
+        self.help = Some(msg.into());
+        self
+    }
+
+    /// Add explanatory context (rendered as "note: ..." by ariadne).
+    pub fn note(mut self, msg: impl Into<String>) -> Self {
+        self.note = Some(msg.into());
         self
     }
 }

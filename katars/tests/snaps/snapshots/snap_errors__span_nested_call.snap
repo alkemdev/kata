@@ -8,4 +8,6 @@ Error: undefined variable 'undefined_var'
  1 │ print(undefined_var)
    │       ──────┬──────  
    │             ╰──────── undefined variable 'undefined_var'
+   │ 
+   │ Help: check the spelling, or define 'undefined_var' with 'let'
 ───╯

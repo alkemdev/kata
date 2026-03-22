@@ -8,4 +8,6 @@ Error: intrinsic 'alloc' can only be called inside an unsafe block
  1 │ std.mem.alloc(4)
    │ ────────┬───────  
    │         ╰───────── intrinsic 'alloc' can only be called inside an unsafe block
+   │ 
+   │ Help: wrap the call in an unsafe { ... } block
 ───╯
