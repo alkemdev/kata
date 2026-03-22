@@ -437,18 +437,32 @@ where
 
             // ── postfix chain: .attr, [item], (call) ─────────────────
 
+            // Each postfix carries (data, end_position) so the foldl can
+            // compute the full span from lhs.start to postfix.end.
             #[derive(Clone)]
             enum Postfix {
-                Attr(String),
-                Item(Vec<Spanned<Expr>>),
-                Call(Vec<Spanned<Expr>>),
-                Construct(Vec<(String, Spanned<Expr>)>),
-                Try,
+                Attr(String, usize),
+                Item(Vec<Spanned<Expr>>, usize),
+                Call(Vec<Spanned<Expr>>, usize),
+                Construct(Vec<(String, Spanned<Expr>)>, usize),
+                Try(usize),
+            }
+
+            impl Postfix {
+                fn end(&self) -> usize {
+                    match self {
+                        Postfix::Attr(_, e)
+                        | Postfix::Item(_, e)
+                        | Postfix::Call(_, e)
+                        | Postfix::Construct(_, e)
+                        | Postfix::Try(e) => *e,
+                    }
+                }
             }
 
             let attr = just(Token::Dot)
                 .ignore_then(select! { Token::Ident(name) => name })
-                .map(Postfix::Attr);
+                .map_with(|name, ex| Postfix::Attr(name, span(&ex.span()).1));
 
             let item = expr
                 .clone()
@@ -456,7 +470,7 @@ where
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                .map(Postfix::Item);
+                .map_with(|args, ex| Postfix::Item(args, span(&ex.span()).1));
 
             let call = expr
                 .clone()
@@ -464,7 +478,7 @@ where
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
-                .map(Postfix::Call);
+                .map_with(|args, ex| Postfix::Call(args, span(&ex.span()).1));
 
             let field_init = select! { Token::Ident(name) => name }
                 .then_ignore(just(Token::Colon))
@@ -475,44 +489,44 @@ where
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace))
-                .map(Postfix::Construct);
+                .map_with(|fields, ex| Postfix::Construct(fields, span(&ex.span()).1));
 
-            let try_op = just(Token::Question).to(Postfix::Try);
+            let try_op = just(Token::Question).map_with(|_, ex| Postfix::Try(span(&ex.span()).1));
 
             let postfix = attr.or(item).or(call).or(construct).or(try_op);
 
             let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
-                let s = lhs.span;
+                let s = (lhs.span.0, op.end()); // full span: lhs start to postfix end
                 match op {
-                    Postfix::Attr(name) => Spanned::new(
+                    Postfix::Attr(name, _) => Spanned::new(
                         Expr::Attr {
                             object: Box::new(lhs),
                             name,
                         },
                         s,
                     ),
-                    Postfix::Item(args) => Spanned::new(
+                    Postfix::Item(args, _) => Spanned::new(
                         Expr::Item {
                             object: Box::new(lhs),
                             args,
                         },
                         s,
                     ),
-                    Postfix::Call(args) => Spanned::new(
+                    Postfix::Call(args, _) => Spanned::new(
                         Expr::Call {
                             callee: Box::new(lhs),
                             args,
                         },
                         s,
                     ),
-                    Postfix::Construct(fields) => Spanned::new(
+                    Postfix::Construct(fields, _) => Spanned::new(
                         Expr::Construct {
                             type_expr: Box::new(lhs),
                             fields,
                         },
                         s,
                     ),
-                    Postfix::Try => Spanned::new(Expr::Try(Box::new(lhs)), s),
+                    Postfix::Try(_) => Spanned::new(Expr::Try(Box::new(lhs)), s),
                 }
             });
 

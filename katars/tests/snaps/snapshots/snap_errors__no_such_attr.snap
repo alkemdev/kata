@@ -6,6 +6,6 @@ Error: 'P' has no field or method 'z'
    ╭─[<test>:3:1]
    │
  3 │ p.z
-   │ ┬  
-   │ ╰── 'P' has no field or method 'z'
+   │ ─┬─  
+   │  ╰─── 'P' has no field or method 'z'
 ───╯

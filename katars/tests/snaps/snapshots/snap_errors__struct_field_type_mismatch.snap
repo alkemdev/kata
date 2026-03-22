@@ -6,6 +6,6 @@ Error: type mismatch: expected Int, got Str
    ╭─[<test>:2:1]
    │
  2 │ P { x: "wrong" }
-   │ ┬  
-   │ ╰── type mismatch: expected Int, got Str
+   │ ────────┬───────  
+   │         ╰───────── type mismatch: expected Int, got Str
 ───╯

@@ -6,6 +6,6 @@ Error: use of deallocated memory
    ╭─[<test>:3:10]
    │
  3 │ unsafe { std.mem.read(raw, 0) }
-   │          ─┬─  
-   │           ╰─── use of deallocated memory
+   │          ──────────┬─────────  
+   │                    ╰─────────── use of deallocated memory
 ───╯

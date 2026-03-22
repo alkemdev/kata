@@ -6,6 +6,6 @@ Error: ? operator requires an Opt value (enum with Val/Non variants)
    ╭─[<test>:1:9]
    │
  1 │ let x = 42?
-   │         ─┬  
-   │          ╰── ? operator requires an Opt value (enum with Val/Non variants)
+   │         ─┬─  
+   │          ╰─── ? operator requires an Opt value (enum with Val/Non variants)
 ───╯
