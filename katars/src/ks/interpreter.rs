@@ -162,6 +162,21 @@ impl Interpreter {
         &self.types
     }
 
+    /// All names visible in the current scope (for REPL completion).
+    pub fn visible_names(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut names = Vec::new();
+        for frame in self.frames.iter().rev() {
+            for key in frame.keys() {
+                if seen.insert(key.clone()) {
+                    names.push(key.clone());
+                }
+            }
+        }
+        names.sort();
+        names
+    }
+
     // ── Scope ────────────────────────────────────────────────────────────
 
     fn get(&self, name: &str) -> Option<&Value> {

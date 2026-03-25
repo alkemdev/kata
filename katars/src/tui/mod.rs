@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::io;
+use std::rc::Rc;
 
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -18,7 +20,9 @@ const KEYWORDS: &[&str] = &[
     "while", "with",
 ];
 
-struct KataHelper;
+struct KataHelper {
+    interp: Rc<RefCell<ks::Interpreter>>,
+}
 
 impl Completer for KataHelper {
     type Candidate = Pair;
@@ -38,14 +42,24 @@ impl Completer for KataHelper {
             return Ok((start, Vec::new()));
         }
 
-        let matches: Vec<Pair> = KEYWORDS
+        // Collect candidates: keywords + all scope names.
+        let interp = self.interp.borrow();
+        let scope_names = interp.visible_names();
+
+        let mut matches: Vec<Pair> = KEYWORDS
             .iter()
-            .filter(|kw| kw.starts_with(prefix))
-            .map(|kw| Pair {
-                display: kw.to_string(),
-                replacement: kw.to_string(),
+            .map(|s| s.to_string())
+            .chain(scope_names.into_iter())
+            .filter(|name| name.starts_with(prefix))
+            .map(|name| Pair {
+                display: name.clone(),
+                replacement: name,
             })
             .collect();
+
+        // Deduplicate (keywords might overlap with scope names like "true").
+        matches.sort_by(|a, b| a.display.cmp(&b.display));
+        matches.dedup_by(|a, b| a.display == b.display);
 
         Ok((start, matches))
     }
@@ -132,20 +146,22 @@ fn history_path() -> std::path::PathBuf {
 pub fn run_repl() -> io::Result<()> {
     info!("starting REPL");
 
-    let config = Config::builder().edit_mode(EditMode::Emacs).build();
-    let mut rl = Editor::with_config(config).map_err(|e| io::Error::other(e.to_string()))?;
-    rl.set_helper(Some(KataHelper));
-    let _ = rl.load_history(&history_path());
-
     // Persistent interpreter with prelude.
-    let mut interp = ks::Interpreter::new();
+    let interp = Rc::new(RefCell::new(ks::Interpreter::new()));
     {
         let prelude_src = include_str!("../../../std/prelude.ks");
         if let Ok(prelude) = ks::parse(prelude_src, "<prelude>") {
             let mut sink = Vec::new();
-            let _ = interp.exec_program(&prelude, None, &mut sink);
+            let _ = interp.borrow_mut().exec_program(&prelude, None, &mut sink);
         }
     }
+
+    let config = Config::builder().edit_mode(EditMode::Emacs).build();
+    let mut rl = Editor::with_config(config).map_err(|e| io::Error::other(e.to_string()))?;
+    rl.set_helper(Some(KataHelper {
+        interp: Rc::clone(&interp),
+    }));
+    let _ = rl.load_history(&history_path());
 
     println!("KataScript REPL (Ctrl+D to exit)");
 
@@ -169,7 +185,7 @@ pub fn run_repl() -> io::Result<()> {
                 let input = accumulated.trim().to_string();
                 if !input.is_empty() {
                     let _ = rl.add_history_entry(&input);
-                    execute(&mut interp, &input);
+                    execute(&mut interp.borrow_mut(), &input);
                 }
                 accumulated.clear();
                 continuation = false;
