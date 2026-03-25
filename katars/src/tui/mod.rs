@@ -1,25 +1,22 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 
+use owo_colors::OwoColorize;
 use rustyline::completion::{Completer, Pair};
+use rustyline::config::CompletionType;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Config, EditMode, Editor, Helper};
-use std::borrow::Cow;
 use tracing::info;
 
 use crate::ks;
+use crate::ks::lexer::KEYWORDS;
 
-// ── Completion helper ────────────────────────────────────────────────────────
-
-const KEYWORDS: &[&str] = &[
-    "bail", "cont", "else", "elif", "enum", "false", "for", "func", "if", "impl", "import", "in",
-    "kind", "let", "match", "nil", "ret", "self", "Self", "true", "type", "typeof", "unsafe",
-    "while", "with",
-];
+// ── Completion ───────────────────────────────────────────────────────────────
 
 struct KataHelper {
     interp: Rc<RefCell<ks::Interpreter>>,
@@ -34,7 +31,6 @@ impl Completer for KataHelper {
         pos: usize,
         _ctx: &rustyline::Context<'_>,
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
-        // Find the start of the current word (including dots for paths).
         let start = line[..pos]
             .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
             .map_or(0, |i| i + 1);
@@ -45,14 +41,12 @@ impl Completer for KataHelper {
 
         let interp = self.interp.borrow();
 
-        // Check for dot-path completion: "std." or "std.mem."
+        // Dot-path completion: "std." or "obj.field."
         if let Some(dot_pos) = token.rfind('.') {
             let receiver = &token[..dot_pos];
             let attr_prefix = &token[dot_pos + 1..];
-
-            // Walk the dot-path to resolve the receiver.
-            let attrs = self.resolve_dot_completions(&interp, receiver);
-
+            let segments: Vec<&str> = receiver.split('.').collect();
+            let attrs = interp.completions_for_path(&segments);
             let matches: Vec<Pair> = attrs
                 .into_iter()
                 .filter(|name| name.starts_with(attr_prefix))
@@ -61,52 +55,24 @@ impl Completer for KataHelper {
                     replacement: name,
                 })
                 .collect();
-
-            // Replace only the part after the last dot.
-            let replace_start = start + dot_pos + 1;
-            return Ok((replace_start, matches));
+            return Ok((start + dot_pos + 1, matches));
         }
 
-        // Simple name completion: keywords + scope names.
+        // Simple name: keywords + scope names.
         let scope_names = interp.visible_names();
         let mut matches: Vec<Pair> = KEYWORDS
             .iter()
             .map(|s| s.to_string())
-            .chain(scope_names.into_iter())
+            .chain(scope_names)
             .filter(|name| name.starts_with(token))
             .map(|name| Pair {
                 display: name.clone(),
                 replacement: name,
             })
             .collect();
-
         matches.sort_by(|a, b| a.display.cmp(&b.display));
         matches.dedup_by(|a, b| a.display == b.display);
         Ok((start, matches))
-    }
-}
-
-impl KataHelper {
-    /// Resolve a dot-separated path and return completions for the final segment.
-    fn resolve_dot_completions(&self, interp: &ks::Interpreter, receiver: &str) -> Vec<String> {
-        // Split "std.mem" into ["std", "mem"] and walk segment by segment.
-        let segments: Vec<&str> = receiver.split('.').collect();
-        if segments.is_empty() {
-            return Vec::new();
-        }
-        // Get completions for the root name first.
-        let mut attrs = interp.completions_for(segments[0]);
-        // For deeper paths like "std.mem", we need the interpreter to resolve
-        // "std" then "mem" within that module. For now, only support one level
-        // of dot-completion by asking completions_for the root.
-        // TODO: support arbitrary depth by walking the module tree.
-        if segments.len() == 1 {
-            return attrs;
-        }
-        // For multi-segment paths, try to resolve through the module tree.
-        // This handles "std.mem.<tab>" by looking at the mem module's entries.
-        attrs = interp.completions_for_path(&segments);
-        attrs
     }
 }
 
@@ -120,10 +86,10 @@ impl Highlighter for KataHelper {
         prompt: &'p str,
         _default: bool,
     ) -> Cow<'b, str> {
-        if prompt.contains('·') {
-            Cow::Owned(format!("\x1b[90m{prompt}\x1b[0m"))
+        if prompt.starts_with('·') {
+            Cow::Owned(prompt.dimmed().to_string())
         } else {
-            Cow::Owned(format!("\x1b[36;1m{prompt}\x1b[0m"))
+            Cow::Owned(prompt.cyan().bold().to_string())
         }
     }
 }
@@ -133,7 +99,6 @@ impl Helper for KataHelper {}
 
 // ── Multi-line detection ─────────────────────────────────────────────────────
 
-/// Check if input has balanced delimiters. Unbalanced means more input needed.
 fn is_balanced(input: &str) -> bool {
     let mut depth = 0i32;
     let mut in_string = false;
@@ -173,7 +138,7 @@ fn execute(interp: &mut ks::Interpreter, input: &str) {
     };
 
     match ks::parse(&source, "<repl>") {
-        Err(()) => eprintln!("\x1b[31merror:\x1b[0m parse error"),
+        Err(()) => eprintln!("{} parse error", "error:".red()),
         Ok(program) => {
             let mut buf = Vec::new();
             match interp.exec_repl(&program, &mut buf) {
@@ -185,19 +150,23 @@ fn execute(interp: &mut ks::Interpreter, input: &str) {
                 }
                 Err(e) => {
                     let msg = e.kind.format_with(interp.type_registry());
-                    eprintln!("\x1b[31merror:\x1b[0m {msg}");
+                    eprintln!("{} {msg}", "error:".red());
                 }
             }
         }
     }
 }
 
-// ── History path ─────────────────────────────────────────────────────────────
+// ── Paths ────────────────────────────────────────────────────────────────────
+
+fn data_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
+        .join("kata")
+}
 
 fn history_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".kata_history")
+    data_dir().join("history")
 }
 
 // ── REPL entry point ─────────────────────────────────────────────────────────
@@ -215,14 +184,23 @@ pub fn run_repl() -> io::Result<()> {
         }
     }
 
-    let config = Config::builder().edit_mode(EditMode::Emacs).build();
+    let config = Config::builder()
+        .edit_mode(EditMode::Emacs)
+        .completion_type(CompletionType::List)
+        .build();
     let mut rl = Editor::with_config(config).map_err(|e| io::Error::other(e.to_string()))?;
     rl.set_helper(Some(KataHelper {
         interp: Rc::clone(&interp),
     }));
-    let _ = rl.load_history(&history_path());
 
-    println!("\x1b[36;1mkata\x1b[0m \x1b[90m(Ctrl+D to exit)\x1b[0m");
+    // Ensure data directory exists, load history.
+    let hist = history_path();
+    if let Some(parent) = hist.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = rl.load_history(&hist);
+
+    println!("{} {}", "kata".cyan().bold(), "(Ctrl+D to exit)".dimmed());
 
     let mut accumulated = String::new();
     let mut continuation = false;
@@ -250,25 +228,21 @@ pub fn run_repl() -> io::Result<()> {
                 continuation = false;
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl+C: cancel current input
                 if continuation {
                     accumulated.clear();
                     continuation = false;
                     println!();
                 }
             }
-            Err(ReadlineError::Eof) => {
-                // Ctrl+D: exit
-                break;
-            }
+            Err(ReadlineError::Eof) => break,
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("{} {e}", "error:".red());
                 break;
             }
         }
     }
 
-    let _ = rl.save_history(&history_path());
+    let _ = rl.save_history(&hist);
     info!("REPL exited");
     Ok(())
 }

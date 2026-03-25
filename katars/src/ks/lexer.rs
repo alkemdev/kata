@@ -392,6 +392,14 @@ impl fmt::Display for Token {
 }
 
 /// A single token annotated with its byte-offset span in the source.
+/// All keyword strings, derived from the Token enum.
+/// Single source of truth — used by the REPL for tab completion.
+pub const KEYWORDS: &[&str] = &[
+    "as", "bail", "cont", "elif", "else", "enum", "false", "for", "func", "if", "impl", "import",
+    "in", "kind", "let", "match", "nil", "ret", "self", "Self", "true", "type", "unsafe", "while",
+    "with",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpannedToken {
     pub token: Token,
