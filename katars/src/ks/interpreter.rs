@@ -145,6 +145,8 @@ impl Interpreter {
         interp.set("Func".into(), Value::Type(prim::FUNC));
         interp.set("Type".into(), Value::Type(prim::TYPE));
         interp.set("RawPtr".into(), Value::Type(prim::RAW_PTR));
+        interp.set("Byte".into(), Value::Type(prim::BYTE));
+        interp.set("Char".into(), Value::Type(prim::CHAR));
 
         // Top-level native functions.
         interp.set("print".into(), Value::NativeFn(boot.print_id));
@@ -153,6 +155,22 @@ impl Interpreter {
 
         // Module tree: `std.ops.*`, `std.mem.*`.
         interp.set("std".into(), Value::Module(boot.std_module));
+
+        // Native methods for prim types.
+        for (name, fn_id) in &boot.byte_methods.methods {
+            interp
+                .methods
+                .entry(prim::BYTE)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
+        for (name, fn_id) in &boot.char_methods.methods {
+            interp
+                .methods
+                .entry(prim::CHAR)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
 
         interp
     }
@@ -1872,8 +1890,10 @@ impl Interpreter {
         method: Value,
         _name: &str,
     ) -> Result<Value, RuntimeError> {
-        if !matches!(method, Value::Func { .. }) {
-            return Err(ErrorKind::InternalError("bound method does not wrap a Func").into());
+        if !matches!(method, Value::Func { .. } | Value::NativeFn(_)) {
+            return Err(
+                ErrorKind::InternalError("bound method must wrap a Func or NativeFn").into(),
+            );
         }
         Ok(Value::BoundMethod {
             receiver: Box::new(receiver),
@@ -2130,50 +2150,61 @@ impl Interpreter {
                 }))
             }
 
-            Value::BoundMethod { receiver, func } => {
-                let Value::Func {
+            Value::BoundMethod { receiver, func } => match *func {
+                Value::Func {
                     params,
                     ret_type,
                     body,
-                } = *func
-                else {
-                    return Err(
-                        ErrorKind::InternalError("bound method does not wrap a Func").into(),
-                    );
-                };
-
-                let method_params = &params[1..];
-                if args.len() != method_params.len() {
-                    return Err(ErrorKind::ArityMismatch {
-                        target: ArityTarget::Method,
-                        expected: method_params.len(),
-                        actual: args.len(),
+                } => {
+                    let method_params = &params[1..];
+                    if args.len() != method_params.len() {
+                        return Err(ErrorKind::ArityMismatch {
+                            target: ArityTarget::Method,
+                            expected: method_params.len(),
+                            actual: args.len(),
+                        }
+                        .into());
                     }
-                    .into());
+
+                    let mut full_args = Vec::with_capacity(params.len());
+                    let receiver_type_args = self.types.instance_type_args(receiver.type_id());
+                    full_args.push(*receiver);
+                    full_args.extend_from_slice(args);
+
+                    let mut full_spans = Vec::with_capacity(params.len());
+                    full_spans.push((0, 0));
+                    full_spans.extend_from_slice(arg_spans);
+
+                    let result = self.call_func_body(
+                        &params,
+                        &full_args,
+                        &full_spans,
+                        &ret_type,
+                        &body,
+                        true,
+                        &receiver_type_args,
+                        out,
+                    )?;
+                    Ok(Flow::Next(result))
                 }
-
-                let mut full_args = Vec::with_capacity(params.len());
-                let receiver_type_args = self.types.instance_type_args(receiver.type_id());
-                full_args.push(*receiver);
-                full_args.extend_from_slice(args);
-
-                // Build spans: dummy (0,0) for self, then actual arg spans.
-                let mut full_spans = Vec::with_capacity(params.len());
-                full_spans.push((0, 0)); // self has no user span
-                full_spans.extend_from_slice(arg_spans);
-
-                let result = self.call_func_body(
-                    &params,
-                    &full_args,
-                    &full_spans,
-                    &ret_type,
-                    &body,
-                    true,
-                    &receiver_type_args,
-                    out,
-                )?;
-                Ok(Flow::Next(result))
-            }
+                Value::NativeFn(fn_id) => {
+                    // Native method: prepend receiver to args.
+                    let entry = self.native_registry.get(fn_id);
+                    let handler = entry.handler;
+                    let mut full_args = Vec::with_capacity(args.len() + 1);
+                    full_args.push(*receiver);
+                    full_args.extend_from_slice(args);
+                    let mut ctx = NativeCtx {
+                        types: &self.types,
+                        allocations: &mut self.allocations,
+                        out,
+                        in_unsafe: self.in_unsafe,
+                    };
+                    let result = handler(&mut ctx, &full_args)?;
+                    Ok(Flow::Next(result))
+                }
+                _ => Err(ErrorKind::InternalError("bound method wraps unexpected value").into()),
+            },
 
             Value::NativeFn(fn_id) => {
                 let entry = self.native_registry.get(fn_id);
@@ -2194,8 +2225,62 @@ impl Interpreter {
                 Ok(Flow::Next(result))
             }
 
+            // Prim type constructor calls: Byte(255), Char(97), etc.
+            Value::Type(tid) => self.eval_prim_constructor(tid, args),
+
             other => Err(ErrorKind::WrongTypeKind {
                 type_id: other.type_id(),
+                expected: TypeKindExpectation::Callable,
+            }
+            .into()),
+        }
+    }
+
+    /// Handle prim type constructor calls: `Byte(255)`, `Char(97)`, etc.
+    fn eval_prim_constructor(&self, type_id: TypeId, args: &[Value]) -> Result<Flow, RuntimeError> {
+        if args.len() != 1 {
+            return Err(ErrorKind::ArityMismatch {
+                target: ArityTarget::Function,
+                expected: 1,
+                actual: args.len(),
+            }
+            .into());
+        }
+        let arg = &args[0];
+        match type_id {
+            prim::BYTE => {
+                let Value::Int(n) = arg else {
+                    return Err(ErrorKind::TypeMismatch {
+                        expected: prim::INT,
+                        actual: arg.type_id(),
+                    }
+                    .into());
+                };
+                let val: i64 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+                if !(0..=255).contains(&val) {
+                    return Err(ErrorKind::Other(format!(
+                        "Byte value out of range: {val} (must be 0-255)"
+                    ))
+                    .into());
+                }
+                Ok(Flow::Next(Value::Byte(val as u8)))
+            }
+            prim::CHAR => {
+                let Value::Int(n) = arg else {
+                    return Err(ErrorKind::TypeMismatch {
+                        expected: prim::INT,
+                        actual: arg.type_id(),
+                    }
+                    .into());
+                };
+                let val: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+                let ch = char::from_u32(val).ok_or_else(|| {
+                    ErrorKind::Other(format!("invalid Unicode codepoint: 0x{val:X}"))
+                })?;
+                Ok(Flow::Next(Value::Char(ch)))
+            }
+            _ => Err(ErrorKind::WrongTypeKind {
+                type_id,
                 expected: TypeKindExpectation::Callable,
             }
             .into()),

@@ -551,6 +551,8 @@ fn op_cmp(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
             a.partial_cmp(&b).ok_or(ErrorKind::NanComparison)?
         }
         (Value::Str(a), Value::Str(b)) => a.cmp(b),
+        (Value::Byte(a), Value::Byte(b)) => a.cmp(b),
+        (Value::Char(a), Value::Char(b)) => a.cmp(b),
         _ => {
             return Err(ErrorKind::BinOpType {
                 op,
@@ -570,8 +572,192 @@ fn op_cmp(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Native methods for Byte and Char
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Byte methods ─────────────────────────────────────────────────
+
+fn byte_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Byte(b) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Int(BigInt::from(*b)))
+}
+
+fn byte_and(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let (Value::Byte(a), Value::Byte(b)) = (&args[0], &args[1]) else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[1].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Byte(a & b))
+}
+
+fn byte_or(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let (Value::Byte(a), Value::Byte(b)) = (&args[0], &args[1]) else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[1].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Byte(a | b))
+}
+
+fn byte_xor(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let (Value::Byte(a), Value::Byte(b)) = (&args[0], &args[1]) else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[1].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Byte(a ^ b))
+}
+
+fn byte_not(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Byte(b) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Byte(!b))
+}
+
+fn byte_shl(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Byte(b) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    let Value::Int(n) = &args[1] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::INT,
+            actual: args[1].type_id(),
+        }
+        .into());
+    };
+    let shift: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+    Ok(Value::Byte(b.wrapping_shl(shift)))
+}
+
+fn byte_shr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Byte(b) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BYTE,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    let Value::Int(n) = &args[1] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::INT,
+            actual: args[1].type_id(),
+        }
+        .into());
+    };
+    let shift: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+    Ok(Value::Byte(b.wrapping_shr(shift)))
+}
+
+// ── Char methods ─────────────────────────────────────────────────
+
+fn char_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Int(BigInt::from(*c as u32)))
+}
+
+fn char_is_alpha(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Bool(c.is_alphabetic()))
+}
+
+fn char_is_digit(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Bool(c.is_ascii_digit()))
+}
+
+fn char_is_upper(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Bool(c.is_uppercase()))
+}
+
+fn char_is_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Bool(c.is_lowercase()))
+}
+
+fn char_to_upper(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    // to_uppercase can produce multiple chars; take the first.
+    Ok(Value::Char(c.to_uppercase().next().unwrap_or(*c)))
+}
+
+fn char_to_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Char(c) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::CHAR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Char(c.to_lowercase().next().unwrap_or(*c)))
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Boot: build the module tree with all native functions
 // ═══════════════════════════════════════════════════════════════════
+
+/// Native method registrations for a prim type.
+pub struct PrimMethods {
+    pub methods: Vec<(&'static str, NativeFnId)>,
+}
 
 /// Result of bootstrapping: the registry + IDs needed by the interpreter.
 pub struct BootResult {
@@ -580,6 +766,8 @@ pub struct BootResult {
     pub print_id: NativeFnId,
     pub typeof_id: NativeFnId,
     pub panic_id: NativeFnId,
+    pub byte_methods: PrimMethods,
+    pub char_methods: PrimMethods,
 }
 
 /// Build the complete native function registry and module tree.
@@ -631,12 +819,50 @@ pub fn bootstrap() -> BootResult {
     reg.add_submodule(std_module, "ops", ops);
     reg.add_submodule(std_module, "mem", mem);
 
+    // Byte native methods.
+    let byte_methods = {
+        let mut methods = Vec::new();
+        for (name, handler) in [
+            ("to_int", byte_to_int as NativeHandler),
+            ("and", byte_and),
+            ("or", byte_or),
+            ("xor", byte_xor),
+            ("not", byte_not),
+            ("shl", byte_shl),
+            ("shr", byte_shr),
+        ] {
+            let id = reg.register(name, false, handler);
+            methods.push((name, id));
+        }
+        PrimMethods { methods }
+    };
+
+    // Char native methods.
+    let char_methods = {
+        let mut methods = Vec::new();
+        for (name, handler) in [
+            ("to_int", char_to_int as NativeHandler),
+            ("is_alpha", char_is_alpha),
+            ("is_digit", char_is_digit),
+            ("is_upper", char_is_upper),
+            ("is_lower", char_is_lower),
+            ("to_upper", char_to_upper),
+            ("to_lower", char_to_lower),
+        ] {
+            let id = reg.register(name, false, handler);
+            methods.push((name, id));
+        }
+        PrimMethods { methods }
+    };
+
     BootResult {
         registry: reg,
         std_module,
         print_id,
         typeof_id,
         panic_id,
+        byte_methods,
+        char_methods,
     }
 }
 

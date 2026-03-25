@@ -53,6 +53,10 @@ pub enum Value {
     NativeFn(NativeFnId),
     /// An opaque handle to runtime-managed storage. Cannot be forged from KS.
     RawPtr(u32),
+    /// An unsigned 8-bit value — bits, not a number. No arithmetic.
+    Byte(u8),
+    /// A Unicode scalar value (codepoint). Not a number.
+    Char(char),
 }
 
 /// A function parameter with an optional type annotation.
@@ -144,6 +148,8 @@ impl Value {
             Value::Module(_) => prim::NIL,
             Value::NativeFn(_) => prim::FUNC,
             Value::RawPtr(_) => prim::RAW_PTR,
+            Value::Byte(_) => prim::BYTE,
+            Value::Char(_) => prim::CHAR,
         }
     }
 
@@ -218,6 +224,8 @@ impl Value {
             Value::Module(id) => format!("<module {id}>"),
             Value::NativeFn(id) => format!("<native-fn {id}>"),
             Value::RawPtr(id) => format!("<rawptr:{id}>"),
+            Value::Byte(b) => format!("0x{b:02x}"),
+            Value::Char(c) => c.to_string(),
         }
     }
 }
@@ -260,6 +268,8 @@ impl PartialEq for Value {
             (Value::Module(a), Value::Module(b)) => a == b,
             (Value::NativeFn(a), Value::NativeFn(b)) => a == b,
             (Value::RawPtr(a), Value::RawPtr(b)) => a == b,
+            (Value::Byte(a), Value::Byte(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
             _ => false,
         }
     }
@@ -310,6 +320,8 @@ impl fmt::Display for Value {
             Value::Module(id) => write!(f, "<module {id}>"),
             Value::NativeFn(id) => write!(f, "<native-fn {id}>"),
             Value::RawPtr(id) => write!(f, "<rawptr:{id}>"),
+            Value::Byte(b) => write!(f, "0x{b:02x}"),
+            Value::Char(c) => write!(f, "{c}"),
         }
     }
 }

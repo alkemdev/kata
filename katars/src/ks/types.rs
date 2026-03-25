@@ -25,6 +25,9 @@ impl TypeId {
             prim::BIN => "Bin",
             prim::FUNC => "Func",
             prim::TYPE => "Type",
+            prim::RAW_PTR => "RawPtr",
+            prim::BYTE => "Byte",
+            prim::CHAR => "Char",
             _ => "<type>",
         }
     }
@@ -139,6 +142,8 @@ pub mod prim {
     pub const FUNC: TypeId = TypeId(6);
     pub const TYPE: TypeId = TypeId(7);
     pub const RAW_PTR: TypeId = TypeId(8);
+    pub const BYTE: TypeId = TypeId(9);
+    pub const CHAR: TypeId = TypeId(10);
 }
 
 impl TypeRegistry {
@@ -160,6 +165,8 @@ impl TypeRegistry {
         reg.register_prim("Func");
         reg.register_prim("Type");
         reg.register_prim("RawPtr");
+        reg.register_prim("Byte");
+        reg.register_prim("Char");
 
         reg
     }
