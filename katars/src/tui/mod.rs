@@ -307,6 +307,11 @@ pub fn run_repl() -> io::Result<()> {
             ReedlineEvent::MenuNext,
         ]),
     );
+    keybindings.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
 
     let edit_mode = Box::new(Emacs::new(keybindings));
 

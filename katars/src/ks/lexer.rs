@@ -421,7 +421,7 @@ pub fn lex(source: &str) -> Vec<SpannedToken> {
             Ok(tok) => tok,
             Err(()) => {
                 let bad = &source[span.clone()];
-                tracing::warn!(byte = span.start, ch = %bad, "lex error: unrecognised character");
+                tracing::trace!(byte = span.start, ch = %bad, "lex error: unrecognised character");
                 Token::Error
             }
         };
