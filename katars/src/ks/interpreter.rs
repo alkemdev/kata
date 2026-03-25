@@ -560,17 +560,13 @@ impl Interpreter {
                     existing = partial;
                 }
                 // All segments known individually but full key has no source.
-                let last = path.last().unwrap();
-                let parent = path[..path.len() - 1]
-                    .iter()
-                    .map(|s| s.node.as_str())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                return Err(RuntimeError::new(ErrorKind::ModuleNoExport {
-                    module: parent,
-                    name: last.node.clone(),
+                // e.g., `import std` — `std` exists as a native module but
+                // has no loadable source. The user needs `import std.core` etc.
+                return Err(RuntimeError::new(ErrorKind::ModuleError {
+                    module: module_key.clone(),
+                    detail: "not a loadable module".into(),
                 })
-                .at(last.span));
+                .at(path.last().unwrap().span));
             }
         };
 
