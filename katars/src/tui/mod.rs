@@ -25,11 +25,25 @@ impl reedline::Completer for KataCompleter {
             .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
             .map_or(0, |i| i + 1);
         let token = &line[start..pos];
-        if token.is_empty() {
-            return Vec::new();
-        }
-
         let interp = self.interp.lock().unwrap();
+
+        // Empty prefix: show all scope names so Tab on blank input is useful.
+        if token.is_empty() {
+            let names = interp.visible_names();
+            return names
+                .into_iter()
+                .map(|name| Suggestion {
+                    value: name,
+                    display_override: None,
+                    description: None,
+                    style: None,
+                    extra: None,
+                    span: RlSpan::new(start, pos),
+                    append_whitespace: false,
+                    match_indices: None,
+                })
+                .collect();
+        }
 
         // Dot-path completion: "std.mem." → entries of mem module.
         if let Some(dot_pos) = token.rfind('.') {
@@ -133,7 +147,8 @@ impl Prompt for KataPrompt {
     }
 
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<str> {
-        Cow::Borrowed("")
+        // Return a space — empty string causes reedline to use default "〉" or "|".
+        Cow::Borrowed(" ")
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<str> {
