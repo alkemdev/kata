@@ -1,131 +1,224 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::io;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use owo_colors::OwoColorize;
-use rustyline::completion::{Completer, Pair};
-use rustyline::config::CompletionType;
-use rustyline::error::ReadlineError;
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::{Config, EditMode, Editor, Helper};
+use reedline::{
+    default_emacs_keybindings, ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
+    Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
+    ReedlineEvent, ReedlineMenu, Signal, Span as RlSpan, Suggestion, ValidationResult,
+};
 use tracing::info;
 
 use crate::ks;
 use crate::ks::lexer::KEYWORDS;
 
-// ── Completion ───────────────────────────────────────────────────────────────
+// ── Completer ────────────────────────────────────────────────────────────────
 
-struct KataHelper {
-    interp: Rc<RefCell<ks::Interpreter>>,
+struct KataCompleter {
+    interp: Arc<Mutex<ks::Interpreter>>,
 }
 
-impl Completer for KataHelper {
-    type Candidate = Pair;
-
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &rustyline::Context<'_>,
-    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
+impl reedline::Completer for KataCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let start = line[..pos]
             .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
             .map_or(0, |i| i + 1);
         let token = &line[start..pos];
         if token.is_empty() {
-            return Ok((start, Vec::new()));
+            return Vec::new();
         }
 
-        let interp = self.interp.borrow();
+        let interp = self.interp.lock().unwrap();
 
-        // Dot-path completion: "std." or "obj.field."
+        // Dot-path completion: "std.mem." → entries of mem module.
         if let Some(dot_pos) = token.rfind('.') {
             let receiver = &token[..dot_pos];
             let attr_prefix = &token[dot_pos + 1..];
             let segments: Vec<&str> = receiver.split('.').collect();
             let attrs = interp.completions_for_path(&segments);
-            let matches: Vec<Pair> = attrs
+            return attrs
                 .into_iter()
                 .filter(|name| name.starts_with(attr_prefix))
-                .map(|name| Pair {
-                    display: name.clone(),
-                    replacement: name,
+                .map(|name| Suggestion {
+                    value: name.clone(),
+                    display_override: None,
+                    description: None,
+                    style: None,
+                    extra: None,
+                    span: RlSpan::new(start + dot_pos + 1, pos),
+                    append_whitespace: false,
+                    match_indices: None,
                 })
                 .collect();
-            return Ok((start + dot_pos + 1, matches));
         }
 
         // Simple name: keywords + scope names.
         let scope_names = interp.visible_names();
-        let mut matches: Vec<Pair> = KEYWORDS
+        let mut candidates: Vec<String> = KEYWORDS
             .iter()
             .map(|s| s.to_string())
             .chain(scope_names)
             .filter(|name| name.starts_with(token))
-            .map(|name| Pair {
-                display: name.clone(),
-                replacement: name,
-            })
             .collect();
-        matches.sort_by(|a, b| a.display.cmp(&b.display));
-        matches.dedup_by(|a, b| a.display == b.display);
-        Ok((start, matches))
+        candidates.sort();
+        candidates.dedup();
+
+        candidates
+            .into_iter()
+            .map(|name| Suggestion {
+                value: name,
+                display_override: None,
+                description: None,
+                style: None,
+                extra: None,
+                span: RlSpan::new(start, pos),
+                append_whitespace: false,
+                match_indices: None,
+            })
+            .collect()
     }
 }
 
-impl Hinter for KataHelper {
-    type Hint = String;
-}
+// ── Validator (multi-line) ───────────────────────────────────────────────────
 
-impl Highlighter for KataHelper {
-    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
-        &'s self,
-        prompt: &'p str,
-        _default: bool,
-    ) -> Cow<'b, str> {
-        if prompt.starts_with('·') {
-            Cow::Owned(prompt.dimmed().to_string())
+struct KataValidator;
+
+impl reedline::Validator for KataValidator {
+    fn validate(&self, line: &str) -> ValidationResult {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape = false;
+        for ch in line.chars() {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' && in_string {
+                escape = true;
+                continue;
+            }
+            if ch == '"' || ch == '\'' {
+                in_string = !in_string;
+                continue;
+            }
+            if in_string {
+                continue;
+            }
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth > 0 {
+            ValidationResult::Incomplete
         } else {
-            Cow::Owned(prompt.cyan().bold().to_string())
+            ValidationResult::Complete
         }
     }
 }
 
-impl Validator for KataHelper {}
-impl Helper for KataHelper {}
+// ── Prompt ───────────────────────────────────────────────────────────────────
 
-// ── Multi-line detection ─────────────────────────────────────────────────────
+struct KataPrompt;
 
-fn is_balanced(input: &str) -> bool {
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escape = false;
-    for ch in input.chars() {
-        if escape {
-            escape = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escape = true;
-            continue;
-        }
-        if ch == '"' || ch == '\'' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            _ => {}
-        }
+impl Prompt for KataPrompt {
+    fn render_prompt_left(&self) -> Cow<str> {
+        Cow::Owned("λ ".cyan().bold().to_string())
     }
-    depth <= 0
+
+    fn render_prompt_right(&self) -> Cow<str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+        Cow::Owned("· ".dimmed().to_string())
+    }
+
+    fn render_prompt_history_search_indicator(&self, search: PromptHistorySearch) -> Cow<str> {
+        let prefix = match search.status {
+            PromptHistorySearchStatus::Passing => "search",
+            PromptHistorySearchStatus::Failing => "search (not found)",
+        };
+        Cow::Owned(format!("{}: ", prefix.dimmed()))
+    }
+}
+
+// ── Highlighter ──────────────────────────────────────────────────────────────
+
+struct KataHighlighter;
+
+impl reedline::Highlighter for KataHighlighter {
+    fn highlight(&self, line: &str, _cursor: usize) -> reedline::StyledText {
+        use nu_ansi_term::{Color, Style};
+
+        let mut styled = reedline::StyledText::new();
+        // Simple token-level highlighting.
+        let tokens = ks::lexer::lex(line);
+        let mut last_end = 0;
+
+        for tok in &tokens {
+            // Emit any gap (whitespace) between tokens.
+            if tok.start > last_end {
+                styled.push((Style::default(), line[last_end..tok.start].to_string()));
+            }
+            let text = &line[tok.start..tok.end];
+            let style = match &tok.token {
+                // Keywords
+                ks::lexer::Token::True
+                | ks::lexer::Token::False
+                | ks::lexer::Token::Nil
+                | ks::lexer::Token::Let
+                | ks::lexer::Token::Func
+                | ks::lexer::Token::If
+                | ks::lexer::Token::Else
+                | ks::lexer::Token::Elif
+                | ks::lexer::Token::Enum
+                | ks::lexer::Token::While
+                | ks::lexer::Token::For
+                | ks::lexer::Token::In
+                | ks::lexer::Token::With
+                | ks::lexer::Token::Kind
+                | ks::lexer::Token::Impl
+                | ks::lexer::Token::Type
+                | ks::lexer::Token::As
+                | ks::lexer::Token::Bail
+                | ks::lexer::Token::Cont
+                | ks::lexer::Token::Ret
+                | ks::lexer::Token::Unsafe
+                | ks::lexer::Token::Import
+                | ks::lexer::Token::Match
+                | ks::lexer::Token::SelfValue
+                | ks::lexer::Token::SelfType => Color::Magenta.bold(),
+                // Strings
+                ks::lexer::Token::Str(_) => Color::Green.normal(),
+                // Numbers
+                ks::lexer::Token::Num(_) => Color::Cyan.normal(),
+                // Identifiers — check if type name (starts with uppercase)
+                ks::lexer::Token::Ident(name) => {
+                    if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        Color::Yellow.normal()
+                    } else {
+                        Style::default()
+                    }
+                }
+                // Everything else (operators, punctuation)
+                _ => Style::default(),
+            };
+            styled.push((style, text.to_string()));
+            last_end = tok.end;
+        }
+        // Trailing text after last token.
+        if last_end < line.len() {
+            styled.push((Style::default(), line[last_end..].to_string()));
+        }
+        styled
+    }
 }
 
 // ── Input execution ──────────────────────────────────────────────────────────
@@ -174,66 +267,75 @@ pub fn run_repl() -> io::Result<()> {
     info!("starting REPL");
 
     // Persistent interpreter with prelude.
-    let interp = Rc::new(RefCell::new(ks::Interpreter::new()));
+    let interp = Arc::new(Mutex::new(ks::Interpreter::new()));
     {
         let prelude_src = include_str!("../../../std/prelude.ks");
         if let Ok(prelude) = ks::parse(prelude_src, "<prelude>") {
             let mut sink = Vec::new();
-            let _ = interp.borrow_mut().exec_program(&prelude, None, &mut sink);
+            let _ = interp
+                .lock()
+                .unwrap()
+                .exec_program(&prelude, None, &mut sink);
         }
     }
 
-    let config = Config::builder()
-        .edit_mode(EditMode::Emacs)
-        .completion_type(CompletionType::List)
-        .build();
-    let mut rl = Editor::with_config(config).map_err(|e| io::Error::other(e.to_string()))?;
-    rl.set_helper(Some(KataHelper {
-        interp: Rc::clone(&interp),
-    }));
-
-    // Ensure data directory exists, load history.
-    let hist = history_path();
-    if let Some(parent) = hist.parent() {
+    // Ensure data directory exists.
+    let hist_path = history_path();
+    if let Some(parent) = hist_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = rl.load_history(&hist);
+
+    let history = Box::new(
+        FileBackedHistory::with_file(1000, hist_path)
+            .map_err(|e| io::Error::other(e.to_string()))?,
+    );
+
+    let completer = Box::new(KataCompleter {
+        interp: Arc::clone(&interp),
+    });
+
+    // Default ColumnarMenu has name "columnar_menu".
+    let completion_menu = Box::new(ColumnarMenu::default());
+
+    // Tab triggers completion menu; repeated Tab cycles through items.
+    let mut keybindings = default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("columnar_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+
+    let edit_mode = Box::new(Emacs::new(keybindings));
+
+    let mut line_editor = Reedline::create()
+        .with_completer(completer)
+        .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+        .with_history(history)
+        .with_validator(Box::new(KataValidator))
+        .with_highlighter(Box::new(KataHighlighter))
+        .with_edit_mode(edit_mode);
 
     println!("{} {}", "kata".cyan().bold(), "(Ctrl+D to exit)".dimmed());
 
-    let mut accumulated = String::new();
-    let mut continuation = false;
+    let prompt = KataPrompt;
 
     loop {
-        let prompt = if continuation { "· " } else { "λ " };
-        match rl.readline(prompt) {
-            Ok(line) => {
-                if !accumulated.is_empty() {
-                    accumulated.push('\n');
-                }
-                accumulated.push_str(&line);
-
-                if !is_balanced(&accumulated) {
-                    continuation = true;
-                    continue;
-                }
-
-                let input = accumulated.trim().to_string();
+        match line_editor.read_line(&prompt) {
+            Ok(Signal::Success(input)) => {
+                let input = input.trim();
                 if !input.is_empty() {
-                    let _ = rl.add_history_entry(&input);
-                    execute(&mut interp.borrow_mut(), &input);
-                }
-                accumulated.clear();
-                continuation = false;
-            }
-            Err(ReadlineError::Interrupted) => {
-                if continuation {
-                    accumulated.clear();
-                    continuation = false;
-                    println!();
+                    execute(&mut interp.lock().unwrap(), input);
                 }
             }
-            Err(ReadlineError::Eof) => break,
+            Ok(Signal::CtrlC) => {
+                // Cancel current line, continue.
+            }
+            Ok(Signal::CtrlD) => {
+                break;
+            }
             Err(e) => {
                 eprintln!("{} {e}", "error:".red());
                 break;
@@ -241,7 +343,6 @@ pub fn run_repl() -> io::Result<()> {
         }
     }
 
-    let _ = rl.save_history(&hist);
     info!("REPL exited");
     Ok(())
 }
