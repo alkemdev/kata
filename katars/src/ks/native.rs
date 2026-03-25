@@ -85,7 +85,7 @@ impl<'a> NativeCtx<'a> {
                 actual: other.type_id(),
             }
             .into()),
-            None => Err(ErrorKind::Other("missing argument".into()).into()),
+            None => Err(ErrorKind::InternalError("missing argument to native function").into()),
         }
     }
 
@@ -94,13 +94,13 @@ impl<'a> NativeCtx<'a> {
         match args.get(pos) {
             Some(Value::Int(n)) => n
                 .to_usize()
-                .ok_or_else(|| ErrorKind::Other("integer out of range".into()).into()),
+                .ok_or_else(|| RuntimeError::from(ErrorKind::IntegerOverflow)),
             Some(other) => Err(ErrorKind::TypeMismatch {
                 expected: prim::INT,
                 actual: other.type_id(),
             }
             .into()),
-            None => Err(ErrorKind::Other("missing argument".into()).into()),
+            None => Err(ErrorKind::InternalError("missing argument to native function").into()),
         }
     }
 }
@@ -199,7 +199,7 @@ pub fn native_panic(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runtim
             .collect::<Vec<_>>()
             .join(" ")
     };
-    Err(ErrorKind::Other(msg).into())
+    Err(ErrorKind::Panic { message: msg }.into())
 }
 
 pub fn native_typeof(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -424,8 +424,7 @@ pub fn eval_unaryop(op: UnaryOp, operand: &Value) -> Result<Value, ErrorKind> {
 /// Convert a BigInt to f64 for mixed-type arithmetic. Errors if the
 /// integer is too large to represent as a float (avoids silent data loss).
 fn int_to_f64(n: &BigInt) -> Result<f64, ErrorKind> {
-    n.to_f64()
-        .ok_or_else(|| ErrorKind::Other(format!("integer too large for float conversion: {n}")))
+    n.to_f64().ok_or(ErrorKind::IntegerOverflow)
 }
 
 fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {

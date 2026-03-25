@@ -157,6 +157,11 @@ impl Interpreter {
         interp
     }
 
+    /// Access the type registry (for formatting error messages, etc.).
+    pub fn type_registry(&self) -> &TypeRegistry {
+        &self.types
+    }
+
     // ── Scope ────────────────────────────────────────────────────────────
 
     fn get(&self, name: &str) -> Option<&Value> {
@@ -483,9 +488,10 @@ impl Interpreter {
                 for spanned_name in selected {
                     let name = &spanned_name.node;
                     let val = module.entries.get(name.as_str()).cloned().ok_or_else(|| {
-                        RuntimeError::new(ErrorKind::Other(format!(
-                            "module '{module_key}' has no export '{name}'"
-                        )))
+                        RuntimeError::new(ErrorKind::ModuleNoExport {
+                            module: module_key.clone(),
+                            name: name.clone(),
+                        })
                         .at(spanned_name.span)
                     })?;
                     exports.push((name.clone(), val));
@@ -541,12 +547,15 @@ impl Interpreter {
                         || self.loaded_modules.contains_key(&partial)
                         || matches!(self.get(&partial), Some(Value::Module(_)));
                     if !known {
-                        let msg = if existing.is_empty() {
-                            format!("unknown module '{}'", seg.node)
-                        } else {
-                            format!("module '{}' has no submodule '{}'", existing, seg.node)
-                        };
-                        return Err(RuntimeError::new(ErrorKind::Other(msg)).at(seg.span));
+                        return Err(RuntimeError::new(ErrorKind::ModuleNoExport {
+                            module: if existing.is_empty() {
+                                "<root>".into()
+                            } else {
+                                existing
+                            },
+                            name: seg.node.clone(),
+                        })
+                        .at(seg.span));
                     }
                     existing = partial;
                 }
@@ -557,21 +566,32 @@ impl Interpreter {
                     .map(|s| s.node.as_str())
                     .collect::<Vec<_>>()
                     .join(".");
-                let msg = format!("module '{}' has no submodule '{}'", parent, last.node);
-                return Err(RuntimeError::new(ErrorKind::Other(msg)).at(last.span));
+                return Err(RuntimeError::new(ErrorKind::ModuleNoExport {
+                    module: parent,
+                    name: last.node.clone(),
+                })
+                .at(last.span));
             }
         };
 
         // Parse and execute in a fresh scope to collect exports.
         let filename = format!("<{module_key}>");
         let program = super::parser::parse(source, &filename).map_err(|()| -> RuntimeError {
-            ErrorKind::Other(format!("failed to parse module '{module_key}'")).into()
+            ErrorKind::ModuleError {
+                module: module_key.clone(),
+                detail: "failed to parse".into(),
+            }
+            .into()
         })?;
 
         self.push_scope();
         self.exec_program(&program, None, out)
             .map_err(|e| -> RuntimeError {
-                ErrorKind::Other(format!("error in module '{module_key}': {e}")).into()
+                ErrorKind::ModuleError {
+                    module: module_key.clone(),
+                    detail: e.to_string(),
+                }
+                .into()
             })?;
 
         // Collect the scope into a module.
@@ -691,15 +711,15 @@ impl Interpreter {
         let ptr_base = self
             .types
             .lookup("Ptr")
-            .ok_or_else(|| ErrorKind::Other("Ptr type not found — is std.mem loaded?".into()))?;
+            .ok_or_else(|| ErrorKind::InternalError("Ptr type not found — is std.mem loaded?"))?;
         let buf_base = self
             .types
             .lookup("Buf")
-            .ok_or_else(|| ErrorKind::Other("Buf type not found — is std.mem loaded?".into()))?;
+            .ok_or_else(|| ErrorKind::InternalError("Buf type not found — is std.mem loaded?"))?;
         let arr_base = self
             .types
             .lookup("Arr")
-            .ok_or_else(|| ErrorKind::Other("Arr type not found — is std.dsa loaded?".into()))?;
+            .ok_or_else(|| ErrorKind::InternalError("Arr type not found — is std.dsa loaded?"))?;
 
         let ptr_tid = self.types.instantiate_struct(ptr_base, vec![elem_tid])?;
         let buf_tid = self.types.instantiate_struct(buf_base, vec![elem_tid])?;
@@ -1009,10 +1029,10 @@ impl Interpreter {
                             }
                         } else {
                             // "Non" (Opt) or "Err" (Res) — panic
-                            let type_name = self.types.display_name(type_id);
-                            return Err(RuntimeError::new(ErrorKind::Other(format!(
-                                "unwrap on {type_name}.{variant_name}"
-                            )))
+                            return Err(RuntimeError::new(ErrorKind::UnwrapFailed {
+                                type_id,
+                                variant: variant_name.to_string(),
+                            })
                             .at(expr.span));
                         }
                     }
@@ -1721,7 +1741,7 @@ impl Interpreter {
         _name: &str,
     ) -> Result<Value, RuntimeError> {
         if !matches!(method, Value::Func { .. }) {
-            return Err(ErrorKind::Other("bound method does not wrap a Func".to_string()).into());
+            return Err(ErrorKind::InternalError("bound method does not wrap a Func").into());
         }
         Ok(Value::BoundMethod {
             receiver: Box::new(receiver),
@@ -1758,7 +1778,7 @@ impl Interpreter {
             Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. } => {
                 Ok(v)
             }
-            _ => Err(ErrorKind::Other(format!("method '{name}' returned abnormal flow")).into()),
+            _ => Err(ErrorKind::InternalError("method returned abnormal flow").into()),
         }
     }
 
@@ -1986,7 +2006,7 @@ impl Interpreter {
                 } = *func
                 else {
                     return Err(
-                        ErrorKind::Other("bound method does not wrap a Func".to_string()).into(),
+                        ErrorKind::InternalError("bound method does not wrap a Func").into(),
                     );
                 };
 

@@ -82,6 +82,29 @@ pub enum ErrorKind {
     NotIndexable {
         type_id: TypeId,
     },
+    /// Explicit `panic(msg)` call from KS code.
+    Panic {
+        message: String,
+    },
+    /// Postfix `!` on a Non/Err variant.
+    UnwrapFailed {
+        type_id: TypeId,
+        variant: String,
+    },
+    /// Module has no export with the given name.
+    ModuleNoExport {
+        module: String,
+        name: String,
+    },
+    /// Module failed to load (parse or execution error).
+    ModuleError {
+        module: String,
+        detail: String,
+    },
+    /// Integer value out of representable range.
+    IntegerOverflow,
+    /// Interpreter invariant violation — should never reach user code.
+    InternalError(&'static str),
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
 }
@@ -255,6 +278,23 @@ impl ErrorKind {
                 let name = types.display_name(*type_id);
                 format!("'{name}' does not support indexing")
             }
+            ErrorKind::Panic { message } => message.clone(),
+            ErrorKind::UnwrapFailed { type_id, variant } => {
+                let name = types.display_name(*type_id);
+                format!("unwrap on {name}.{variant}")
+            }
+            ErrorKind::ModuleNoExport { module, name } => {
+                if module == "<root>" {
+                    format!("unknown module '{name}'")
+                } else {
+                    format!("module '{module}' has no export '{name}'")
+                }
+            }
+            ErrorKind::ModuleError { module, detail } => {
+                format!("error in module '{module}': {detail}")
+            }
+            ErrorKind::IntegerOverflow => "integer out of representable range".to_string(),
+            ErrorKind::InternalError(msg) => format!("internal error: {msg}"),
             ErrorKind::Other(msg) => msg.clone(),
         }
     }

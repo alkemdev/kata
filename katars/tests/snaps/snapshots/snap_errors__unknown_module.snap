@@ -2,10 +2,10 @@
 source: katars/tests/snaps/errors.rs
 expression: "helpers::run_error(\"import std.nonexistent\")"
 ---
-Error: module 'std' has no submodule 'nonexistent'
+Error: module 'std' has no export 'nonexistent'
    ╭─[<test>:1:12]
    │
  1 │ import std.nonexistent
    │            ─────┬─────  
-   │                 ╰─────── module 'std' has no submodule 'nonexistent'
+   │                 ╰─────── module 'std' has no export 'nonexistent'
 ───╯

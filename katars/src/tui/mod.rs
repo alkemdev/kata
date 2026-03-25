@@ -26,15 +26,34 @@ struct HistoryEntry {
     result: Result<String, String>,
 }
 
-#[derive(Default)]
 struct ReplState {
     history: Vec<HistoryEntry>,
     input: String,
     /// Number of lines scrolled up from the bottom.
     scroll: u16,
+    /// Persistent interpreter — keeps state across submissions.
+    interp: ks::Interpreter,
 }
 
 impl ReplState {
+    fn new() -> Self {
+        let mut interp = ks::Interpreter::new();
+
+        // Load the prelude so std types (Opt, Res, Arr, etc.) are available.
+        let prelude_src = include_str!("../../../std/prelude.ks");
+        if let Ok(prelude) = ks::parse(prelude_src, "<prelude>") {
+            let mut sink = Vec::new();
+            let _ = interp.exec_program(&prelude, None, &mut sink);
+        }
+
+        Self {
+            history: Vec::new(),
+            input: String::new(),
+            scroll: 0,
+            interp,
+        }
+    }
+
     fn submit(&mut self) {
         let input = std::mem::take(&mut self.input).trim().to_string();
         if input.is_empty() {
@@ -52,11 +71,13 @@ impl ReplState {
         let result = match ks::parse(&source, "<repl>") {
             Err(()) => Err("parse error".to_string()),
             Ok(program) => {
-                let mut interp = ks::Interpreter::new();
                 let mut buf = Vec::new();
-                match interp.exec_program(&program, None, &mut buf) {
+                match self.interp.exec_program(&program, None, &mut buf) {
                     Ok(()) => Ok(String::from_utf8_lossy(&buf).into_owned()),
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => {
+                        let msg = e.kind.format_with(self.interp.type_registry());
+                        Err(msg)
+                    }
                 }
             }
         };
@@ -167,7 +188,7 @@ pub fn run_repl() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = ReplState::default();
+    let mut state = ReplState::new();
     let mut running = true;
 
     while running {
