@@ -252,10 +252,12 @@ impl Interpreter {
                         None => return Vec::new(),
                     }
                 }
-                Value::Struct { fields, .. } => match fields.get(seg) {
-                    Some(v) => v.clone(),
-                    None => return Vec::new(),
-                },
+                Value::Struct { fields, .. } => {
+                    match fields.get(seg) {
+                        Some(v) => v.clone(),
+                        None => return Vec::new(), // method access doesn't produce a value to walk
+                    }
+                }
                 _ => return Vec::new(),
             };
         }
@@ -282,13 +284,45 @@ impl Interpreter {
                 names.dedup();
                 names
             }
-            Value::Type(type_id) => match self.types.get(*type_id) {
-                super::types::TypeDef::EnumInstance { variants, .. } => {
-                    variants.keys().cloned().collect()
+            Value::Type(type_id) => {
+                let mut names = Vec::new();
+                // Enum variants.
+                if let super::types::TypeDef::EnumInstance { variants, .. } =
+                    self.types.get(*type_id)
+                {
+                    names.extend(variants.keys().cloned());
                 }
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
+                // Methods on the type (and base type).
+                if let Some(methods) = self.methods.get(type_id) {
+                    names.extend(methods.keys().cloned());
+                }
+                let base = self.types.base_type(*type_id);
+                if base != *type_id {
+                    if let Some(methods) = self.methods.get(&base) {
+                        names.extend(methods.keys().cloned());
+                    }
+                }
+                names.sort();
+                names.dedup();
+                names
+            }
+            other => {
+                // Any value: check for methods on its type (and base type).
+                let tid = other.type_id();
+                let mut names = Vec::new();
+                if let Some(methods) = self.methods.get(&tid) {
+                    names.extend(methods.keys().cloned());
+                }
+                let base = self.types.base_type(tid);
+                if base != tid {
+                    if let Some(methods) = self.methods.get(&base) {
+                        names.extend(methods.keys().cloned());
+                    }
+                }
+                names.sort();
+                names.dedup();
+                names
+            }
         }
     }
 

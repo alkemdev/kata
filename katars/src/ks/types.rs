@@ -348,6 +348,37 @@ impl TypeRegistry {
     }
 
     /// Human-readable name for a type.
+    /// Format a TypeExpr for display, resolving type params if instance type_args given.
+    pub fn display_texpr_resolved(
+        &self,
+        texpr: &TypeExpr,
+        instance_type_args: &[TypeId],
+    ) -> String {
+        match texpr {
+            TypeExpr::Concrete(tid) => self.display_name(*tid),
+            TypeExpr::Param(idx) => {
+                if let Some(&tid) = instance_type_args.get(*idx) {
+                    self.display_name(tid)
+                } else {
+                    format!("T{idx}")
+                }
+            }
+            TypeExpr::Generic { base, args } => {
+                let base_name = self.display_name(*base);
+                let args: Vec<String> = args
+                    .iter()
+                    .map(|a| self.display_texpr_resolved(a, instance_type_args))
+                    .collect();
+                format!("{base_name}[{}]", args.join(", "))
+            }
+        }
+    }
+
+    /// Format a TypeExpr for display (no instance context — params show as T0, T1).
+    pub fn display_texpr(&self, texpr: &TypeExpr) -> String {
+        self.display_texpr_resolved(texpr, &[])
+    }
+
     pub fn display_name(&self, id: TypeId) -> String {
         match &self.defs[id.0 as usize] {
             TypeDef::Prim { name } => name.clone(),

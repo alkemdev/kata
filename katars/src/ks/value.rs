@@ -62,6 +62,69 @@ pub struct FuncParam {
     pub type_ann: Option<TypeExpr>,
 }
 
+/// Format function parameters with type annotations for display.
+fn format_params(params: &[FuncParam], types: &TypeRegistry) -> String {
+    params
+        .iter()
+        .map(|p| format_one_param(&p.name, p.type_ann.as_ref(), types))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Format a slice of param references (for bound methods that skip self).
+fn format_param_refs(params: &[&FuncParam], types: &TypeRegistry) -> String {
+    params
+        .iter()
+        .map(|p| format_one_param(&p.name, p.type_ann.as_ref(), types))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_one_param(name: &str, type_ann: Option<&TypeExpr>, types: &TypeRegistry) -> String {
+    match type_ann {
+        Some(texpr) => format!("{name}: {}", types.display_texpr(texpr)),
+        None => name.to_string(),
+    }
+}
+
+fn format_ret(ret_type: Option<&TypeExpr>, types: &TypeRegistry) -> String {
+    match ret_type {
+        Some(texpr) => format!(": {}", types.display_texpr(texpr)),
+        None => String::new(),
+    }
+}
+
+/// Format params with resolved instance type args (for bound methods).
+fn format_param_refs_resolved(
+    params: &[&FuncParam],
+    types: &TypeRegistry,
+    type_args: &[TypeId],
+) -> String {
+    params
+        .iter()
+        .map(|p| match p.type_ann.as_ref() {
+            Some(texpr) => format!(
+                "{}: {}",
+                p.name,
+                types.display_texpr_resolved(texpr, type_args)
+            ),
+            None => p.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_ret_resolved(
+    ret_type: Option<&TypeExpr>,
+    types: &TypeRegistry,
+    type_args: &[TypeId],
+) -> String {
+    match ret_type {
+        Some(texpr) => format!(": {}", types.display_texpr_resolved(texpr, type_args)),
+        None => String::new(),
+    }
+}
+
 impl Value {
     /// Get the TypeId for this value's type.
     pub fn type_id(&self) -> TypeId {
@@ -93,9 +156,12 @@ impl Value {
             Value::Float(n) => format!("{n}"),
             Value::Str(s) => s.clone(),
             Value::Bin(b) => format!("<bin:{} bytes>", b.len()),
-            Value::Func { params, .. } => {
-                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                format!("<func({})>", names.join(", "))
+            Value::Func {
+                params, ret_type, ..
+            } => {
+                let sig = format_params(params, types);
+                let ret = format_ret(ret_type.as_ref(), types);
+                format!("func({sig}){ret}")
             }
             Value::Enum {
                 type_id,
@@ -132,12 +198,21 @@ impl Value {
                 let type_name = types.display_name(*type_id);
                 format!("<constructor {type_name}.{variant_name}>")
             }
-            Value::BoundMethod { func, .. } => {
-                if let Value::Func { params, .. } = func.as_ref() {
-                    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                    format!("<bound-method({})>", names.join(", "))
+            Value::BoundMethod { receiver, func } => {
+                if let Value::Func {
+                    params, ret_type, ..
+                } = func.as_ref()
+                {
+                    // Resolve generic type params from the receiver's instance.
+                    let instance_args = types.instance_type_args(receiver.type_id());
+                    // Skip 'self' param in display — it's implicit.
+                    let visible: Vec<&FuncParam> =
+                        params.iter().filter(|p| p.name != "self").collect();
+                    let sig = format_param_refs_resolved(&visible, types, &instance_args);
+                    let ret = format_ret_resolved(ret_type.as_ref(), types, &instance_args);
+                    format!("func({sig}){ret}")
                 } else {
-                    "<bound-method(?)>".to_string()
+                    "func(?)".to_string()
                 }
             }
             Value::Module(id) => format!("<module {id}>"),

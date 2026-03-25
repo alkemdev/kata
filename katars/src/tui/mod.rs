@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use owo_colors::OwoColorize;
 use reedline::{
     default_emacs_keybindings, ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
-    Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
+    MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, Span as RlSpan, Suggestion, ValidationResult,
 };
 use tracing::info;
@@ -19,51 +19,70 @@ struct KataCompleter {
     interp: Arc<Mutex<ks::Interpreter>>,
 }
 
+/// Find the start of the current completion token, handling brackets.
+/// Walks backward from `pos` including alphanumeric, `_`, `.`, and balanced `[...]`.
+fn find_token_start(line: &str, pos: usize) -> usize {
+    let bytes = line[..pos].as_bytes();
+    let mut i = pos;
+    let mut bracket_depth = 0i32;
+    while i > 0 {
+        let ch = bytes[i - 1] as char;
+        if bracket_depth > 0 {
+            // Inside brackets — keep scanning until balanced.
+            if ch == '[' {
+                bracket_depth -= 1;
+            } else if ch == ']' {
+                bracket_depth += 1;
+            }
+            i -= 1;
+            continue;
+        }
+        if ch == ']' {
+            bracket_depth += 1;
+            i -= 1;
+            continue;
+        }
+        if ch.is_alphanumeric() || ch == '_' || ch == '.' {
+            i -= 1;
+            continue;
+        }
+        break;
+    }
+    i
+}
+
+/// Strip type args from a path segment: "Opt[Int]" → "Opt".
+fn strip_type_args(s: &str) -> &str {
+    s.find('[').map_or(s, |i| &s[..i])
+}
+
 impl reedline::Completer for KataCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        let start = line[..pos]
-            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
-            .map_or(0, |i| i + 1);
+        let start = find_token_start(line, pos);
         let token = &line[start..pos];
         let interp = self.interp.lock().unwrap();
 
-        // Empty prefix: show all scope names so Tab on blank input is useful.
+        // Empty prefix: show all scope names.
         if token.is_empty() {
-            let names = interp.visible_names();
-            return names
+            return interp
+                .visible_names()
                 .into_iter()
-                .map(|name| Suggestion {
-                    value: name,
-                    display_override: None,
-                    description: None,
-                    style: None,
-                    extra: None,
-                    span: RlSpan::new(start, pos),
-                    append_whitespace: false,
-                    match_indices: None,
-                })
+                .map(|name| suggestion(name, start, pos))
                 .collect();
         }
 
-        // Dot-path completion: "std.mem." → entries of mem module.
+        // Dot-path completion: "std.mem." or "Opt[Int]."
         if let Some(dot_pos) = token.rfind('.') {
             let receiver = &token[..dot_pos];
             let attr_prefix = &token[dot_pos + 1..];
-            let segments: Vec<&str> = receiver.split('.').collect();
+            // Split on dots, strip type args from each segment for lookup.
+            let segments: Vec<&str> = receiver.split('.').map(strip_type_args).collect();
             let attrs = interp.completions_for_path(&segments);
+            let replace_start = start + dot_pos + 1;
             return attrs
                 .into_iter()
                 .filter(|name| name.starts_with(attr_prefix))
-                .map(|name| Suggestion {
-                    value: name.clone(),
-                    display_override: None,
-                    description: None,
-                    style: None,
-                    extra: None,
-                    span: RlSpan::new(start + dot_pos + 1, pos),
-                    append_whitespace: false,
-                    match_indices: None,
-                })
+                .map(|name| suggestion(name, replace_start, pos))
                 .collect();
         }
 
@@ -80,17 +99,21 @@ impl reedline::Completer for KataCompleter {
 
         candidates
             .into_iter()
-            .map(|name| Suggestion {
-                value: name,
-                display_override: None,
-                description: None,
-                style: None,
-                extra: None,
-                span: RlSpan::new(start, pos),
-                append_whitespace: false,
-                match_indices: None,
-            })
+            .map(|name| suggestion(name, start, pos))
             .collect()
+    }
+}
+
+fn suggestion(value: String, start: usize, end: usize) -> Suggestion {
+    Suggestion {
+        value,
+        display_override: None,
+        description: None,
+        style: None,
+        extra: None,
+        span: RlSpan::new(start, end),
+        append_whitespace: false,
+        match_indices: None,
     }
 }
 
@@ -147,8 +170,8 @@ impl Prompt for KataPrompt {
     }
 
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<str> {
-        // Return a space — empty string causes reedline to use default "〉" or "|".
-        Cow::Borrowed(" ")
+        // Must match menu marker width (both empty) to prevent text shift on Tab.
+        Cow::Borrowed("")
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<str> {
@@ -239,11 +262,7 @@ impl reedline::Highlighter for KataHighlighter {
 // ── Input execution ──────────────────────────────────────────────────────────
 
 fn execute(interp: &mut ks::Interpreter, input: &str) {
-    let source = if input.trim_end().ends_with(';') {
-        input.to_string()
-    } else {
-        format!("{input};")
-    };
+    let source = input.to_string();
 
     match ks::parse(&source, "<repl>") {
         Err(()) => eprintln!("{} parse error", "error:".red()),
@@ -309,8 +328,8 @@ pub fn run_repl() -> io::Result<()> {
         interp: Arc::clone(&interp),
     });
 
-    // Default ColumnarMenu has name "columnar_menu".
-    let completion_menu = Box::new(ColumnarMenu::default());
+    // ColumnarMenu with empty marker (default is "| " which shows as a bar).
+    let completion_menu = Box::new(ColumnarMenu::default().with_marker(""));
 
     // Tab triggers completion menu; repeated Tab cycles through items.
     let mut keybindings = default_emacs_keybindings();
