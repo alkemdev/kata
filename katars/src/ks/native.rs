@@ -824,10 +824,10 @@ pub fn bootstrap() -> BootResult {
         let mut methods = Vec::new();
         for (name, handler) in [
             ("to_int", byte_to_int as NativeHandler),
-            ("and", byte_and),
+            ("band", byte_and),
             ("ior", byte_or),
             ("xor", byte_xor),
-            ("not", byte_not),
+            ("inv", byte_not),
             ("shl", byte_shl),
             ("shr", byte_shr),
         ] {
