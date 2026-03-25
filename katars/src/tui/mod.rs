@@ -149,8 +149,7 @@ fn execute(interp: &mut ks::Interpreter, input: &str) {
                     }
                 }
                 Err(e) => {
-                    let msg = e.kind.format_with(interp.type_registry());
-                    eprintln!("{} {msg}", "error:".red());
+                    ks::render_error(&e, interp.type_registry(), &source, "<repl>");
                 }
             }
         }

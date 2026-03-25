@@ -55,7 +55,7 @@ pub fn run(source: &str, filename: &str) -> Result<(), ()> {
 
 /// Render a RuntimeError to stderr using ariadne (if span is available)
 /// or as a plain message (if span-less).
-fn render_error(err: &RuntimeError, types: &TypeRegistry, source: &str, filename: &str) {
+pub fn render_error(err: &RuntimeError, types: &TypeRegistry, source: &str, filename: &str) {
     let message = err.kind.format_with(types);
     // Only render with ariadne if the span is within the source's range.
     // Errors from stdlib code may have spans relative to prelude source.
