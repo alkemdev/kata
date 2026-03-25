@@ -20,7 +20,8 @@ struct KataCompleter {
 }
 
 /// Find the start of the current completion token, handling brackets.
-/// Walks backward from `pos` including alphanumeric, `_`, `.`, and balanced `[...]`.
+/// Walks backward from `pos` including alphanumeric, `_`, `.`, `,`, spaces,
+/// and balanced `[...]` so that `Opt[Int].` is a single token.
 fn find_token_start(line: &str, pos: usize) -> usize {
     let bytes = line[..pos].as_bytes();
     let mut i = pos;
@@ -28,7 +29,6 @@ fn find_token_start(line: &str, pos: usize) -> usize {
     while i > 0 {
         let ch = bytes[i - 1] as char;
         if bracket_depth > 0 {
-            // Inside brackets — keep scanning until balanced.
             if ch == '[' {
                 bracket_depth -= 1;
             } else if ch == ']' {
@@ -51,16 +51,11 @@ fn find_token_start(line: &str, pos: usize) -> usize {
     i
 }
 
-/// Strip type args from a path segment: "Opt[Int]" → "Opt".
-fn strip_type_args(s: &str) -> &str {
-    s.find('[').map_or(s, |i| &s[..i])
-}
-
 impl reedline::Completer for KataCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let start = find_token_start(line, pos);
         let token = &line[start..pos];
-        let interp = self.interp.lock().unwrap();
+        let mut interp = self.interp.lock().unwrap();
 
         // Empty prefix: show all scope names.
         if token.is_empty() {
@@ -71,13 +66,11 @@ impl reedline::Completer for KataCompleter {
                 .collect();
         }
 
-        // Dot-path completion: "std.mem." or "Opt[Int]."
+        // Dot-path completion: parse and evaluate the receiver expression.
         if let Some(dot_pos) = token.rfind('.') {
             let receiver = &token[..dot_pos];
             let attr_prefix = &token[dot_pos + 1..];
-            // Split on dots, strip type args from each segment for lookup.
-            let segments: Vec<&str> = receiver.split('.').map(strip_type_args).collect();
-            let attrs = interp.completions_for_path(&segments);
+            let attrs = interp.completions_for_expr(receiver);
             let replace_start = start + dot_pos + 1;
             return attrs
                 .into_iter()

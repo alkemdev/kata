@@ -177,54 +177,66 @@ impl Interpreter {
         names
     }
 
-    /// Get attribute completions for a value looked up by name (for REPL).
-    /// Returns field names for structs, entry names for modules, method names.
-    pub fn completions_for(&self, name: &str) -> Vec<String> {
-        let val = match self.get(name) {
-            Some(v) => v.clone(),
-            None => return Vec::new(),
-        };
+    // ── Completion (REPL) ─────────────────────────────────────────────
+
+    /// Evaluate an expression safely for tab completion. Only handles
+    /// side-effect-free forms: names, attribute access, type instantiation.
+    /// Returns None for anything that could have side effects.
+    fn eval_for_completion(&mut self, expr: &Expr) -> Option<Value> {
+        match expr {
+            Expr::Name(n) => self.get(n).cloned(),
+            Expr::Attr { object, name, .. } => {
+                let obj = self.eval_for_completion(&object.node)?;
+                match self.eval_attr(&obj, name) {
+                    Ok(Flow::Next(v)) => Some(v),
+                    _ => None,
+                }
+            }
+            Expr::Item { object, args } => {
+                let obj = self.eval_for_completion(&object.node)?;
+                let Value::Type(base_id) = obj else {
+                    return None;
+                };
+                let type_args: Vec<TypeId> = args
+                    .iter()
+                    .map(|a| match self.eval_for_completion(&a.node)? {
+                        Value::Type(tid) => Some(tid),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let instance_id = match self.types.get(base_id) {
+                    TypeDef::Enum { .. } => self.types.instantiate_enum(base_id, type_args).ok()?,
+                    TypeDef::Struct { .. } => {
+                        self.types.instantiate_struct(base_id, type_args).ok()?
+                    }
+                    _ => return None,
+                };
+                Some(Value::Type(instance_id))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get attribute completions for a value (fields, methods, variants, entries).
+    fn completions_for_value(&self, val: &Value) -> Vec<String> {
         let mut names = Vec::new();
-        match &val {
+        match val {
             Value::Module(mid) => {
                 let module = self.native_registry.get_module(*mid);
                 names.extend(module.entries.keys().cloned());
             }
             Value::Struct { type_id, fields } => {
                 names.extend(fields.keys().cloned());
-                // Also add methods.
-                if let Some(methods) = self.methods.get(type_id) {
-                    names.extend(methods.keys().cloned());
-                }
-                // Fallback to base type methods.
-                let base = self.types.base_type(*type_id);
-                if base != *type_id {
-                    if let Some(methods) = self.methods.get(&base) {
-                        names.extend(methods.keys().cloned());
-                    }
-                }
+                self.collect_methods(*type_id, &mut names);
             }
             Value::Type(type_id) => {
-                // For types, show variants (if enum) or methods.
-                match self.types.get(*type_id) {
-                    super::types::TypeDef::EnumInstance { variants, .. } => {
-                        names.extend(variants.keys().cloned());
-                    }
-                    _ => {}
+                if let TypeDef::EnumInstance { variants, .. } = self.types.get(*type_id) {
+                    names.extend(variants.keys().cloned());
                 }
+                self.collect_methods(*type_id, &mut names);
             }
-            _ => {
-                // For any value, check if its type has methods.
-                let tid = val.type_id();
-                if let Some(methods) = self.methods.get(&tid) {
-                    names.extend(methods.keys().cloned());
-                }
-                let base = self.types.base_type(tid);
-                if base != tid {
-                    if let Some(methods) = self.methods.get(&base) {
-                        names.extend(methods.keys().cloned());
-                    }
-                }
+            other => {
+                self.collect_methods(other.type_id(), &mut names);
             }
         }
         names.sort();
@@ -232,98 +244,37 @@ impl Interpreter {
         names
     }
 
-    /// Get attribute completions for a multi-segment dot-path (for REPL).
-    /// e.g., `["std", "mem"]` → entries of the mem module.
-    pub fn completions_for_path(&self, segments: &[&str]) -> Vec<String> {
-        if segments.is_empty() {
-            return Vec::new();
+    /// Collect method names for a type (including base-type fallback).
+    fn collect_methods(&self, type_id: TypeId, names: &mut Vec<String>) {
+        if let Some(methods) = self.methods.get(&type_id) {
+            names.extend(methods.keys().cloned());
         }
-        // Resolve the path to a value.
-        let mut val = match self.get(segments[0]) {
-            Some(v) => v.clone(),
+        let base = self.types.base_type(type_id);
+        if base != type_id {
+            if let Some(methods) = self.methods.get(&base) {
+                names.extend(methods.keys().cloned());
+            }
+        }
+    }
+
+    /// Parse and safely evaluate an expression for REPL tab completion.
+    /// Returns attribute completions for the result, or empty if unsafe/invalid.
+    pub fn completions_for_expr(&mut self, receiver_src: &str) -> Vec<String> {
+        let source = format!("{receiver_src};");
+        let Ok(program) = super::parser::parse(&source, "<completion>") else {
+            return Vec::new();
+        };
+        let expr = match program.first() {
+            Some(spanned) => match &spanned.node {
+                Stmt::Expr(e) => e,
+                _ => return Vec::new(),
+            },
             None => return Vec::new(),
         };
-        for &seg in &segments[1..] {
-            val = match &val {
-                Value::Module(mid) => {
-                    let module = self.native_registry.get_module(*mid);
-                    match module.entries.get(seg) {
-                        Some(v) => v.clone(),
-                        None => return Vec::new(),
-                    }
-                }
-                Value::Struct { fields, .. } => {
-                    match fields.get(seg) {
-                        Some(v) => v.clone(),
-                        None => return Vec::new(), // method access doesn't produce a value to walk
-                    }
-                }
-                _ => return Vec::new(),
-            };
-        }
-        // Now get completions for the resolved value.
-        match &val {
-            Value::Module(mid) => {
-                let module = self.native_registry.get_module(*mid);
-                let mut names: Vec<String> = module.entries.keys().cloned().collect();
-                names.sort();
-                names
-            }
-            Value::Struct { type_id, fields } => {
-                let mut names: Vec<String> = fields.keys().cloned().collect();
-                if let Some(methods) = self.methods.get(type_id) {
-                    names.extend(methods.keys().cloned());
-                }
-                let base = self.types.base_type(*type_id);
-                if base != *type_id {
-                    if let Some(methods) = self.methods.get(&base) {
-                        names.extend(methods.keys().cloned());
-                    }
-                }
-                names.sort();
-                names.dedup();
-                names
-            }
-            Value::Type(type_id) => {
-                let mut names = Vec::new();
-                // Enum variants.
-                if let super::types::TypeDef::EnumInstance { variants, .. } =
-                    self.types.get(*type_id)
-                {
-                    names.extend(variants.keys().cloned());
-                }
-                // Methods on the type (and base type).
-                if let Some(methods) = self.methods.get(type_id) {
-                    names.extend(methods.keys().cloned());
-                }
-                let base = self.types.base_type(*type_id);
-                if base != *type_id {
-                    if let Some(methods) = self.methods.get(&base) {
-                        names.extend(methods.keys().cloned());
-                    }
-                }
-                names.sort();
-                names.dedup();
-                names
-            }
-            other => {
-                // Any value: check for methods on its type (and base type).
-                let tid = other.type_id();
-                let mut names = Vec::new();
-                if let Some(methods) = self.methods.get(&tid) {
-                    names.extend(methods.keys().cloned());
-                }
-                let base = self.types.base_type(tid);
-                if base != tid {
-                    if let Some(methods) = self.methods.get(&base) {
-                        names.extend(methods.keys().cloned());
-                    }
-                }
-                names.sort();
-                names.dedup();
-                names
-            }
-        }
+        let Some(val) = self.eval_for_completion(&expr.node) else {
+            return Vec::new();
+        };
+        self.completions_for_value(&val)
     }
 
     // ── Scope ────────────────────────────────────────────────────────────
