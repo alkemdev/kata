@@ -279,7 +279,7 @@ impl Interpreter {
     /// Returns attribute completions for the result, or empty if unsafe/invalid.
     pub fn completions_for_expr(&mut self, receiver_src: &str) -> Vec<String> {
         let source = format!("{receiver_src};");
-        let Ok(program) = super::parser::parse(&source, "<completion>") else {
+        let Ok(program) = super::parser::parse_silent(&source) else {
             return Vec::new();
         };
         let expr = match program.first() {

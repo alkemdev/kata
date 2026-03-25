@@ -825,7 +825,7 @@ pub fn bootstrap() -> BootResult {
         for (name, handler) in [
             ("to_int", byte_to_int as NativeHandler),
             ("and", byte_and),
-            ("or", byte_or),
+            ("ior", byte_or),
             ("xor", byte_xor),
             ("not", byte_not),
             ("shl", byte_shl),

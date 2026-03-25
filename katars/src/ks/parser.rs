@@ -959,6 +959,27 @@ where
 ///
 /// Lex errors and parse errors are printed to stderr via ariadne.
 /// Returns `Err(())` if any errors occurred.
+/// Parse without printing errors (for tab completion, etc.).
+pub fn parse_silent(source: &str) -> Result<Program, ()> {
+    let token_iter =
+        Token::lexer(source)
+            .spanned()
+            .map(|(result, span): (_, std::ops::Range<usize>)| {
+                let tok = result.unwrap_or(Token::Error);
+                (tok, SimpleSpan::from(span))
+            });
+    let token_stream = Stream::from_iter(token_iter).map(
+        SimpleSpan::from(source.len()..source.len()),
+        |(t, s): (_, _)| (t, s),
+    );
+    let (ast, errors) = program_parser().parse(token_stream).into_output_errors();
+    if errors.is_empty() {
+        ast.ok_or(())
+    } else {
+        Err(())
+    }
+}
+
 pub fn parse(source: &str, filename: &str) -> Result<Program, ()> {
     info!(filename, bytes = source.len(), "parsing");
 
