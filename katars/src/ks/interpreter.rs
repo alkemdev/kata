@@ -592,9 +592,13 @@ impl Interpreter {
                 .into()
             })?;
 
-        // Collect the scope into a module.
+        // Collect the scope into a module. If a native module already exists
+        // for this path (e.g., std.mem has native intrinsics), merge KS exports
+        // into it rather than replacing it.
         let frame = self.frames.pop().unwrap();
-        let module_id = self.native_registry.create_module(&module_key);
+        let module_id = self
+            .find_existing_module(&module_key)
+            .unwrap_or_else(|| self.native_registry.create_module(&module_key));
         for (name, value) in frame {
             self.native_registry.add_value(module_id, name, value);
         }
@@ -602,6 +606,21 @@ impl Interpreter {
         self.loaded_modules
             .insert(module_key.to_string(), module_id);
         Ok(module_id)
+    }
+
+    /// Walk a dotted module key (e.g., "std.mem") through the existing module
+    /// tree to find a pre-existing native module. Returns None if any segment
+    /// is missing.
+    fn find_existing_module(&self, key: &str) -> Option<native::ModuleId> {
+        let segments: Vec<&str> = key.split('.').collect();
+        let mut current = match self.get(segments[0])? {
+            Value::Module(mid) => *mid,
+            _ => return None,
+        };
+        for &seg in &segments[1..] {
+            current = self.native_registry.find_submodule(current, seg)?;
+        }
+        Some(current)
     }
 
     /// Ensure a dotted path exists in scope as nested modules.

@@ -181,6 +181,14 @@ impl NativeFnRegistry {
     pub fn fn_name(&self, id: NativeFnId) -> &str {
         self.fns[id.0 as usize].name
     }
+
+    /// Find a submodule by name within a parent module.
+    pub fn find_submodule(&self, parent: ModuleId, name: &str) -> Option<ModuleId> {
+        match self.modules[parent.0 as usize].entries.get(name) {
+            Some(Value::Module(mid)) => Some(*mid),
+            _ => None,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
