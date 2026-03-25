@@ -8,6 +8,7 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Config, EditMode, Editor, Helper};
+use std::borrow::Cow;
 use tracing::info;
 
 use crate::ks;
@@ -33,42 +34,100 @@ impl Completer for KataHelper {
         pos: usize,
         _ctx: &rustyline::Context<'_>,
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
-        // Find the start of the current word.
+        // Find the start of the current word (including dots for paths).
         let start = line[..pos]
-            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
             .map_or(0, |i| i + 1);
-        let prefix = &line[start..pos];
-        if prefix.is_empty() {
+        let token = &line[start..pos];
+        if token.is_empty() {
             return Ok((start, Vec::new()));
         }
 
-        // Collect candidates: keywords + all scope names.
         let interp = self.interp.borrow();
-        let scope_names = interp.visible_names();
 
+        // Check for dot-path completion: "std." or "std.mem."
+        if let Some(dot_pos) = token.rfind('.') {
+            let receiver = &token[..dot_pos];
+            let attr_prefix = &token[dot_pos + 1..];
+
+            // Walk the dot-path to resolve the receiver.
+            let attrs = self.resolve_dot_completions(&interp, receiver);
+
+            let matches: Vec<Pair> = attrs
+                .into_iter()
+                .filter(|name| name.starts_with(attr_prefix))
+                .map(|name| Pair {
+                    display: name.clone(),
+                    replacement: name,
+                })
+                .collect();
+
+            // Replace only the part after the last dot.
+            let replace_start = start + dot_pos + 1;
+            return Ok((replace_start, matches));
+        }
+
+        // Simple name completion: keywords + scope names.
+        let scope_names = interp.visible_names();
         let mut matches: Vec<Pair> = KEYWORDS
             .iter()
             .map(|s| s.to_string())
             .chain(scope_names.into_iter())
-            .filter(|name| name.starts_with(prefix))
+            .filter(|name| name.starts_with(token))
             .map(|name| Pair {
                 display: name.clone(),
                 replacement: name,
             })
             .collect();
 
-        // Deduplicate (keywords might overlap with scope names like "true").
         matches.sort_by(|a, b| a.display.cmp(&b.display));
         matches.dedup_by(|a, b| a.display == b.display);
-
         Ok((start, matches))
+    }
+}
+
+impl KataHelper {
+    /// Resolve a dot-separated path and return completions for the final segment.
+    fn resolve_dot_completions(&self, interp: &ks::Interpreter, receiver: &str) -> Vec<String> {
+        // Split "std.mem" into ["std", "mem"] and walk segment by segment.
+        let segments: Vec<&str> = receiver.split('.').collect();
+        if segments.is_empty() {
+            return Vec::new();
+        }
+        // Get completions for the root name first.
+        let mut attrs = interp.completions_for(segments[0]);
+        // For deeper paths like "std.mem", we need the interpreter to resolve
+        // "std" then "mem" within that module. For now, only support one level
+        // of dot-completion by asking completions_for the root.
+        // TODO: support arbitrary depth by walking the module tree.
+        if segments.len() == 1 {
+            return attrs;
+        }
+        // For multi-segment paths, try to resolve through the module tree.
+        // This handles "std.mem.<tab>" by looking at the mem module's entries.
+        attrs = interp.completions_for_path(&segments);
+        attrs
     }
 }
 
 impl Hinter for KataHelper {
     type Hint = String;
 }
-impl Highlighter for KataHelper {}
+
+impl Highlighter for KataHelper {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        _default: bool,
+    ) -> Cow<'b, str> {
+        if prompt.contains('·') {
+            Cow::Owned(format!("\x1b[90m{prompt}\x1b[0m"))
+        } else {
+            Cow::Owned(format!("\x1b[36;1m{prompt}\x1b[0m"))
+        }
+    }
+}
+
 impl Validator for KataHelper {}
 impl Helper for KataHelper {}
 
@@ -163,13 +222,13 @@ pub fn run_repl() -> io::Result<()> {
     }));
     let _ = rl.load_history(&history_path());
 
-    println!("KataScript REPL (Ctrl+D to exit)");
+    println!("\x1b[36;1mkata\x1b[0m \x1b[90m(Ctrl+D to exit)\x1b[0m");
 
     let mut accumulated = String::new();
     let mut continuation = false;
 
     loop {
-        let prompt = if continuation { "... " } else { "ks> " };
+        let prompt = if continuation { "· " } else { "λ " };
         match rl.readline(prompt) {
             Ok(line) => {
                 if !accumulated.is_empty() {
