@@ -176,6 +176,11 @@ impl NativeFnRegistry {
     pub fn get_module(&self, id: ModuleId) -> &Module {
         &self.modules[id.0 as usize]
     }
+
+    /// Get the name of a native function by ID.
+    pub fn fn_name(&self, id: NativeFnId) -> &str {
+        self.fns[id.0 as usize].name
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

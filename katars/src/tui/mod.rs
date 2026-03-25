@@ -72,7 +72,7 @@ impl ReplState {
             Err(()) => Err("parse error".to_string()),
             Ok(program) => {
                 let mut buf = Vec::new();
-                match self.interp.exec_program(&program, None, &mut buf) {
+                match self.interp.exec_repl(&program, &mut buf) {
                     Ok(()) => Ok(String::from_utf8_lossy(&buf).into_owned()),
                     Err(e) => {
                         let msg = e.kind.format_with(self.interp.type_registry());

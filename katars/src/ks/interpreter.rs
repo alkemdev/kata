@@ -559,9 +559,11 @@ impl Interpreter {
                     }
                     existing = partial;
                 }
-                // All segments known individually but full key has no source.
-                // e.g., `import std` — `std` exists as a native module but
-                // has no loadable source. The user needs `import std.core` etc.
+                // All segments known but no embedded source. Check if it's
+                // already a native module in scope (e.g., `import std`).
+                if let Some(Value::Module(mid)) = self.get(&module_key).cloned() {
+                    return Ok(mid);
+                }
                 return Err(RuntimeError::new(ErrorKind::ModuleError {
                     module: module_key.clone(),
                     detail: "not a loadable module".into(),
@@ -2131,6 +2133,61 @@ impl Interpreter {
                     ))
                     .at(span)
                     .note("cont can only be used inside while or for loops"))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Execute statements in REPL mode: expression results are printed.
+    /// Non-Nil values from expression statements get displayed.
+    pub fn exec_repl(
+        &mut self,
+        stmts: &[Spanned<Stmt>],
+        out: &mut impl Write,
+    ) -> Result<(), RuntimeError> {
+        for stmt in stmts {
+            let is_expr = matches!(&stmt.node, Stmt::Expr(_));
+            match self.exec_stmt(stmt, out)? {
+                Flow::Next(val) => {
+                    if is_expr && !matches!(val, Value::Nil) {
+                        let display = match &val {
+                            Value::Module(mid) => {
+                                let m = self.native_registry.get_module(*mid);
+                                format!("<module {}>", m.name)
+                            }
+                            Value::NativeFn(fid) => {
+                                let name = self.native_registry.fn_name(*fid);
+                                format!("<native-fn {name}>")
+                            }
+                            other => other.display(&self.types),
+                        };
+                        let _ = writeln!(out, "{display}");
+                    }
+                }
+                Flow::Return { span, .. } => {
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::RetOutsideFunction,
+                    ))
+                    .at(span));
+                }
+                Flow::Propagate { span, .. } => {
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::PropagateOutsideFunction,
+                    ))
+                    .at(span));
+                }
+                Flow::Bail(span) => {
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::BailOutsideLoop,
+                    ))
+                    .at(span));
+                }
+                Flow::Cont(span) => {
+                    return Err(RuntimeError::new(ErrorKind::FlowMisuse(
+                        FlowMisuse::ContOutsideLoop,
+                    ))
+                    .at(span));
                 }
             }
         }
