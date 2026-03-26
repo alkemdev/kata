@@ -1,6 +1,6 @@
 # Proposal: Specialized impl blocks with `@` binding
 **ID:** specialized-impl
-**Status:** open
+**Status:** phase 1 done
 **Date opened:** 2026-03-26
 **Affects:** lexer, parser, AST, interpreter (register_impl, lookup_method, conformance), type solver
 

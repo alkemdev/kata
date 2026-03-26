@@ -1,6 +1,6 @@
 # Proposal: Bin literals, byte string syntax, and Bin display
 **ID:** bin-literals
-**Status:** open
+**Status:** done
 **Date opened:** 2026-03-26
 **Affects:** lexer, parser, interpreter, value display, std.core
 

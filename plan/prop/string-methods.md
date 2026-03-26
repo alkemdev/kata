@@ -41,7 +41,10 @@ Key question: how does method dispatch work on prim types today? The interpreter
 Minimum viable set: `len`, `chars` (returns iterator), `contains`, `split`, `trim`, `substr`, `starts_with`, `ends_with`, `to_upper`, `to_lower`, `to_int`, `to_float`, `replace`.
 
 ## Decision
-<!-- blank while open -->
+Option C (hybrid). Native methods registered at bootstrap, same pattern as Byte/Char/Bin methods. The method dispatch path already works for prim types — Byte, Char, and Bin all have native methods registered in `self.methods[TypeId]` at boot time. Str follows the same pattern.
+
+Minimum viable set for initial implementation:
+`len`, `contains`, `starts_with`, `ends_with`, `split`, `trim`, `to_upper`, `to_lower`, `to_int`, `to_float`, `replace`, `substr`, `chars`, `bytes`, `to_bin`.
 
 ## References
 - Python str methods

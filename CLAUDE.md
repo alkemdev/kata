@@ -6,17 +6,18 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 
 ## Language status
 
-- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin, RawPtr
-- **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation)
+- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin, Byte, Char, RawPtr
+- **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation). Escapes: `\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\xNN` (hex byte), `\uNNNN` (Unicode BMP), `\UNNNNNNNN` (full Unicode)
+- **Byte strings**: `b"..."` (interpolation) and `b'...'` (literal) produce interned `Bin` values. `\xNN` produces a single raw byte. Display: `b'hello\xff\n'`
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
 - **Functions**: func, typed params, return type annotation, ret, closures
 - **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via std.ops
 - **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in std.core
-- **Methods**: impl blocks (generic: `impl Foo[T]`), method dispatch with base-type fallback, mutable self (copy-in copy-out), `self`/`Self` keywords
-- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe in std.core
+- **Methods**: impl blocks with `@` binding sigil (`impl Foo[@T]` generic, `impl Foo[Int]` specialized), method dispatch with base-type fallback, mutable self (copy-in copy-out), `self`/`Self` keywords, static methods (no self)
+- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe/ToBin in std.core
 - **Control flow**: if/elif/else (expression), while, for (iterator protocol), bail, cont, && || (short-circuit)
 - **Blocks**: with (scoped bindings), unsafe (gates std.mem intrinsics)
-- **Memory**: RawPtr (opaque prim), Ptr[T], Buf[T], Arr[T] — layered stack with Allocator interface
+- **Memory**: RawPtr (opaque prim), Ptr[T], Buf[T], Arr[T] — layered stack with Allocator interface. Bin interning (Arc<[u8]>, pointer-equality fast path)
 - **Modules**: import std.mem (scoped), import std.mem.{Ptr, Buf} (selective). Hierarchical std: std.core, std.mem, std.dsa
 - **Lifecycle**: Drop protocol (auto-called on scope exit), Self type in impl blocks
 - **Error handling**: Res[T,E] + postfix `?` (unwrap or propagate) + postfix `!` (unwrap or panic), Res methods (unwrap, unwrap_or, is_val, is_err)

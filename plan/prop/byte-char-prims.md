@@ -1,6 +1,6 @@
 # Decision: Byte and Char primitive types
 **ID:** byte-char-prims
-**Status:** open
+**Status:** partially done
 **Date opened:** 2026-03-25
 **Date done:** —
 **Affects:** lexer, parser, interpreter, types, stdlib
@@ -66,7 +66,14 @@ How should Byte (8-bit) and Char (Unicode codepoint) primitives work?
 **Cons:** Wrapping overhead. Every byte/char operation unwraps and rewraps. Constructor needs validation. Bitwise ops need method syntax not operator syntax.
 
 ## Decision
-<!-- blank while open -->
+Option A (Byte and Char as prims) — implemented. Both exist as `Value::Byte(u8)` and `Value::Char(char)` with TypeIds.
+
+Resolved questions:
+- **Byte literals:** `0xFF` produces Int; use `Byte(0xFF)` constructor for Byte values. No special literal syntax.
+- **Char literals:** Not needed. A single-character Str (`"a"`) is sufficient. Char wraps an integer codepoint (`Char(97)`). Backtick reserved for potential future use (regex, etc.).
+- **Bitwise operators on Byte:** Implemented as methods (`band`, `ior`, `xor`, `inv`, `shl`, `shr`), not operators. Operators like `&`, `|`, `~` reserved but not yet claimed.
+- **Bitwise on Int/Bool:** Deferred. Not important enough for this language.
+- **Relationship to Bin:** Bin is now `Arc<[u8]>` (interned). `Bin[i]` returns Byte via GetItem. `Arr[Byte].to_bin()` via ToBin protocol.
 
 ## References
 - Rust: `u8`, `char` (4 bytes, Unicode scalar value)
