@@ -42,7 +42,8 @@ pub enum Token {
     Str(Vec<StringPart>),
 
     /// An integer or decimal number (stored as raw text for lossless round-trip).
-    #[regex(r"[0-9]+(\.[0-9]+)?", |lex| lex.slice().to_string())]
+    /// Supports decimal, hex (0x), and binary (0b) prefixes.
+    #[regex(r"0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+(\.[0-9]+)?", |lex| lex.slice().to_string())]
     Num(String),
 
     // ── keywords ─────────────────────────────────────────────────────────

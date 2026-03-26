@@ -24,6 +24,19 @@ const METHOD_TO_ITER: &str = "to_iter";
 const METHOD_NEXT: &str = "next";
 const VARIANT_NONE: &str = "Non";
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Parse an integer literal string, handling decimal, hex (0x), and binary (0b).
+fn parse_int_literal(s: &str) -> Result<BigInt, String> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        BigInt::parse_bytes(hex.as_bytes(), 16).ok_or_else(|| format!("invalid hex literal: {s}"))
+    } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+        BigInt::parse_bytes(bin.as_bytes(), 2).ok_or_else(|| format!("invalid binary literal: {s}"))
+    } else {
+        s.parse::<BigInt>().map_err(|e| e.to_string())
+    }
+}
+
 // ── Flow ─────────────────────────────────────────────────────────────────────
 
 /// Outcome of executing a statement or block.
@@ -984,7 +997,7 @@ impl Interpreter {
             Pattern::Literal(lit_expr) => match &lit_expr.node {
                 Expr::Int(s) => {
                     if let Value::Int(n) = val {
-                        if let Ok(lit_n) = s.parse::<BigInt>() {
+                        if let Ok(lit_n) = parse_int_literal(s) {
                             if *n == lit_n {
                                 return Some(vec![]);
                             }
@@ -1051,11 +1064,11 @@ impl Interpreter {
             Expr::Nil => Ok(Flow::Next(Value::Nil)),
             Expr::Bool(b) => Ok(Flow::Next(Value::Bool(*b))),
             Expr::Int(s) => {
-                let n: BigInt = s.parse().map_err(|e: num_bigint::ParseBigIntError| {
+                let n: BigInt = parse_int_literal(s).map_err(|reason| {
                     RuntimeError::new(ErrorKind::InvalidLiteral {
                         kind: "integer",
                         text: s.clone(),
-                        reason: e.to_string(),
+                        reason,
                     })
                     .at(expr.span)
                 })?;
