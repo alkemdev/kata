@@ -57,6 +57,12 @@ pub enum Value {
     Byte(u8),
     /// A Unicode scalar value (codepoint). Not a number.
     Char(char),
+    /// A value viewed as an interface type. Method dispatch goes to the inner
+    /// concrete type. Created by `expr as InterfaceType`.
+    AsType {
+        inner: Box<Value>,
+        interface_id: TypeId,
+    },
 }
 
 /// A function parameter with an optional type annotation.
@@ -150,6 +156,15 @@ impl Value {
             Value::RawPtr(_) => prim::RAW_PTR,
             Value::Byte(_) => prim::BYTE,
             Value::Char(_) => prim::CHAR,
+            Value::AsType { interface_id, .. } => *interface_id,
+        }
+    }
+
+    /// Unwrap AsType wrappers to get the concrete value.
+    pub fn concrete(&self) -> &Value {
+        match self {
+            Value::AsType { inner, .. } => inner.concrete(),
+            other => other,
         }
     }
 
@@ -226,6 +241,16 @@ impl Value {
             Value::RawPtr(id) => format!("<rawptr:{id}>"),
             Value::Byte(b) => format!("0x{b:02x}"),
             Value::Char(c) => c.to_string(),
+            Value::AsType {
+                inner,
+                interface_id,
+            } => {
+                format!(
+                    "{} as {}",
+                    inner.display(types),
+                    types.display_name(*interface_id)
+                )
+            }
         }
     }
 }
@@ -270,6 +295,7 @@ impl PartialEq for Value {
             (Value::RawPtr(a), Value::RawPtr(b)) => a == b,
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::AsType { inner: a, .. }, Value::AsType { inner: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -322,6 +348,12 @@ impl fmt::Display for Value {
             Value::RawPtr(id) => write!(f, "<rawptr:{id}>"),
             Value::Byte(b) => write!(f, "0x{b:02x}"),
             Value::Char(c) => write!(f, "{c}"),
+            Value::AsType {
+                inner,
+                interface_id,
+            } => {
+                write!(f, "{inner} as {interface_id}")
+            }
         }
     }
 }

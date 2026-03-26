@@ -605,6 +605,21 @@ where
                 // Additive
                 infix(left(4), just(Token::Plus), bin!(BinOp::Add)),
                 infix(left(4), just(Token::Minus), bin!(BinOp::Sub)),
+                // As (interface view)
+                infix(
+                    left(3),
+                    just(Token::As),
+                    |l: Spanned<Expr>, _, r: Spanned<Expr>, _: &mut _| {
+                        let s = (l.span.0, r.span.1);
+                        Spanned::new(
+                            Expr::As {
+                                value: Box::new(l),
+                                target: Box::new(r),
+                            },
+                            s,
+                        )
+                    },
+                ),
                 // Comparison
                 infix(left(3), just(Token::Lt), bin!(BinOp::Lt)),
                 infix(left(3), just(Token::Gt), bin!(BinOp::Gt)),
@@ -798,10 +813,36 @@ where
                 )
             });
 
+        // Type expression for impl-as: Name or Name[Args].
+        // Restricted parser that doesn't go through pratt (avoids `as` conflict).
+        let type_expr_simple = select! { Token::Ident(name) => name }
+            .map_with(|name, ex| Spanned::new(Expr::Name(name), span(&ex.span())))
+            .then(
+                expr.clone()
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBracket), just(Token::RBracket))
+                    .or_not(),
+            )
+            .map_with(|(name, args), ex| match args {
+                None => name,
+                Some(args) => {
+                    let s = span(&ex.span());
+                    Spanned::new(
+                        Expr::Item {
+                            object: Box::new(name),
+                            args,
+                        },
+                        s,
+                    )
+                }
+            });
+
         let impl_block = just(Token::Impl)
             .ignore_then(select! { Token::Ident(name) => name })
             .then(type_params.clone().or_not())
-            .then(just(Token::As).ignore_then(expr.clone()).or_not())
+            .then(just(Token::As).ignore_then(type_expr_simple).or_not())
             .then(
                 impl_func_def
                     .repeated()

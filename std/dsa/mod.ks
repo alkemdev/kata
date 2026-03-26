@@ -53,7 +53,7 @@ impl Arr[T] {
 
 kind ArrIter[T] { arr: Arr[T], idx: Int }
 
-impl ArrIter[T] {
+impl ArrIter[T] as Iter[T] {
     func next(self): Opt[T] {
         if self.idx >= self.arr.len {
             ret Opt[T].Non

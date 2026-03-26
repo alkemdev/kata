@@ -103,6 +103,11 @@ pub enum ErrorKind {
     },
     /// Integer value out of representable range.
     IntegerOverflow,
+    /// `as` on a type that doesn't conform to the target interface.
+    AsNonConforming {
+        actual: TypeId,
+        interface: TypeId,
+    },
     /// Interpreter invariant violation — should never reach user code.
     InternalError(&'static str),
     /// Migration bridge — wraps bare String errors not yet converted.
@@ -292,6 +297,13 @@ impl ErrorKind {
             }
             ErrorKind::ModuleError { module, detail } => {
                 format!("error in module '{module}': {detail}")
+            }
+            ErrorKind::AsNonConforming { actual, interface } => {
+                format!(
+                    "'{}' does not implement '{}'",
+                    types.display_name(*actual),
+                    types.display_name(*interface),
+                )
             }
             ErrorKind::IntegerOverflow => "integer out of representable range".to_string(),
             ErrorKind::InternalError(msg) => format!("internal error: {msg}"),

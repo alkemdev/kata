@@ -119,6 +119,9 @@ pub struct Interpreter {
     loaded_modules: HashMap<String, native::ModuleId>,
     /// Native function registry and module tree.
     native_registry: NativeFnRegistry,
+    /// Conformance registry: (concrete_base_type, interface_base_type) pairs.
+    /// Populated during `impl K as T`. Queried for `as` and implicit coercion.
+    conformances: HashSet<(TypeId, TypeId)>,
 }
 
 impl Interpreter {
@@ -146,6 +149,7 @@ impl Interpreter {
             in_unsafe: false,
             allocations: Vec::new(),
             native_registry: boot.registry,
+            conformances: HashSet::new(),
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -434,12 +438,28 @@ impl Interpreter {
     }
 
     /// Check that a value conforms to an expected type.
-    fn check_type(&self, value: &Value, expected: TypeId) -> Result<(), RuntimeError> {
+    /// Check if a concrete type conforms to an interface type.
+    fn conforms_to(&self, concrete: TypeId, interface: TypeId) -> bool {
+        let concrete_base = self.types.base_type(concrete);
+        let interface_base = self.types.base_type(interface);
+        self.conformances.contains(&(concrete_base, interface_base))
+    }
+
+    /// Type-check a value against an expected type. Returns the value unchanged
+    /// if types match, wrapped in AsType if the value's type conforms to an
+    /// interface, or an error if neither.
+    fn check_type(&self, value: Value, expected: TypeId) -> Result<Value, RuntimeError> {
         let actual = value.type_id();
-        if actual != expected {
-            return Err(ErrorKind::TypeMismatch { expected, actual }.into());
+        if actual == expected {
+            return Ok(value);
         }
-        Ok(())
+        if self.conforms_to(actual, expected) {
+            return Ok(Value::AsType {
+                inner: Box::new(value),
+                interface_id: expected,
+            });
+        }
+        Err(ErrorKind::TypeMismatch { expected, actual }.into())
     }
 
     // ── Program execution ────────────────────────────────────────────────
@@ -527,6 +547,12 @@ impl Interpreter {
                     };
                     if let Some(name) = iface_name {
                         let type_id = self.resolve_type(type_name).map_err(|e| e.at(stmt.span))?;
+                        let iface_id =
+                            self.resolve_type(name).map_err(|e| e.at(iface_expr.span))?;
+                        // Record conformance for dynamic dispatch.
+                        let type_base = self.types.base_type(type_id);
+                        let iface_base = self.types.base_type(iface_id);
+                        self.conformances.insert((type_base, iface_base));
                         if name == "Drop" {
                             self.drop_types.insert(type_id);
                         }
@@ -1203,6 +1229,27 @@ impl Interpreter {
                 Err(RuntimeError::new(ErrorKind::InvalidUnwrap { operator: "!" }).at(expr.span))
             }
 
+            Expr::As { value, target } => {
+                let val = eval!(self, value, out);
+                let target_id = self.resolve_type_expr(&target.node)?;
+                let actual_id = val.type_id();
+                if actual_id == target_id {
+                    // Already the right type — no wrapping needed.
+                    Ok(Flow::Next(val))
+                } else if self.conforms_to(actual_id, target_id) {
+                    Ok(Flow::Next(Value::AsType {
+                        inner: Box::new(val),
+                        interface_id: target_id,
+                    }))
+                } else {
+                    Err(RuntimeError::new(ErrorKind::AsNonConforming {
+                        actual: actual_id,
+                        interface: target_id,
+                    })
+                    .at(expr.span))
+                }
+            }
+
             Expr::Attr {
                 object,
                 name,
@@ -1241,8 +1288,19 @@ impl Interpreter {
                 // Copy-out: write mutated self back to receiver variable.
                 if let Some(var_name) = receiver_var {
                     if let Some(mutated_self) = self.last_method_self.take() {
+                        // If the variable holds an AsType, re-wrap after copy-out.
+                        let write_back =
+                            if let Some(Value::AsType { interface_id, .. }) = self.get(&var_name) {
+                                let iface = *interface_id;
+                                Value::AsType {
+                                    inner: Box::new(mutated_self),
+                                    interface_id: iface,
+                                }
+                            } else {
+                                mutated_self
+                            };
                         let _ = self
-                            .update_in_scope(&var_name, mutated_self)
+                            .update_in_scope(&var_name, write_back)
                             .map_err(|e: RuntimeError| e.at(expr.span))?;
                     }
                 }
@@ -1294,10 +1352,19 @@ impl Interpreter {
                 // Copy-in copy-out: write mutated self back to the receiver variable.
                 if let Some(var_name) = receiver_var {
                     if let Some(mutated_self) = self.last_method_self.take() {
-                        // Copy-out: replacing self with its mutated version.
-                        // Don't drop the old value — it's the same object, pre-mutation.
+                        // If the variable holds an AsType, re-wrap after copy-out.
+                        let write_back =
+                            if let Some(Value::AsType { interface_id, .. }) = self.get(&var_name) {
+                                let iface = *interface_id;
+                                Value::AsType {
+                                    inner: Box::new(mutated_self),
+                                    interface_id: iface,
+                                }
+                            } else {
+                                mutated_self
+                            };
                         let _ = self
-                            .update_in_scope(&var_name, mutated_self)
+                            .update_in_scope(&var_name, write_back)
                             .map_err(|e: RuntimeError| e.at(expr.span))?;
                     }
                 }
@@ -1512,9 +1579,10 @@ impl Interpreter {
                             })
                             .at((type_expr.span.0, open_brace.1))
                         })?;
-                    self.check_type(&val, *expected_tid)
+                    let checked_val = self
+                        .check_type(val, *expected_tid)
                         .map_err(|e| e.at(val_span))?;
-                    result_fields.insert(fname.clone(), val);
+                    result_fields.insert(fname.clone(), checked_val);
                 }
 
                 Ok(Flow::Next(Value::Struct {
@@ -1804,7 +1872,7 @@ impl Interpreter {
             (*type_id, expected_tid)
         };
 
-        self.check_type(&val, expected_tid)?;
+        let val = self.check_type(val, expected_tid)?;
 
         for frame in self.frames.iter_mut().rev() {
             if let Some(entry) = frame.get_mut(var_name) {
@@ -2019,6 +2087,21 @@ impl Interpreter {
                     .into()),
                 }
             }
+            Value::AsType {
+                inner,
+                interface_id,
+            } => {
+                // Dispatch methods to the concrete inner type.
+                if let Ok(bound) = self.resolve_method(inner, name) {
+                    return Ok(Flow::Next(bound));
+                }
+                Err(ErrorKind::NoAttr {
+                    type_id: *interface_id,
+                    attr: name.to_string(),
+                    access: AccessKind::Method,
+                }
+                .into())
+            }
             other => {
                 if let Ok(bound) = self.resolve_method(other, name) {
                     return Ok(Flow::Next(bound));
@@ -2146,20 +2229,22 @@ impl Interpreter {
                     .into());
                 }
 
+                let mut checked_fields = Vec::with_capacity(args.len());
                 for (i, (val, &expected)) in args.iter().zip(field_types.iter()).enumerate() {
-                    self.check_type(val, expected).map_err(|e| {
+                    let checked = self.check_type(val.clone(), expected).map_err(|e| {
                         if let Some(&span) = arg_spans.get(i) {
                             e.at(span)
                         } else {
                             e
                         }
                     })?;
+                    checked_fields.push(checked);
                 }
 
                 Ok(Flow::Next(Value::Enum {
                     type_id,
                     variant_idx,
-                    fields: args.to_vec(),
+                    fields: checked_fields,
                 }))
             }
 
@@ -2442,23 +2527,27 @@ impl Interpreter {
         instance_type_args: &[TypeId],
         out: &mut impl Write,
     ) -> Result<Value, RuntimeError> {
+        let mut checked_args: Vec<Value> = Vec::with_capacity(args.len());
         for (i, (param, val)) in params.iter().zip(args.iter()).enumerate() {
-            if let Some(ref texpr) = param.type_ann {
+            let checked = if let Some(ref texpr) = param.type_ann {
                 let expected = self
                     .types
                     .resolve_texpr(texpr.clone(), instance_type_args)?;
-                self.check_type(val, expected).map_err(|e| {
+                self.check_type(val.clone(), expected).map_err(|e| {
                     if let Some(&span) = arg_spans.get(i) {
                         e.at(span)
                     } else {
                         e
                     }
-                })?;
-            }
+                })?
+            } else {
+                val.clone()
+            };
+            checked_args.push(checked);
         }
 
         self.push_scope();
-        for (param, val) in params.iter().zip(args.iter()) {
+        for (param, val) in params.iter().zip(checked_args.iter()) {
             self.set(param.name.clone(), val.clone());
         }
 
@@ -2474,7 +2563,7 @@ impl Interpreter {
             }
         }
 
-        let result = match self.exec_block(body, out) {
+        let mut result = match self.exec_block(body, out) {
             Ok(
                 Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. },
             ) => v,
@@ -2509,7 +2598,7 @@ impl Interpreter {
             let expected_ret = self
                 .types
                 .resolve_texpr(ret_texpr.clone(), instance_type_args)?;
-            self.check_type(&result, expected_ret)?;
+            result = self.check_type(result, expected_ret)?;
         }
 
         Ok(result)

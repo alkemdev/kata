@@ -295,6 +295,11 @@ pub enum Expr {
     Ques(Box<Spanned<Expr>>),
     /// Postfix `!` — unwrap Val or panic on Non/Err.
     Bang(Box<Spanned<Expr>>),
+    /// `expr as Type` — create an interface view.
+    As {
+        value: Box<Spanned<Expr>>,
+        target: Box<Spanned<Expr>>,
+    },
     /// `if cond { body } else { body }` — expression-oriented, returns last value.
     If {
         cond: Box<Spanned<Expr>>,
