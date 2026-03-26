@@ -1,0 +1,5 @@
+print(!true)
+print(!false)
+print(!nil)
+print(!0)
+print(!1)

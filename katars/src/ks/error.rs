@@ -108,6 +108,11 @@ pub enum ErrorKind {
         actual: TypeId,
         interface: TypeId,
     },
+    /// Prim constructor value out of range.
+    PrimOutOfRange {
+        type_name: &'static str,
+        detail: String,
+    },
     /// Interpreter invariant violation — should never reach user code.
     InternalError(&'static str),
     /// Migration bridge — wraps bare String errors not yet converted.
@@ -304,6 +309,9 @@ impl ErrorKind {
                     types.display_name(*actual),
                     types.display_name(*interface),
                 )
+            }
+            ErrorKind::PrimOutOfRange { type_name, detail } => {
+                format!("{type_name} value out of range: {detail}")
             }
             ErrorKind::IntegerOverflow => "integer out of representable range".to_string(),
             ErrorKind::InternalError(msg) => format!("internal error: {msg}"),

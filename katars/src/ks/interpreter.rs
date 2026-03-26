@@ -22,7 +22,12 @@ use super::value::{FuncParam, Value};
 const SELF_PARAM: &str = "self";
 const METHOD_TO_ITER: &str = "to_iter";
 const METHOD_NEXT: &str = "next";
+const METHOD_DROP: &str = "drop";
+const METHOD_GET_ITEM: &str = "get_item";
+const METHOD_SET_ITEM: &str = "set_item";
+const VARIANT_VAL: &str = "Val";
 const VARIANT_NONE: &str = "Non";
+const INTERFACE_DROP: &str = "Drop";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -362,7 +367,7 @@ impl Interpreter {
         if self.drop_types.contains(&tid) {
             self.dropping = true;
             // Best-effort: call drop, ignore errors (destructors shouldn't fail).
-            let _ = self.call_method(&value, "drop", &[], out);
+            let _ = self.call_method(&value, METHOD_DROP, &[], out);
             self.dropping = false;
         }
         // Recursively drop struct fields.
@@ -560,7 +565,7 @@ impl Interpreter {
                         let type_base = self.types.base_type(type_id);
                         let iface_base = self.types.base_type(iface_id);
                         self.conformances.insert((type_base, iface_base));
-                        if name == "Drop" {
+                        if name == INTERFACE_DROP {
                             self.drop_types.insert(type_id);
                         }
                     }
@@ -1192,7 +1197,7 @@ impl Interpreter {
                 {
                     if self.types.try_shape(type_id).is_some() {
                         let variant_name = self.types.variant_name(type_id, variant_idx);
-                        if variant_name == "Val" {
+                        if variant_name == VARIANT_VAL {
                             if let Some(inner_val) = fields.first() {
                                 return Ok(Flow::Next(inner_val.clone()));
                             }
@@ -1219,7 +1224,7 @@ impl Interpreter {
                 {
                     if self.types.try_shape(type_id).is_some() {
                         let variant_name = self.types.variant_name(type_id, variant_idx);
-                        if variant_name == "Val" {
+                        if variant_name == VARIANT_VAL {
                             if let Some(inner_val) = fields.first() {
                                 return Ok(Flow::Next(inner_val.clone()));
                             }
@@ -1932,9 +1937,9 @@ impl Interpreter {
             })?
             .clone();
 
-        self.call_method(&receiver, "set_item", &call_args, out)
+        self.call_method(&receiver, METHOD_SET_ITEM, &call_args, out)
             .map_err(|e| {
-                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == "set_item") {
+                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == METHOD_SET_ITEM) {
                     RuntimeError::from(ErrorKind::NotIndexable {
                         type_id: receiver.type_id(),
                     })
@@ -2167,11 +2172,12 @@ impl Interpreter {
                 };
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
-            other => match self.call_method(other, "get_item", args, out) {
+            other => match self.call_method(other, METHOD_GET_ITEM, args, out) {
                 Ok(val) => Ok(Flow::Next(val)),
                 Err(e) => {
                     // Convert "no method 'get_item'" → "not indexable".
-                    if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == "get_item") {
+                    if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == METHOD_GET_ITEM)
+                    {
                         Err(RuntimeError::from(ErrorKind::NotIndexable {
                             type_id: other.type_id(),
                         }))
@@ -2369,9 +2375,10 @@ impl Interpreter {
                 };
                 let val: i64 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
                 if !(0..=255).contains(&val) {
-                    return Err(ErrorKind::Other(format!(
-                        "Byte value out of range: {val} (must be 0-255)"
-                    ))
+                    return Err(ErrorKind::PrimOutOfRange {
+                        type_name: "Byte",
+                        detail: format!("{val} (must be 0-255)"),
+                    }
                     .into());
                 }
                 Ok(Flow::Next(Value::Byte(val as u8)))
@@ -2385,8 +2392,9 @@ impl Interpreter {
                     .into());
                 };
                 let val: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
-                let ch = char::from_u32(val).ok_or_else(|| {
-                    ErrorKind::Other(format!("invalid Unicode codepoint: 0x{val:X}"))
+                let ch = char::from_u32(val).ok_or_else(|| ErrorKind::PrimOutOfRange {
+                    type_name: "Char",
+                    detail: format!("invalid Unicode codepoint 0x{val:X}"),
                 })?;
                 Ok(Flow::Next(Value::Char(ch)))
             }
