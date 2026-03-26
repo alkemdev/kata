@@ -1901,13 +1901,9 @@ impl Interpreter {
                 body,
             } = &method.node;
 
-            if params.is_empty() || params[0].name != SELF_PARAM {
-                return Err(ErrorKind::MethodDef {
-                    method: name.clone(),
-                    detail: MethodDefError::MissingSelf,
-                }
-                .into());
-            }
+            // Static methods (no self) are allowed — they're called on the type value.
+            // Instance methods must have self as the first parameter.
+            let _is_static = params.is_empty() || params[0].name != SELF_PARAM;
 
             // Resolve params using type_params so generic annotations
             // (e.g., `val: T`) produce TypeExpr::Param(idx).
@@ -2172,42 +2168,45 @@ impl Interpreter {
                 let def = self.types.get(*type_id);
                 match def {
                     TypeDef::EnumInstance { variants, .. } => {
-                        let (idx, _, vdef) =
-                            variants.get_full(name).ok_or_else(|| -> RuntimeError {
-                                ErrorKind::NoAttr {
+                        // Try variant first, then static method.
+                        if let Some((idx, _, vdef)) = variants.get_full(name) {
+                            let variant_idx = idx as u32;
+                            if vdef.fields.is_empty() {
+                                return Ok(Flow::Next(Value::Enum {
                                     type_id: *type_id,
-                                    attr: name.to_string(),
-                                    access: AccessKind::Variant,
-                                }
-                                .into()
-                            })?;
-                        let variant_idx = idx as u32;
-
-                        if vdef.fields.is_empty() {
-                            Ok(Flow::Next(Value::Enum {
-                                type_id: *type_id,
-                                variant_idx,
-                                fields: vec![],
-                            }))
-                        } else {
-                            Ok(Flow::Next(Value::VariantConstructor {
-                                type_id: *type_id,
-                                variant_idx,
-                                field_types: vdef.fields.clone(),
-                            }))
+                                    variant_idx,
+                                    fields: vec![],
+                                }));
+                            } else {
+                                return Ok(Flow::Next(Value::VariantConstructor {
+                                    type_id: *type_id,
+                                    variant_idx,
+                                    field_types: vdef.fields.clone(),
+                                }));
+                            }
                         }
+                        if let Some(method) = self.lookup_method(*type_id, name) {
+                            return Ok(Flow::Next(method));
+                        }
+                        Err(ErrorKind::NoAttr {
+                            type_id: *type_id,
+                            attr: name.to_string(),
+                            access: AccessKind::Variant,
+                        }
+                        .into())
                     }
-                    TypeDef::StructInstance { .. } => Err(ErrorKind::WrongTypeKind {
-                        type_id: *type_id,
-                        expected: TypeKindExpectation::ExpectedEnum,
+                    _ => {
+                        // Try static method lookup on this type.
+                        if let Some(method) = self.lookup_method(*type_id, name) {
+                            return Ok(Flow::Next(method));
+                        }
+                        Err(ErrorKind::NoAttr {
+                            type_id: *type_id,
+                            attr: name.to_string(),
+                            access: AccessKind::Attr,
+                        }
+                        .into())
                     }
-                    .into()),
-                    _ => Err(ErrorKind::NoAttr {
-                        type_id: *type_id,
-                        attr: name.to_string(),
-                        access: AccessKind::Attr,
-                    }
-                    .into()),
                 }
             }
             Value::Struct { type_id, fields } => {
