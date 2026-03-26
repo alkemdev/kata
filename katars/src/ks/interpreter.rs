@@ -197,6 +197,13 @@ impl Interpreter {
                 .or_insert_with(IndexMap::new)
                 .insert(name.to_string(), Value::NativeFn(*fn_id));
         }
+        for (name, fn_id) in &boot.str_methods.methods {
+            interp
+                .methods
+                .entry(prim::STR)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
         for (name, fn_id) in &boot.bin_methods.methods {
             interp
                 .methods

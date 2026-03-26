@@ -34,7 +34,7 @@
 - [x] Error handling (`Res[T,E]`, `?` propagate, `!` unwrap)
 - [x] Indexing (`a[i]`, `a[i] = v`) via GetItem/SetItem
 - [ ] Maps
-- [ ] String methods
+- [x] String methods (native: len, char_len, contains, starts_with, ends_with, trim, to_upper, to_lower, replace, substr, split, to_int, to_float, to_bin)
 
 ---
 

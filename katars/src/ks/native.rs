@@ -764,6 +764,147 @@ fn char_to_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeE
     Ok(Value::Char(c.to_lowercase().next().unwrap_or(*c)))
 }
 
+// ── Str methods ─────────────────────────────────────────────────────
+
+/// Helper: extract &str from args[0], or return TypeMismatch.
+fn expect_str(args: &[Value], pos: usize) -> Result<&str, RuntimeError> {
+    match args.get(pos) {
+        Some(Value::Str(s)) => Ok(s.as_str()),
+        Some(other) => Err(ErrorKind::TypeMismatch {
+            expected: prim::STR,
+            actual: other.type_id(),
+        }
+        .into()),
+        None => Err(ErrorKind::InternalError("missing argument to native function").into()),
+    }
+}
+
+fn str_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Int(BigInt::from(s.len())))
+}
+
+fn str_char_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Int(BigInt::from(s.chars().count())))
+}
+
+fn str_contains(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let needle = expect_str(args, 1)?;
+    Ok(Value::Bool(s.contains(needle)))
+}
+
+fn str_starts_with(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let prefix = expect_str(args, 1)?;
+    Ok(Value::Bool(s.starts_with(prefix)))
+}
+
+fn str_ends_with(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let suffix = expect_str(args, 1)?;
+    Ok(Value::Bool(s.ends_with(suffix)))
+}
+
+fn str_trim(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Str(s.trim().to_string()))
+}
+
+fn str_trim_start(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Str(s.trim_start().to_string()))
+}
+
+fn str_trim_end(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Str(s.trim_end().to_string()))
+}
+
+fn str_to_upper(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Str(s.to_uppercase()))
+}
+
+fn str_to_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(Value::Str(s.to_lowercase()))
+}
+
+fn str_replace(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let from = expect_str(args, 1)?;
+    let to = expect_str(args, 2)?;
+    Ok(Value::Str(s.replace(from, to)))
+}
+
+fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let start = match args.get(1) {
+        Some(Value::Int(n)) => n.to_usize().ok_or(ErrorKind::IntegerOverflow)?,
+        Some(other) => {
+            return Err(ErrorKind::TypeMismatch {
+                expected: prim::INT,
+                actual: other.type_id(),
+            }
+            .into())
+        }
+        None => return Err(ErrorKind::InternalError("missing argument").into()),
+    };
+    let len = match args.get(2) {
+        Some(Value::Int(n)) => n.to_usize().ok_or(ErrorKind::IntegerOverflow)?,
+        Some(other) => {
+            return Err(ErrorKind::TypeMismatch {
+                expected: prim::INT,
+                actual: other.type_id(),
+            }
+            .into())
+        }
+        None => return Err(ErrorKind::InternalError("missing argument").into()),
+    };
+    // Byte-index substr. Clamp to string bounds.
+    let end = (start + len).min(s.len());
+    let start = start.min(s.len());
+    // Ensure we don't split a UTF-8 char.
+    if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
+        return Err(ErrorKind::Other("substr: index splits a UTF-8 character".to_string()).into());
+    }
+    Ok(Value::Str(s[start..end].to_string()))
+}
+
+fn str_split(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let delim = expect_str(args, 1)?;
+    // Returns an Arr-style display for now — actually we need to return a proper array.
+    // For now, return a comma-joined string of parts. TODO: return Arr[Str] when we can
+    // construct arrays from native code.
+    let parts: Vec<&str> = s.split(delim).collect();
+    let joined = parts.join("\n");
+    Ok(Value::Str(joined))
+}
+
+fn str_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let n: BigInt = s.trim().parse().map_err(|_| -> RuntimeError {
+        ErrorKind::Other(format!("cannot parse '{s}' as Int")).into()
+    })?;
+    Ok(Value::Int(n))
+}
+
+fn str_to_float(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    let n: f64 = s.trim().parse().map_err(|_| -> RuntimeError {
+        ErrorKind::Other(format!("cannot parse '{s}' as Float")).into()
+    })?;
+    Ok(Value::Float(n))
+}
+
+fn str_to_bin(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = expect_str(args, 0)?;
+    Ok(ctx.intern_bin(s.as_bytes().to_vec()))
+}
+
 // ── Bin methods ─────────────────────────────────────────────────────
 
 fn bin_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -928,6 +1069,7 @@ pub struct BootResult {
     pub panic_id: NativeFnId,
     pub byte_methods: PrimMethods,
     pub char_methods: PrimMethods,
+    pub str_methods: PrimMethods,
     pub bin_methods: PrimMethods,
 }
 
@@ -1017,6 +1159,33 @@ pub fn bootstrap() -> BootResult {
         PrimMethods { methods }
     };
 
+    // Str native methods.
+    let str_methods = {
+        let mut methods = Vec::new();
+        for (name, handler) in [
+            ("len", str_len as NativeHandler),
+            ("char_len", str_char_len),
+            ("contains", str_contains),
+            ("starts_with", str_starts_with),
+            ("ends_with", str_ends_with),
+            ("trim", str_trim),
+            ("trim_start", str_trim_start),
+            ("trim_end", str_trim_end),
+            ("to_upper", str_to_upper),
+            ("to_lower", str_to_lower),
+            ("replace", str_replace),
+            ("substr", str_substr),
+            ("split", str_split),
+            ("to_int", str_to_int),
+            ("to_float", str_to_float),
+            ("to_bin", str_to_bin),
+        ] {
+            let id = reg.register(name, false, handler);
+            methods.push((name, id));
+        }
+        PrimMethods { methods }
+    };
+
     // Bin native methods.
     let bin_methods = {
         let mut methods = Vec::new();
@@ -1039,6 +1208,7 @@ pub fn bootstrap() -> BootResult {
         panic_id,
         byte_methods,
         char_methods,
+        str_methods,
         bin_methods,
     }
 }

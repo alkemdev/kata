@@ -23,7 +23,8 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Error handling**: Res[T,E] + postfix `?` (unwrap or propagate) + postfix `!` (unwrap or panic), Res methods (unwrap, unwrap_or, is_val, is_err)
 - **Pattern matching**: match expression with variant/literal/wildcard/binding patterns
 - **Collections**: array literals `[1, 2, 3]`, `a[i]`/`a[i] = v` indexing via GetItem/SetItem protocols
-- **Not yet**: maps, const, string methods
+- **String methods**: len, char_len, contains, starts_with, ends_with, trim, trim_start, trim_end, to_upper, to_lower, replace, substr, split, to_int, to_float, to_bin — all native
+- **Not yet**: maps, const
 
 ## Project layout
 
