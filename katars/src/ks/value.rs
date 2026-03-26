@@ -151,6 +151,29 @@ fn format_ret_resolved(
     }
 }
 
+/// Format a byte slice as a `b'...'` literal string.
+/// Printable ASCII (0x20..=0x7E) renders as-is (except `\` and `'` which are escaped).
+/// Common control chars use named escapes (\n, \t, \r, \0). All others use \xNN.
+fn format_bin(b: &[u8]) -> String {
+    let mut s = String::from("b'");
+    for &byte in b {
+        match byte {
+            b'\n' => s.push_str("\\n"),
+            b'\t' => s.push_str("\\t"),
+            b'\r' => s.push_str("\\r"),
+            0 => s.push_str("\\0"),
+            b'\\' => s.push_str("\\\\"),
+            b'\'' => s.push_str("\\'"),
+            0x20..=0x7e => s.push(byte as char),
+            _ => {
+                s.push_str(&format!("\\x{byte:02x}"));
+            }
+        }
+    }
+    s.push('\'');
+    s
+}
+
 impl Value {
     /// Get the TypeId for this value's type.
     pub fn type_id(&self) -> TypeId {
@@ -192,7 +215,7 @@ impl Value {
             Value::Int(n) => n.to_string(),
             Value::Float(n) => format!("{n}"),
             Value::Str(s) => s.clone(),
-            Value::Bin(b) => format!("<bin:{} bytes>", b.len()),
+            Value::Bin(b) => format_bin(b),
             Value::Func {
                 params, ret_type, ..
             } => {
@@ -326,7 +349,7 @@ impl fmt::Display for Value {
             Value::Int(n) => write!(f, "{n}"),
             Value::Float(n) => write!(f, "{n}"),
             Value::Str(s) => write!(f, "{s}"),
-            Value::Bin(b) => write!(f, "<bin:{} bytes>", b.len()),
+            Value::Bin(b) => write!(f, "{}", format_bin(b)),
             Value::Func { params, .. } => {
                 let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
                 write!(f, "<func({})>", names.join(", "))

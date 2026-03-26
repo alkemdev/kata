@@ -1,4 +1,4 @@
-# Bin displays as <bin:N bytes>
+# Bin displays as b'...' literal — round-trippable format
 import std.dsa
 import std.mem
 
@@ -8,3 +8,11 @@ arr.push(Byte(0xcd))
 
 let b = arr.to_bin()
 print(b)
+
+# Printable ASCII shows as chars
+let hello = b'hello'
+print(hello)
+
+# Mixed printable + non-printable
+let mixed = b'hi\xff\n'
+print(mixed)
