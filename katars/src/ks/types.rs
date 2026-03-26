@@ -71,6 +71,18 @@ pub enum TypeDef {
         type_args: Vec<TypeId>,
         fields: IndexMap<String, TypeId>,
     },
+
+    /// An abstract interface: `type Iter[T] { ... }`
+    Interface {
+        name: String,
+        type_params: Vec<String>,
+    },
+
+    /// A concrete instantiation of an interface: `Iter[Int]`.
+    InterfaceInstance {
+        base: TypeId,
+        type_args: Vec<TypeId>,
+    },
 }
 
 impl TypeDef {
@@ -79,7 +91,10 @@ impl TypeDef {
             TypeDef::Prim { name } => name,
             TypeDef::Enum { name, .. } => name,
             TypeDef::Struct { name, .. } => name,
-            TypeDef::EnumInstance { .. } | TypeDef::StructInstance { .. } => "", // use display_name instead
+            TypeDef::EnumInstance { .. }
+            | TypeDef::StructInstance { .. }
+            | TypeDef::InterfaceInstance { .. } => "", // use display_name instead
+            TypeDef::Interface { name, .. } => name,
         }
     }
 }
@@ -215,6 +230,7 @@ impl TypeRegistry {
                 match self.defs[base.0 as usize].clone() {
                     TypeDef::Enum { .. } => self.instantiate_enum(base, resolved_args),
                     TypeDef::Struct { .. } => self.instantiate_struct(base, resolved_args),
+                    TypeDef::Interface { .. } => self.instantiate_interface(base, resolved_args),
                     _ => Err(ErrorKind::WrongTypeKind {
                         type_id: base,
                         expected: TypeKindExpectation::GenericType,
@@ -389,11 +405,16 @@ impl TypeRegistry {
     pub fn display_name(&self, id: TypeId) -> String {
         match &self.defs[id.0 as usize] {
             TypeDef::Prim { name } => name.clone(),
-            TypeDef::Enum { name, .. } | TypeDef::Struct { name, .. } => name.clone(),
+            TypeDef::Enum { name, .. }
+            | TypeDef::Struct { name, .. }
+            | TypeDef::Interface { name, .. } => name.clone(),
             TypeDef::EnumInstance {
                 base, type_args, ..
             }
             | TypeDef::StructInstance {
+                base, type_args, ..
+            }
+            | TypeDef::InterfaceInstance {
                 base, type_args, ..
             } => {
                 let base_name = self.display_name(*base);
@@ -506,12 +527,63 @@ impl TypeRegistry {
         Ok(inst_id)
     }
 
+    /// Register an interface type definition.
+    pub fn register_interface(&mut self, name: String, type_params: Vec<String>) -> TypeId {
+        let id = self.push_def(TypeDef::Interface {
+            name: name.clone(),
+            type_params: type_params.clone(),
+        });
+        self.names.insert(name.clone(), id);
+
+        // Non-generic interfaces auto-instantiate (like non-generic structs).
+        if type_params.is_empty() {
+            let inst_id = self.push_def(TypeDef::InterfaceInstance {
+                base: id,
+                type_args: vec![],
+            });
+            self.instances.insert((id, vec![]), inst_id);
+            self.names.insert(name, inst_id);
+            return inst_id;
+        }
+
+        id
+    }
+
+    /// Instantiate a generic interface with concrete type arguments.
+    pub fn instantiate_interface(
+        &mut self,
+        base_id: TypeId,
+        type_args: Vec<TypeId>,
+    ) -> Result<TypeId, ErrorKind> {
+        let base_def = self.defs[base_id.0 as usize].clone();
+        let TypeDef::Interface {
+            name, type_params, ..
+        } = base_def
+        else {
+            return Err(ErrorKind::WrongTypeKind {
+                type_id: base_id,
+                expected: TypeKindExpectation::GenericType,
+            });
+        };
+
+        if !self.prepare_instantiation(base_id, &type_args, type_params.len(), &name)? {
+            return Ok(*self.instances.get(&(base_id, type_args)).unwrap());
+        }
+
+        let inst_id = self.push_def(TypeDef::InterfaceInstance {
+            base: base_id,
+            type_args: type_args.clone(),
+        });
+        self.instances.insert((base_id, type_args), inst_id);
+        Ok(inst_id)
+    }
+
     /// Get the type_args for an instance type. Returns empty slice for non-instances.
     pub fn instance_type_args(&self, id: TypeId) -> Vec<TypeId> {
         match self.get(id) {
-            TypeDef::EnumInstance { type_args, .. } | TypeDef::StructInstance { type_args, .. } => {
-                type_args.clone()
-            }
+            TypeDef::EnumInstance { type_args, .. }
+            | TypeDef::StructInstance { type_args, .. }
+            | TypeDef::InterfaceInstance { type_args, .. } => type_args.clone(),
             _ => vec![],
         }
     }
@@ -519,7 +591,9 @@ impl TypeRegistry {
     /// Get the base TypeId for an instance type. Returns the id itself for non-instances.
     pub fn base_type(&self, id: TypeId) -> TypeId {
         match self.get(id) {
-            TypeDef::EnumInstance { base, .. } | TypeDef::StructInstance { base, .. } => *base,
+            TypeDef::EnumInstance { base, .. }
+            | TypeDef::StructInstance { base, .. }
+            | TypeDef::InterfaceInstance { base, .. } => *base,
             _ => id,
         }
     }
@@ -528,9 +602,9 @@ impl TypeRegistry {
     /// Returns empty vec for non-generic types.
     pub fn type_param_names(&self, id: TypeId) -> Vec<String> {
         match self.get(id) {
-            TypeDef::Enum { type_params, .. } | TypeDef::Struct { type_params, .. } => {
-                type_params.clone()
-            }
+            TypeDef::Enum { type_params, .. }
+            | TypeDef::Struct { type_params, .. }
+            | TypeDef::Interface { type_params, .. } => type_params.clone(),
             _ => vec![],
         }
     }

@@ -244,6 +244,9 @@ impl Interpreter {
                     TypeDef::Struct { .. } => {
                         self.types.instantiate_struct(base_id, type_args).ok()?
                     }
+                    TypeDef::Interface { .. } => {
+                        self.types.instantiate_interface(base_id, type_args).ok()?
+                    }
                     _ => return None,
                 };
                 Some(Value::Type(instance_id))
@@ -425,6 +428,10 @@ impl Interpreter {
                     TypeDef::Struct { .. } => self
                         .types
                         .instantiate_struct(base_id, type_args)
+                        .map_err(Into::into),
+                    TypeDef::Interface { .. } => self
+                        .types
+                        .instantiate_interface(base_id, type_args)
                         .map_err(Into::into),
                     _ => Err(ErrorKind::WrongTypeKind {
                         type_id: base_id,
@@ -1649,8 +1656,10 @@ impl Interpreter {
         type_params: &[String],
         methods: &[MethodSig],
     ) -> Result<(), RuntimeError> {
-        // Register a TypeId for the interface so it's a first-class value.
-        let type_id = self.types.register_prim(name);
+        // Register a TypeId for the interface with type params support.
+        let type_id = self
+            .types
+            .register_interface(name.to_string(), type_params.to_vec());
         self.set(name.to_string(), Value::Type(type_id));
 
         self.interfaces.insert(
@@ -2143,6 +2152,10 @@ impl Interpreter {
                     TypeDef::Struct { .. } => self
                         .types
                         .instantiate_struct(*base_id, type_args)
+                        .map_err(RuntimeError::from)?,
+                    TypeDef::Interface { .. } => self
+                        .types
+                        .instantiate_interface(*base_id, type_args)
                         .map_err(RuntimeError::from)?,
                     _ => {
                         return Err(ErrorKind::WrongTypeKind {

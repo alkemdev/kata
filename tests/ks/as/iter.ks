@@ -1,5 +1,5 @@
 # Consume an iterator via interface-typed parameter
-func first(iter: Iter) {
+func first(iter: Iter[Int]) {
     print(iter.next())
 }
 
