@@ -834,6 +834,82 @@ fn bin_from_raw(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErr
     Ok(ctx.intern_bin(bytes))
 }
 
+/// `Bin.from_base64(s: Str) -> Bin` — static method.
+/// Decode a base64-encoded string into bytes.
+fn bin_from_base64(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Str(s) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::STR,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    let bytes = base64_decode(s)
+        .map_err(|e| -> RuntimeError { ErrorKind::Other(format!("base64 decode: {e}")).into() })?;
+    Ok(ctx.intern_bin(bytes))
+}
+
+/// Minimal base64 decoder (RFC 4648). No dependencies.
+fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
+    const TABLE: &[u8; 128] = &{
+        let mut t = [0xFFu8; 128];
+        let mut i = 0u8;
+        while i < 26 {
+            t[(b'A' + i) as usize] = i;
+            t[(b'a' + i) as usize] = i + 26;
+            i += 1;
+        }
+        let mut d = 0u8;
+        while d < 10 {
+            t[(b'0' + d) as usize] = d + 52;
+            d += 1;
+        }
+        t[b'+' as usize] = 62;
+        t[b'/' as usize] = 63;
+        t
+    };
+
+    let input: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if input.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let chunks = input.chunks(4);
+    for chunk in chunks {
+        let len = chunk.len();
+        if len < 2 {
+            return Err("invalid base64 length");
+        }
+        let mut buf = [0u32; 4];
+        let mut pad = 0;
+        for (i, &b) in chunk.iter().enumerate() {
+            if b == b'=' {
+                pad += 1;
+                buf[i] = 0;
+            } else if b >= 128 || TABLE[b as usize] == 0xFF {
+                return Err("invalid base64 character");
+            } else {
+                buf[i] = TABLE[b as usize] as u32;
+            }
+        }
+        // Pad remaining slots for short final chunk.
+        for slot in buf.iter_mut().skip(len) {
+            *slot = 0;
+            pad += 1;
+        }
+        let combined = (buf[0] << 18) | (buf[1] << 12) | (buf[2] << 6) | buf[3];
+        out.push((combined >> 16) as u8);
+        if pad < 2 {
+            out.push((combined >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(combined as u8);
+        }
+    }
+    Ok(out)
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Boot: build the module tree with all native functions
 // ═══════════════════════════════════════════════════════════════════
@@ -947,6 +1023,7 @@ pub fn bootstrap() -> BootResult {
         for (name, handler) in [
             ("len", bin_len as NativeHandler),
             ("get_item", bin_get_item),
+            ("from_base64", bin_from_base64),
         ] {
             let id = reg.register(name, false, handler);
             methods.push((name, id));
