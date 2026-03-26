@@ -46,10 +46,10 @@ pub enum Stmt {
         type_params: Vec<String>,
         methods: Vec<MethodSig>,
     },
-    /// `impl Name[T, ...]? (as Name)? { func_def* }` — attach methods to a kind or enum.
+    /// `impl Target (as Type)? { func_def* }` — attach methods to a type.
+    /// Target is a type pattern: `Int`, `Arr[@T]`, `Arr[Byte]`, `Pair[@T, @T]`.
     Impl {
-        type_name: String,
-        type_params: Vec<String>,
+        target: Spanned<TypePattern>,
         as_type: Option<Spanned<Expr>>,
         methods: Vec<Spanned<FuncDef>>,
     },
@@ -134,6 +134,32 @@ pub enum InterpPart {
     Lit(String),
     /// A parsed expression to evaluate and stringify.
     Expr(Spanned<Expr>),
+}
+
+/// A segment of a byte string interpolation expression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BinInterpPart {
+    /// Literal bytes (escapes already resolved).
+    Bytes(Vec<u8>),
+    /// A parsed expression to evaluate, display, and UTF-8 encode.
+    Expr(Spanned<Expr>),
+}
+
+// ── Type patterns (impl targets) ─────────────────────────────────────────────
+
+/// A type pattern in an `impl` target. Distinguishes bound type variables
+/// (`@T`) from concrete types (`Int`, `Arr[Byte]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TypePattern {
+    /// A concrete type name: `Int`, `Byte`. Must resolve to a known type.
+    Concrete(String),
+    /// A bound type variable: `@T`. Binds `T` to whatever type occupies this position.
+    Binding(String),
+    /// A generic application with sub-patterns: `Arr[@T]`, `Opt[Byte]`, `Map[@K, Arr[@K]]`.
+    Apply {
+        base: String,
+        args: Vec<Spanned<TypePattern>>,
+    },
 }
 
 // ── Match patterns ───────────────────────────────────────────────────────────
@@ -238,6 +264,10 @@ pub enum Expr {
     Str(String),
     /// String interpolation: `"hello {name}, {1+2}"` — parts evaluated and concatenated.
     Interp { parts: Vec<InterpPart> },
+    /// Byte string literal: `b'hello'`, `b'\xff\x00'`.
+    BinLit(Vec<u8>),
+    /// Byte string with interpolation: `b"hello {name}"` — parts evaluated, UTF-8 encoded.
+    BinInterp { parts: Vec<BinInterpPart> },
     /// Integer literal (arbitrary precision, stored as raw string for lossless parsing).
     Int(String),
     /// Float literal (stored as raw string for lossless parsing).

@@ -25,6 +25,26 @@ impl PartialEq for StringPart {
     }
 }
 
+/// A segment of a byte string literal — either raw bytes or an interpolation expression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BinPart {
+    /// Literal bytes (escape sequences already resolved to raw bytes).
+    Bytes(Vec<u8>),
+    /// Raw source text of an interpolated expression: `{expr}`.
+    /// At runtime, the expression is evaluated, display()'d, and UTF-8 encoded.
+    Interp(String, usize),
+}
+
+impl PartialEq for BinPart {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (BinPart::Bytes(a), BinPart::Bytes(b)) => a == b,
+            (BinPart::Interp(a, _), BinPart::Interp(b, _)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// The complete KataScript token set.
 ///
 /// Whitespace and line comments are silently skipped by the lexer.
@@ -40,6 +60,12 @@ pub enum Token {
     #[token("\"", lex_double_string)]
     #[token("'", lex_single_string)]
     Str(Vec<StringPart>),
+
+    /// A byte string literal. `b"..."` supports interpolation; `b'...'` does not.
+    /// Escape sequences produce raw bytes (e.g., `\xff` → 1 byte, not UTF-8 of U+00FF).
+    #[token("b\"", lex_bin_double)]
+    #[token("b'", lex_bin_single)]
+    BinStr(Vec<BinPart>),
 
     /// An integer or decimal number (stored as raw text for lossless round-trip).
     /// Supports decimal, hex (0x), and binary (0b) prefixes.
@@ -156,9 +182,21 @@ pub enum Token {
     And,
     #[token("||")]
     Or,
+    #[token("@")]
+    At,
 
     /// Produced synthetically for unrecognised bytes — not by logos directly.
     Error,
+}
+
+/// Convert an ASCII hex digit to its 4-bit value, or None.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Shared string body scanner. Processes escape sequences and optionally `{expr}`
@@ -207,6 +245,14 @@ fn scan_string_body(
                     lit.push('\t');
                     i += 1;
                 }
+                b'r' => {
+                    lit.push('\r');
+                    i += 1;
+                }
+                b'0' => {
+                    lit.push('\0');
+                    i += 1;
+                }
                 b'\\' => {
                     lit.push('\\');
                     i += 1;
@@ -226,6 +272,42 @@ fn scan_string_body(
                 b'}' if interpolate => {
                     lit.push('}');
                     i += 1;
+                }
+                b'x' => {
+                    // \xNN — hex byte, exactly 2 hex digits.
+                    i += 1;
+                    if i + 2 > bytes.len() {
+                        return None;
+                    }
+                    let hi = hex_digit(bytes[i])?;
+                    let lo = hex_digit(bytes[i + 1])?;
+                    let byte_val = (hi << 4) | lo;
+                    lit.push(byte_val as char);
+                    i += 2;
+                }
+                b'u' => {
+                    // \uNNNN — Unicode codepoint, exactly 4 hex digits.
+                    i += 1;
+                    if i + 4 > bytes.len() {
+                        return None;
+                    }
+                    let hex_str = std::str::from_utf8(&bytes[i..i + 4]).ok()?;
+                    let codepoint = u32::from_str_radix(hex_str, 16).ok()?;
+                    let ch = char::from_u32(codepoint)?;
+                    lit.push(ch);
+                    i += 4;
+                }
+                b'U' => {
+                    // \UNNNNNNNN — Unicode codepoint, exactly 8 hex digits.
+                    i += 1;
+                    if i + 8 > bytes.len() {
+                        return None;
+                    }
+                    let hex_str = std::str::from_utf8(&bytes[i..i + 8]).ok()?;
+                    let codepoint = u32::from_str_radix(hex_str, 16).ok()?;
+                    let ch = char::from_u32(codepoint)?;
+                    lit.push(ch);
+                    i += 8;
                 }
                 _ => {
                     // Unknown escape — pass through literally. Decode full char.
@@ -301,6 +383,177 @@ fn scan_string_body(
     None
 }
 
+/// Scan a byte string body, accumulating raw bytes instead of chars.
+///
+/// Differences from `scan_string_body`:
+/// - `\xNN` produces a single raw byte (not a char → UTF-8).
+/// - Regular text is UTF-8 encoded to bytes.
+/// - `\uNNNN` / `\UNNNNNNNN` produce UTF-8 bytes of the codepoint.
+fn scan_bin_body(
+    rest: &str,
+    close_quote: u8,
+    interpolate: bool,
+    base_offset: usize,
+) -> Option<(usize, Vec<BinPart>)> {
+    let bytes = rest.as_bytes();
+    let mut parts: Vec<BinPart> = Vec::new();
+    let mut lit: Vec<u8> = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == close_quote {
+            if !lit.is_empty() {
+                parts.push(BinPart::Bytes(lit));
+            }
+            return Some((i + 1, parts));
+        }
+
+        if bytes[i] == b'\\' {
+            i += 1;
+            if i >= bytes.len() {
+                return None;
+            }
+            match bytes[i] {
+                b'n' => {
+                    lit.push(b'\n');
+                    i += 1;
+                }
+                b't' => {
+                    lit.push(b'\t');
+                    i += 1;
+                }
+                b'r' => {
+                    lit.push(b'\r');
+                    i += 1;
+                }
+                b'0' => {
+                    lit.push(0);
+                    i += 1;
+                }
+                b'\\' => {
+                    lit.push(b'\\');
+                    i += 1;
+                }
+                b'\'' => {
+                    lit.push(b'\'');
+                    i += 1;
+                }
+                b'"' => {
+                    lit.push(b'"');
+                    i += 1;
+                }
+                b'{' if interpolate => {
+                    lit.push(b'{');
+                    i += 1;
+                }
+                b'}' if interpolate => {
+                    lit.push(b'}');
+                    i += 1;
+                }
+                b'x' => {
+                    // \xNN — raw byte, exactly 2 hex digits.
+                    i += 1;
+                    if i + 2 > bytes.len() {
+                        return None;
+                    }
+                    let hi = hex_digit(bytes[i])?;
+                    let lo = hex_digit(bytes[i + 1])?;
+                    lit.push((hi << 4) | lo);
+                    i += 2;
+                }
+                b'u' => {
+                    // \uNNNN — UTF-8 encode the codepoint.
+                    i += 1;
+                    if i + 4 > bytes.len() {
+                        return None;
+                    }
+                    let hex_str = std::str::from_utf8(&bytes[i..i + 4]).ok()?;
+                    let codepoint = u32::from_str_radix(hex_str, 16).ok()?;
+                    let ch = char::from_u32(codepoint)?;
+                    let mut buf = [0u8; 4];
+                    lit.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    i += 4;
+                }
+                b'U' => {
+                    // \UNNNNNNNN — UTF-8 encode the codepoint.
+                    i += 1;
+                    if i + 8 > bytes.len() {
+                        return None;
+                    }
+                    let hex_str = std::str::from_utf8(&bytes[i..i + 8]).ok()?;
+                    let codepoint = u32::from_str_radix(hex_str, 16).ok()?;
+                    let ch = char::from_u32(codepoint)?;
+                    let mut buf = [0u8; 4];
+                    lit.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    i += 8;
+                }
+                _ => {
+                    lit.push(b'\\');
+                    let ch = rest[i..].chars().next()?;
+                    let mut buf = [0u8; 4];
+                    lit.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    i += ch.len_utf8();
+                }
+            }
+            continue;
+        }
+
+        // Interpolation.
+        if bytes[i] == b'{' && interpolate {
+            if !lit.is_empty() {
+                parts.push(BinPart::Bytes(std::mem::take(&mut lit)));
+            }
+            i += 1;
+            let start = i;
+            let mut depth = 1u32;
+            while i < bytes.len() && depth > 0 {
+                match bytes[i] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    b'"' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            match bytes[i] {
+                                b'"' => break,
+                                b'\\' => i += 1,
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                    }
+                    b'\'' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            match bytes[i] {
+                                b'\'' => break,
+                                b'\\' => i += 1,
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            if depth != 0 {
+                return None;
+            }
+            let expr_text = std::str::from_utf8(&bytes[start..i - 1]).ok()?;
+            parts.push(BinPart::Interp(expr_text.to_string(), base_offset + start));
+            continue;
+        }
+
+        // Regular text — encode as UTF-8 bytes.
+        let ch = rest[i..].chars().next()?;
+        let mut buf = [0u8; 4];
+        lit.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        i += ch.len_utf8();
+    }
+
+    None
+}
+
 /// Logos callback for single-quoted strings. Processes escape sequences but
 /// treats `{` as a literal character (no interpolation).
 fn lex_single_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
@@ -321,6 +574,24 @@ fn lex_double_string(lex: &mut logos::Lexer<Token>) -> Option<Vec<StringPart>> {
     Some(parts)
 }
 
+/// Logos callback for `b'...'` — byte string, no interpolation.
+fn lex_bin_single(lex: &mut logos::Lexer<Token>) -> Option<Vec<BinPart>> {
+    let rest = lex.remainder();
+    let base = lex.span().end;
+    let (consumed, parts) = scan_bin_body(rest, b'\'', false, base)?;
+    lex.bump(consumed);
+    Some(parts)
+}
+
+/// Logos callback for `b"..."` — byte string with interpolation.
+fn lex_bin_double(lex: &mut logos::Lexer<Token>) -> Option<Vec<BinPart>> {
+    let rest = lex.remainder();
+    let base = lex.span().end;
+    let (consumed, parts) = scan_bin_body(rest, b'"', true, base)?;
+    lex.bump(consumed);
+    Some(parts)
+}
+
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -330,6 +601,29 @@ impl fmt::Display for Token {
                     match part {
                         StringPart::Lit(s) => write!(f, "{s}")?,
                         StringPart::Interp(s, _) => write!(f, "{{{s}}}")?,
+                    }
+                }
+                write!(f, "\"")
+            }
+            Token::BinStr(parts) => {
+                write!(f, "b\"")?;
+                for part in parts {
+                    match part {
+                        BinPart::Bytes(bs) => {
+                            for &b in bs {
+                                match b {
+                                    0x20..=0x7e if b != b'\\' && b != b'"' => {
+                                        write!(f, "{}", b as char)?
+                                    }
+                                    b'\n' => write!(f, "\\n")?,
+                                    b'\t' => write!(f, "\\t")?,
+                                    b'\r' => write!(f, "\\r")?,
+                                    0 => write!(f, "\\0")?,
+                                    _ => write!(f, "\\x{b:02x}")?,
+                                }
+                            }
+                        }
+                        BinPart::Interp(s, _) => write!(f, "{{{s}}}")?,
                     }
                 }
                 write!(f, "\"")
@@ -387,6 +681,7 @@ impl fmt::Display for Token {
             Token::Ques => write!(f, "?"),
             Token::And => write!(f, "&&"),
             Token::Or => write!(f, "||"),
+            Token::At => write!(f, "@"),
             Token::Error => write!(f, "<invalid>"),
         }
     }
@@ -557,17 +852,23 @@ mod tests {
 
     #[test]
     fn lex_unknown_char_produces_error_token() {
-        let toks = tokens("@");
+        let toks = tokens("💀");
         assert_eq!(toks, vec![Token::Error]);
     }
 
     #[test]
     fn lex_error_does_not_halt_lexing() {
-        // '@' is invalid but lexing continues and produces the surrounding tokens.
+        // '💀' is invalid but lexing continues and produces the surrounding tokens.
         assert_eq!(
-            tokens("true @ false"),
+            tokens("true 💀 false"),
             vec![Token::True, Token::Error, Token::False]
         );
+    }
+
+    #[test]
+    fn lex_at_sign() {
+        assert_eq!(one("@"), Token::At);
+        assert_eq!(tokens("@ T"), vec![Token::At, Token::Ident("T".into())]);
     }
 
     // ── spans ─────────────────────────────────────────────────────────────────
@@ -645,6 +946,53 @@ mod tests {
     #[test]
     fn lex_string_with_embedded_quote() {
         assert_eq!(one(r#""say \"hi\"""#), str_tok("say \"hi\""));
+    }
+
+    // ── hex byte escapes ──────────────────────────────────────────────────────
+
+    #[test]
+    fn lex_escape_hex_byte() {
+        assert_eq!(one(r#""\x41""#), str_tok("A"));
+        assert_eq!(one(r#""\x61""#), str_tok("a"));
+        assert_eq!(one(r#""\x0a""#), str_tok("\n"));
+    }
+
+    #[test]
+    fn lex_escape_hex_byte_in_context() {
+        assert_eq!(one(r#""hi\x21""#), str_tok("hi!"));
+    }
+
+    // ── unicode escapes ──────────────────────────────────────────────────────
+
+    #[test]
+    fn lex_escape_unicode_4() {
+        assert_eq!(one(r#""\u0041""#), str_tok("A"));
+        assert_eq!(one(r#""\u2764""#), str_tok("\u{2764}")); // ❤
+    }
+
+    #[test]
+    fn lex_escape_unicode_8() {
+        assert_eq!(one(r#""\U0001f600""#), str_tok("\u{1f600}")); // 😀
+    }
+
+    #[test]
+    fn lex_escape_unicode_in_context() {
+        assert_eq!(one(r#""hello \u2764""#), str_tok("hello \u{2764}")); // ❤
+    }
+
+    // ── null escape ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn lex_escape_null() {
+        assert_eq!(one(r#""\0""#), str_tok("\0"));
+    }
+
+    // ── carriage return escape ───────────────────────────────────────────────
+
+    #[test]
+    fn lex_escape_carriage_return() {
+        assert_eq!(one(r#""\r""#), str_tok("\r"));
+        assert_eq!(one(r#""\r\n""#), str_tok("\r\n"));
     }
 
     // ── single-quoted strings ───────────────────────────────────────────────────
@@ -792,6 +1140,75 @@ mod tests {
                 StringPart::Interp("a".into(), 0),
                 StringPart::Interp("b".into(), 0),
             ])
+        );
+    }
+
+    // ── byte string literals ─────────────────────────────────────────────────
+
+    fn bin_tok(bs: &[u8]) -> Token {
+        Token::BinStr(vec![BinPart::Bytes(bs.to_vec())])
+    }
+
+    #[test]
+    fn lex_bin_single_basic() {
+        assert_eq!(one("b'hello'"), bin_tok(b"hello"));
+    }
+
+    #[test]
+    fn lex_bin_double_basic() {
+        assert_eq!(one(r#"b"hello""#), bin_tok(b"hello"));
+    }
+
+    #[test]
+    fn lex_bin_empty() {
+        assert_eq!(one("b''"), Token::BinStr(vec![]));
+        assert_eq!(one(r#"b"""#), Token::BinStr(vec![]));
+    }
+
+    #[test]
+    fn lex_bin_hex_escape() {
+        // \xff produces a single raw byte 0xFF, not UTF-8 of U+00FF.
+        assert_eq!(one(r"b'\xff'"), bin_tok(&[0xff]));
+        assert_eq!(one(r"b'\xff\x00\xab'"), bin_tok(&[0xff, 0x00, 0xab]));
+    }
+
+    #[test]
+    fn lex_bin_named_escapes() {
+        assert_eq!(one(r"b'\n\t\r\0'"), bin_tok(&[b'\n', b'\t', b'\r', 0]));
+    }
+
+    #[test]
+    fn lex_bin_unicode_escape() {
+        // \u2764 (❤) in a byte string produces its UTF-8 encoding: 3 bytes.
+        assert_eq!(one(r"b'\u2764'"), bin_tok(&[0xe2, 0x9d, 0xa4]));
+    }
+
+    #[test]
+    fn lex_bin_interp() {
+        assert_eq!(
+            one(r#"b"hi {name}""#),
+            Token::BinStr(vec![
+                BinPart::Bytes(b"hi ".to_vec()),
+                BinPart::Interp("name".into(), 0),
+            ])
+        );
+    }
+
+    #[test]
+    fn lex_bin_no_interp_single() {
+        // Single-quoted byte string: {name} is literal, not interpolation.
+        assert_eq!(one("b'{name}'"), bin_tok(b"{name}"));
+    }
+
+    #[test]
+    fn lex_b_space_string_is_ident() {
+        // b followed by space + quote: b is an ident, string is separate.
+        assert_eq!(
+            tokens("b 'hello'"),
+            vec![
+                Token::Ident("b".into()),
+                Token::Str(vec![StringPart::Lit("hello".into())])
+            ]
         );
     }
 }

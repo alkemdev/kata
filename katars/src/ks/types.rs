@@ -598,6 +598,24 @@ impl TypeRegistry {
         }
     }
 
+    /// Instantiate a generic type by dispatching to the correct instantiate_* method
+    /// based on whether the base is an enum, struct, or interface.
+    pub fn instantiate_by_kind(
+        &mut self,
+        base_id: TypeId,
+        type_args: Vec<TypeId>,
+    ) -> Result<TypeId, ErrorKind> {
+        match self.defs[base_id.0 as usize].clone() {
+            TypeDef::Enum { .. } => self.instantiate_enum(base_id, type_args),
+            TypeDef::Struct { .. } => self.instantiate_struct(base_id, type_args),
+            TypeDef::Interface { .. } => self.instantiate_interface(base_id, type_args),
+            _ => Err(ErrorKind::WrongTypeKind {
+                type_id: base_id,
+                expected: TypeKindExpectation::GenericType,
+            }),
+        }
+    }
+
     /// Get the type parameter names for a base type definition.
     /// Returns empty vec for non-generic types.
     pub fn type_param_names(&self, id: TypeId) -> Vec<String> {

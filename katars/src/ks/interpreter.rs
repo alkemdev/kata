@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, Expr, FuncDef, InterpPart, MatchArm, MethodSig,
-    Param, Pattern, Program, Span, Spanned, Stmt,
+    AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, Expr, FuncDef, InterpPart, MatchArm,
+    MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -127,6 +128,8 @@ pub struct Interpreter {
     /// Conformance registry: (concrete_base_type, interface_base_type) pairs.
     /// Populated during `impl K as T`. Queried for `as` and implicit coercion.
     conformances: HashSet<(TypeId, TypeId)>,
+    /// Intern table for Bin values. Identical byte sequences share one allocation.
+    bin_intern: HashSet<Arc<[u8]>>,
 }
 
 impl Interpreter {
@@ -155,6 +158,7 @@ impl Interpreter {
             allocations: Vec::new(),
             native_registry: boot.registry,
             conformances: HashSet::new(),
+            bin_intern: HashSet::new(),
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -193,6 +197,13 @@ impl Interpreter {
                 .or_insert_with(IndexMap::new)
                 .insert(name.to_string(), Value::NativeFn(*fn_id));
         }
+        for (name, fn_id) in &boot.bin_methods.methods {
+            interp
+                .methods
+                .entry(prim::BIN)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
 
         interp
     }
@@ -200,6 +211,18 @@ impl Interpreter {
     /// Access the type registry (for formatting error messages, etc.).
     pub fn type_registry(&self) -> &TypeRegistry {
         &self.types
+    }
+
+    /// Intern a byte sequence, returning a shared `Bin` value.
+    /// Identical byte sequences share one `Arc<[u8]>` allocation.
+    pub fn intern_bin(&mut self, bytes: Vec<u8>) -> Value {
+        if let Some(existing) = self.bin_intern.get(bytes.as_slice()) {
+            Value::Bin(Arc::clone(existing))
+        } else {
+            let arc: Arc<[u8]> = bytes.into();
+            self.bin_intern.insert(Arc::clone(&arc));
+            Value::Bin(arc)
+        }
     }
 
     /// All names visible in the current scope (for REPL completion).
@@ -535,15 +558,17 @@ impl Interpreter {
             }
 
             Stmt::Impl {
-                type_name,
-                type_params,
+                target,
                 as_type,
                 methods,
             } => {
-                self.register_impl(type_name, type_params, methods, out)
+                let (type_id, bindings) = self
+                    .resolve_type_pattern(&target.node)
+                    .map_err(|e| e.at(target.span))?;
+                self.register_impl_methods(type_id, &bindings, methods)
                     .map_err(|e| e.at(stmt.span))?;
                 if let Some(iface_expr) = as_type {
-                    self.check_conformance(type_name, &iface_expr.node)
+                    self.check_conformance(type_id, &iface_expr.node)
                         .map_err(|e| e.at(iface_expr.span))?;
                     // Track lifecycle protocol implementations.
                     let iface_name = match &iface_expr.node {
@@ -558,7 +583,6 @@ impl Interpreter {
                         _ => None,
                     };
                     if let Some(name) = iface_name {
-                        let type_id = self.resolve_type(type_name).map_err(|e| e.at(stmt.span))?;
                         let iface_id =
                             self.resolve_type(name).map_err(|e| e.at(iface_expr.span))?;
                         // Record conformance for dynamic dispatch.
@@ -1146,6 +1170,29 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Str(result)))
             }
 
+            Expr::BinLit(bytes) => Ok(Flow::Next(self.intern_bin(bytes.clone()))),
+
+            Expr::BinInterp { parts } => {
+                let mut result: Vec<u8> = Vec::new();
+                for part in parts {
+                    match part {
+                        BinInterpPart::Bytes(bs) => result.extend_from_slice(bs),
+                        BinInterpPart::Expr(inner) => {
+                            let flow = self.eval_expr(inner, out)?;
+                            let val = match flow {
+                                Flow::Next(v) => v,
+                                flow @ (Flow::Return { .. }
+                                | Flow::Propagate { .. }
+                                | Flow::Bail(_)
+                                | Flow::Cont(_)) => return Ok(flow),
+                            };
+                            result.extend_from_slice(val.display(&self.types).as_bytes());
+                        }
+                    }
+                }
+                Ok(Flow::Next(self.intern_bin(result)))
+            }
+
             Expr::Name(name) => self.get(name).cloned().map(Flow::Next).ok_or_else(|| {
                 RuntimeError::new(ErrorKind::Undefined {
                     kind: NameKind::Variable,
@@ -1678,7 +1725,7 @@ impl Interpreter {
     }
 
     /// Check that a type's method table satisfies an interface.
-    fn check_conformance(&self, type_name: &str, iface_expr: &Expr) -> Result<(), RuntimeError> {
+    fn check_conformance(&self, type_id: TypeId, iface_expr: &Expr) -> Result<(), RuntimeError> {
         let iface_name = match iface_expr {
             Expr::Name(n) => n.as_str(),
             Expr::Item { object, .. } => {
@@ -1703,10 +1750,10 @@ impl Interpreter {
             })?
             .clone();
 
-        let type_id = self.resolve_type(type_name)?;
+        let type_display = self.types.display_name(type_id);
         let method_table = self.methods.get(&type_id).ok_or_else(|| -> RuntimeError {
             ErrorKind::ConformanceFailure {
-                type_name: type_name.to_string(),
+                type_name: type_display.clone(),
                 iface_name: iface_name.to_string(),
                 detail: ConformanceError::TypeHasNoMethods,
             }
@@ -1716,7 +1763,7 @@ impl Interpreter {
         for sig in &iface.methods {
             let func = method_table.get(&sig.name).ok_or_else(|| -> RuntimeError {
                 ErrorKind::ConformanceFailure {
-                    type_name: type_name.to_string(),
+                    type_name: type_display.clone(),
                     iface_name: iface_name.to_string(),
                     detail: ConformanceError::MissingMethod {
                         method: sig.name.clone(),
@@ -1728,7 +1775,7 @@ impl Interpreter {
             if let Value::Func { params, .. } = func {
                 if params.len() != sig.params.len() {
                     return Err(ErrorKind::ConformanceFailure {
-                        type_name: type_name.to_string(),
+                        type_name: type_display.clone(),
                         iface_name: iface_name.to_string(),
                         detail: ConformanceError::ParamCountMismatch {
                             method: sig.name.clone(),
@@ -1746,15 +1793,103 @@ impl Interpreter {
 
     // ── Impl registration ────────────────────────────────────────────
 
-    fn register_impl(
+    /// Resolve a TypePattern to a TypeId and extract binding names.
+    ///
+    /// - `Concrete("Int")` → resolve to TypeId, no bindings.
+    /// - `Binding("T")` → error (can't impl a bare binding).
+    /// - `Apply { base: "Arr", args: [Binding("T")] }` → base TypeId, bindings = ["T"].
+    /// - `Apply { base: "Arr", args: [Concrete("Byte")] }` → instantiate Arr[Byte], no bindings.
+    fn resolve_type_pattern(
         &mut self,
-        type_name: &str,
+        pattern: &TypePattern,
+    ) -> Result<(TypeId, Vec<String>), RuntimeError> {
+        match pattern {
+            TypePattern::Concrete(name) => {
+                let tid = self.resolve_type(name)?;
+                Ok((tid, vec![]))
+            }
+            TypePattern::Binding(_name) => Err(ErrorKind::Unsupported(
+                "cannot impl a bare type binding (@T); must be part of a type application",
+            )
+            .into()),
+            TypePattern::Apply { base, args } => {
+                let base_id = self.resolve_type(base)?;
+                // Collect bindings and check if fully concrete.
+                let mut bindings: Vec<String> = Vec::new();
+                self.collect_bindings_from_pattern_args(args, &mut bindings)?;
+
+                if bindings.is_empty() {
+                    // Fully concrete: instantiate the type.
+                    let type_args = args
+                        .iter()
+                        .map(|a| self.resolve_concrete_pattern(&a.node))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let inst_id = self
+                        .types
+                        .instantiate_by_kind(base_id, type_args)
+                        .map_err(|e| -> RuntimeError { e.into() })?;
+                    Ok((inst_id, vec![]))
+                } else {
+                    // Has bindings: store under the base type.
+                    Ok((base_id, bindings))
+                }
+            }
+        }
+    }
+
+    /// Recursively collect all `@Name` bindings from type pattern args.
+    /// Errors on duplicate bindings (for now — unification of repeated bindings is phase 2).
+    fn collect_bindings_from_pattern_args(
+        &self,
+        args: &[Spanned<TypePattern>],
+        bindings: &mut Vec<String>,
+    ) -> Result<(), RuntimeError> {
+        for arg in args {
+            match &arg.node {
+                TypePattern::Binding(name) => {
+                    if !bindings.contains(name) {
+                        bindings.push(name.clone());
+                    }
+                    // Repeated @T is allowed — means unification (same type).
+                }
+                TypePattern::Concrete(_) => {}
+                TypePattern::Apply { args: sub_args, .. } => {
+                    self.collect_bindings_from_pattern_args(sub_args, bindings)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve a fully-concrete TypePattern (no bindings) to a TypeId.
+    fn resolve_concrete_pattern(&mut self, pattern: &TypePattern) -> Result<TypeId, RuntimeError> {
+        match pattern {
+            TypePattern::Concrete(name) => self.resolve_type(name),
+            TypePattern::Binding(name) => Err(ErrorKind::Undefined {
+                kind: NameKind::Type,
+                name: name.clone(),
+            }
+            .into()),
+            TypePattern::Apply { base, args } => {
+                let base_id = self.resolve_type(base)?;
+                let type_args = args
+                    .iter()
+                    .map(|a| self.resolve_concrete_pattern(&a.node))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.types
+                    .instantiate_by_kind(base_id, type_args)
+                    .map_err(|e| e.into())
+            }
+        }
+    }
+
+    /// Register methods from an impl block under the given TypeId.
+    fn register_impl_methods(
+        &mut self,
+        type_id: TypeId,
         type_params: &[String],
         methods: &[Spanned<FuncDef>],
-        _out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
-        let type_id = self.resolve_type(type_name)?;
-
         // Make `Self` available as a type alias within this impl block.
         self.set("Self".into(), Value::Type(type_id));
 
@@ -2314,6 +2449,7 @@ impl Interpreter {
                     let mut ctx = NativeCtx {
                         types: &self.types,
                         allocations: &mut self.allocations,
+                        bin_intern: &mut self.bin_intern,
                         out,
                         in_unsafe: self.in_unsafe,
                     };
@@ -2335,6 +2471,7 @@ impl Interpreter {
                 let mut ctx = NativeCtx {
                     types: &self.types,
                     allocations: &mut self.allocations,
+                    bin_intern: &mut self.bin_intern,
                     out,
                     in_unsafe: self.in_unsafe,
                 };

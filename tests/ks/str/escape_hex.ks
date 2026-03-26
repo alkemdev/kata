@@ -1,0 +1,5 @@
+# \xNN hex byte, \uNNNN unicode (4-digit), \UNNNNNNNN unicode (8-digit)
+print("\x48\x65\x6c\x6c\x6f")
+print('\x41\x42\x43')
+print("\u2764")
+print("\U0001f600")

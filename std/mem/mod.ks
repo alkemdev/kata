@@ -52,7 +52,7 @@ let heap = HeapAllocator {}
 
 kind Ptr[T] { raw: RawPtr }
 
-impl Ptr[T] {
+impl Ptr[@T] {
     func read(self, index: Int): T {
         unsafe { ret std.mem.read(self.raw, index) }
     }
@@ -69,7 +69,7 @@ impl Ptr[T] {
 
 kind Buf[T] { ptr: Ptr[T], cap: Int }
 
-impl Buf[T] {
+impl Buf[@T] {
     func read(self, index: Int): T {
         ret self.ptr.read(index)
     }
@@ -86,7 +86,7 @@ impl Buf[T] {
     }
 }
 
-impl Buf[T] as Drop {
+impl Buf[@T] as Drop {
     func drop(self) {
         heap.free(self.ptr.raw)
     }

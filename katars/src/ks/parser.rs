@@ -8,10 +8,10 @@ use logos::Logos;
 use tracing::{debug, info};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinOp, Expr, FuncDef, InterpPart, MatchArm,
-    MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, UnaryOp,
+    AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, BinOp, Expr, FuncDef, InterpPart,
+    MatchArm, MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern, UnaryOp,
 };
-use super::lexer::{StringPart, Token};
+use super::lexer::{BinPart, StringPart, Token};
 
 // ── Grammar ───────────────────────────────────────────────────────────────────
 //
@@ -20,7 +20,7 @@ use super::lexer::{StringPart, Token};
 //              | 'enum' IDENT type_params? '{' variant_list '}'       -- enum def
 //              | 'kind' IDENT type_params? '{' field_list '}'          -- kind def
 //              | 'type' IDENT type_params? '{' method_sig* '}'         -- interface def
-//              | 'impl' IDENT type_params? ('as' expr)? '{' func_def* '}' -- impl block
+//              | 'impl' type_pattern ('as' expr)? '{' func_def* '}' -- impl block
 //              | 'func' IDENT '(' params? ')' ret_ann? '{' stmt* '}'  -- function def
 //              | 'let' IDENT '=' expr ';'?                            -- variable binding
 //              | 'bail' ';'?                                           -- exit current loop
@@ -28,6 +28,9 @@ use super::lexer::{StringPart, Token};
 //              | 'ret' expr ';'?                                       -- explicit return
 //              | expr_or_assign ';'?                                   -- expr or assignment
 //   type_params = '[' IDENT (',' IDENT)* ']'
+//   type_pattern = '@' IDENT                                   -- binding (@T)
+//                | IDENT '[' type_pattern (',' type_pattern)* ']' -- apply (Arr[@T])
+//                | IDENT                                        -- concrete (Int)
 //   variant_list = variant (',' variant)* ','?
 //   variant    = IDENT '(' expr (',' expr)* ')'    -- data variant (type exprs)
 //              | IDENT                               -- unit variant
@@ -148,6 +151,44 @@ where
                             })
                             .collect();
                         Expr::Interp { parts: ast_parts }
+                    }
+                },
+            );
+            let bin_lit = select! { Token::BinStr(parts) => parts }.validate(
+                |parts: Vec<BinPart>, extra, emitter| {
+                    let has_interp =
+                        parts.iter().any(|p| matches!(p, BinPart::Interp(_, _)));
+                    if !has_interp {
+                        let bytes: Vec<u8> = parts
+                            .into_iter()
+                            .flat_map(|p| match p {
+                                BinPart::Bytes(bs) => bs,
+                                BinPart::Interp(_, _) => unreachable!(),
+                            })
+                            .collect();
+                        Expr::BinLit(bytes)
+                    } else {
+                        let ast_parts = parts
+                            .into_iter()
+                            .map(|p| match p {
+                                BinPart::Bytes(bs) => BinInterpPart::Bytes(bs),
+                                BinPart::Interp(src, offset) => {
+                                    match parse_fragment(&src, offset) {
+                                        Some(expr) => BinInterpPart::Expr(expr),
+                                        None => {
+                                            emitter.emit(Rich::custom(
+                                                extra.span(),
+                                                format!(
+                                                    "invalid expression in byte string interpolation: {{{src}}}"
+                                                ),
+                                            ));
+                                            BinInterpPart::Bytes(format!("{{{src}}}").into_bytes())
+                                        }
+                                    }
+                                }
+                            })
+                            .collect();
+                        Expr::BinInterp { parts: ast_parts }
                     }
                 },
             );
@@ -423,6 +464,7 @@ where
                 });
 
             let atom = str_lit
+                .or(bin_lit)
                 .or(num_lit)
                 .or(bool_lit)
                 .or(nil_lit)
@@ -839,9 +881,33 @@ where
                 }
             });
 
+        // type_pattern = '@' IDENT | IDENT '[' type_pattern,* ']' | IDENT
+        let type_pattern = recursive(|tp| {
+            let binding = just(Token::At)
+                .ignore_then(select! { Token::Ident(name) => name })
+                .map_with(|name, ex| Spanned::new(TypePattern::Binding(name), span(&ex.span())));
+
+            let concrete_or_apply = select! { Token::Ident(name) => name }
+                .then(
+                    tp.separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBracket), just(Token::RBracket))
+                        .or_not(),
+                )
+                .map_with(|(name, args), ex| {
+                    let s = span(&ex.span());
+                    match args {
+                        None => Spanned::new(TypePattern::Concrete(name), s),
+                        Some(args) => Spanned::new(TypePattern::Apply { base: name, args }, s),
+                    }
+                });
+
+            binding.or(concrete_or_apply)
+        });
+
         let impl_block = just(Token::Impl)
-            .ignore_then(select! { Token::Ident(name) => name })
-            .then(type_params.clone().or_not())
+            .ignore_then(type_pattern)
             .then(just(Token::As).ignore_then(type_expr_simple).or_not())
             .then(
                 impl_func_def
@@ -849,11 +915,10 @@ where
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::LBrace), just(Token::RBrace)),
             )
-            .map_with(|(((type_name, tparams), as_type), methods), ex| {
+            .map_with(|((target, as_type), methods), ex| {
                 Spanned::new(
                     Stmt::Impl {
-                        type_name,
-                        type_params: tparams.unwrap_or_default(),
+                        target,
                         as_type,
                         methods,
                     },

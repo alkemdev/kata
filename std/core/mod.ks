@@ -11,7 +11,7 @@ enum Opt[T] {
     Non,
 }
 
-impl Opt[T] {
+impl Opt[@T] {
     func unwrap(self): T {
         ret match self {
             Val(x) -> x,
@@ -32,7 +32,7 @@ enum Res[T, E] {
     Err(E),
 }
 
-impl Res[T, E] {
+impl Res[@T, @E] {
     func unwrap(self): T {
         ret match self {
             Val(x) -> x,
@@ -101,4 +101,10 @@ type GetItem[K, V] {
 
 type SetItem[K, V] {
     func set_item(self, key: K, val: V)
+}
+
+# ── Conversion protocols ─────────────────────────────────────
+
+type ToBin {
+    func to_bin(self): Bin
 }

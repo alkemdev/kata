@@ -2,7 +2,7 @@
 #
 # Arr[T] — safe, iterable, growable array
 
-import std.core.{Opt, GetItem, SetItem}
+import std.core.{Opt, GetItem, SetItem, ToBin}
 import std.mem.{Ptr, Buf, heap}
 
 # ── Arr[T] — safe, iterable array ────────────────────────────────
@@ -12,7 +12,7 @@ import std.mem.{Ptr, Buf, heap}
 
 kind Arr[T] { buf: Buf[T], len: Int }
 
-impl Arr[T] {
+impl Arr[@T] {
     func push(self, val: T) {
         if self.len == self.buf.cap {
             # Inline grow — can't use self.buf.grow() because nested
@@ -53,7 +53,7 @@ impl Arr[T] {
 
 kind ArrIter[T] { arr: Arr[T], idx: Int }
 
-impl ArrIter[T] as Iter[T] {
+impl ArrIter[@T] as Iter[T] {
     func next(self): Opt[T] {
         if self.idx >= self.arr.len {
             ret Opt[T].Non
@@ -65,7 +65,7 @@ impl ArrIter[T] as Iter[T] {
     }
 }
 
-impl Arr[T] as GetItem[Int, T] {
+impl Arr[@T] as GetItem[Int, T] {
     func get_item(self, key: Int): T {
         if key < 0 || key >= self.len {
             panic("index out of bounds: {key}, len {self.len}")
@@ -74,7 +74,7 @@ impl Arr[T] as GetItem[Int, T] {
     }
 }
 
-impl Arr[T] as SetItem[Int, T] {
+impl Arr[@T] as SetItem[Int, T] {
     func set_item(self, key: Int, val: T) {
         if key < 0 || key >= self.len {
             panic("index out of bounds: {key}, len {self.len}")
@@ -83,8 +83,18 @@ impl Arr[T] as SetItem[Int, T] {
     }
 }
 
-impl Arr[T] as ToIter[T] {
+impl Arr[@T] as ToIter[T] {
     func to_iter(self): ArrIter[T] {
         ret ArrIter[T] { arr: self, idx: 0 }
+    }
+}
+
+# ── Bin conversion ──────────────────────────────────────────────
+
+impl Arr[Byte] as ToBin {
+    func to_bin(self): Bin {
+        unsafe {
+            ret std.mem.bin_from_raw(self.buf.ptr.raw, self.len)
+        }
     }
 }

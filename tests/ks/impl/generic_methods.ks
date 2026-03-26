@@ -1,7 +1,7 @@
 # Generic impl: methods defined on Wrapper[T] work on Wrapper[Int]
 kind Wrapper[T] { inner: Opt[T] }
 
-impl Wrapper[T] {
+impl Wrapper[@T] {
     func get_or(self, default: T): T {
         ret default
     }

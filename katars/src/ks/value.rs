@@ -1,12 +1,24 @@
 use std::fmt;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::ast::{Spanned, Stmt};
 use super::native::{ModuleId, NativeFnId};
 use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
+
+// ── Serde helpers for Rc<[u8]> ──────────────────────────────────────────────
+
+fn serialize_arc_bytes<S: Serializer>(bytes: &Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
+    bytes.as_ref().serialize(s)
+}
+
+fn deserialize_arc_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<[u8]>, D::Error> {
+    let v = Vec::<u8>::deserialize(d)?;
+    Ok(v.into())
+}
 
 // ── Value ────────────────────────────────────────────────────────────────────
 
@@ -18,7 +30,11 @@ pub enum Value {
     Int(BigInt),
     Float(f64),
     Str(String),
-    Bin(Vec<u8>),
+    #[serde(
+        serialize_with = "serialize_arc_bytes",
+        deserialize_with = "deserialize_arc_bytes"
+    )]
+    Bin(Arc<[u8]>),
     Func {
         params: Vec<FuncParam>,
         ret_type: Option<TypeExpr>,
@@ -263,7 +279,7 @@ impl PartialEq for Value {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Bin(a), Value::Bin(b)) => a == b,
+            (Value::Bin(a), Value::Bin(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
             (
                 Value::Enum {

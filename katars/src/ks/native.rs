@@ -7,7 +7,9 @@
 //! At call time, `Value::NativeFn(NativeFnId)` is looked up by ID
 //! and dispatched — no string matching.
 
+use std::collections::HashSet;
 use std::io::Write;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
@@ -68,6 +70,7 @@ pub struct NativeFnEntry {
 pub struct NativeCtx<'a> {
     pub types: &'a TypeRegistry,
     pub allocations: &'a mut Vec<Option<Vec<Value>>>,
+    pub bin_intern: &'a mut HashSet<Arc<[u8]>>,
     pub out: &'a mut dyn Write,
     /// Available for native fns that need to know if they're in an unsafe context.
     /// Currently checked at the dispatch level before the handler is called.
@@ -101,6 +104,17 @@ impl<'a> NativeCtx<'a> {
             }
             .into()),
             None => Err(ErrorKind::InternalError("missing argument to native function").into()),
+        }
+    }
+
+    /// Intern a byte vector and return a Bin value.
+    pub fn intern_bin(&mut self, bytes: Vec<u8>) -> Value {
+        if let Some(existing) = self.bin_intern.get(bytes.as_slice()) {
+            Value::Bin(Arc::clone(existing))
+        } else {
+            let arc: Arc<[u8]> = bytes.into();
+            self.bin_intern.insert(Arc::clone(&arc));
+            Value::Bin(arc)
         }
     }
 }
@@ -750,6 +764,76 @@ fn char_to_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeE
     Ok(Value::Char(c.to_lowercase().next().unwrap_or(*c)))
 }
 
+// ── Bin methods ─────────────────────────────────────────────────────
+
+fn bin_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Bin(b) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BIN,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Int(BigInt::from(b.len())))
+}
+
+fn bin_get_item(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Bin(b) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::BIN,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    let Value::Int(idx) = &args[1] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::INT,
+            actual: args[1].type_id(),
+        }
+        .into());
+    };
+    let i = idx.to_usize().ok_or(ErrorKind::IntegerOverflow)?;
+    if i >= b.len() {
+        return Err(
+            ErrorKind::Other(format!("Bin index out of bounds: {i}, len {}", b.len())).into(),
+        );
+    }
+    Ok(Value::Byte(b[i]))
+}
+
+/// `std.mem.bin_from_raw(raw: RawPtr, len: Int) -> Bin`
+///
+/// Read `len` Byte values from the allocation at `raw` and intern as a Bin.
+/// Unsafe — accesses raw memory.
+fn bin_from_raw(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let id = ctx.expect_rawptr(args, 0)?;
+    let len = ctx.expect_int(args, 1)?;
+    let alloc = ctx
+        .allocations
+        .get(id as usize)
+        .and_then(|s| s.as_ref())
+        .ok_or(ErrorKind::UseAfterFree)?;
+    let mut bytes = Vec::with_capacity(len);
+    for i in 0..len {
+        match alloc.get(i) {
+            Some(Value::Byte(b)) => bytes.push(*b),
+            Some(other) => {
+                return Err(ErrorKind::TypeMismatch {
+                    expected: prim::BYTE,
+                    actual: other.type_id(),
+                }
+                .into())
+            }
+            None => {
+                return Err(
+                    ErrorKind::Other(format!("bin_from_raw: index {i} out of bounds")).into(),
+                )
+            }
+        }
+    }
+    Ok(ctx.intern_bin(bytes))
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Boot: build the module tree with all native functions
 // ═══════════════════════════════════════════════════════════════════
@@ -768,6 +852,7 @@ pub struct BootResult {
     pub panic_id: NativeFnId,
     pub byte_methods: PrimMethods,
     pub char_methods: PrimMethods,
+    pub bin_methods: PrimMethods,
 }
 
 /// Build the complete native function registry and module tree.
@@ -809,6 +894,7 @@ pub fn bootstrap() -> BootResult {
         ("write", native_mem_write),
         ("capacity", native_mem_capacity),
         ("len", native_mem_len),
+        ("bin_from_raw", bin_from_raw),
     ] {
         let id = reg.register(name, true, handler);
         reg.add_fn(mem, id);
@@ -855,6 +941,19 @@ pub fn bootstrap() -> BootResult {
         PrimMethods { methods }
     };
 
+    // Bin native methods.
+    let bin_methods = {
+        let mut methods = Vec::new();
+        for (name, handler) in [
+            ("len", bin_len as NativeHandler),
+            ("get_item", bin_get_item),
+        ] {
+            let id = reg.register(name, false, handler);
+            methods.push((name, id));
+        }
+        PrimMethods { methods }
+    };
+
     BootResult {
         registry: reg,
         std_module,
@@ -863,6 +962,7 @@ pub fn bootstrap() -> BootResult {
         panic_id,
         byte_methods,
         char_methods,
+        bin_methods,
     }
 }
 
