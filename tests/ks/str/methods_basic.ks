@@ -1,7 +1,6 @@
-# Str methods: len, char_len, contains, starts_with, ends_with
+# Str.len() returns codepoint count, not byte count
 let s = "hello"
 print(s.len())
-print(s.char_len())
 print(s.contains("ell"))
 print(s.contains("xyz"))
 print(s.starts_with("hel"))

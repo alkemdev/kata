@@ -1,4 +1,8 @@
-# Str len vs char_len on multi-byte UTF-8
+# Str.len() counts codepoints, not bytes
 let s = "\u2764\u2764"
-print(s.char_len())
 print(s.len())
+
+# substr is codepoint-indexed
+let mixed = "a\u2764b"
+print(mixed.len())
+print(mixed.substr(1, 1))

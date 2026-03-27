@@ -781,11 +781,6 @@ fn expect_str(args: &[Value], pos: usize) -> Result<&str, RuntimeError> {
 
 fn str_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Int(BigInt::from(s.len())))
-}
-
-fn str_char_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = expect_str(args, 0)?;
     Ok(Value::Int(BigInt::from(s.chars().count())))
 }
 
@@ -863,14 +858,9 @@ fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErro
         }
         None => return Err(ErrorKind::InternalError("missing argument").into()),
     };
-    // Byte-index substr. Clamp to string bounds.
-    let end = (start + len).min(s.len());
-    let start = start.min(s.len());
-    // Ensure we don't split a UTF-8 char.
-    if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
-        return Err(ErrorKind::Other("substr: index splits a UTF-8 character".to_string()).into());
-    }
-    Ok(Value::Str(s[start..end].to_string()))
+    // Codepoint-indexed substr.
+    let result: String = s.chars().skip(start).take(len).collect();
+    Ok(Value::Str(result))
 }
 
 fn str_split(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1164,7 +1154,6 @@ pub fn bootstrap() -> BootResult {
         let mut methods = Vec::new();
         for (name, handler) in [
             ("len", str_len as NativeHandler),
-            ("char_len", str_char_len),
             ("contains", str_contains),
             ("starts_with", str_starts_with),
             ("ends_with", str_ends_with),
