@@ -1,4 +1,6 @@
 # Pushing past the initial capacity of a literal
+import mem.{Ptr, Buf, heap}
+
 let a = [1, 2]
 a.push(3)
 a.push(4)

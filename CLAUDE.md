@@ -11,14 +11,14 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Byte strings**: `b"..."` (interpolation) and `b'...'` (literal) produce interned `Bin` values. `\xNN` produces a single raw byte. Display: `b'hello\xff\n'`
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
 - **Functions**: func, typed params, return type annotation, ret, closures
-- **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via std.ops
-- **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in std.core
+- **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via ops module
+- **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in core
 - **Methods**: impl blocks with `@` binding sigil (`impl Foo[@T]` generic, `impl Foo[Int]` specialized), method dispatch with base-type fallback, mutable self (copy-in copy-out), `self`/`Self` keywords, static methods (no self)
-- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe/ToBin in std.core
+- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe/ToBin in core
 - **Control flow**: if/elif/else (expression), while, for (iterator protocol), bail, cont, && || (short-circuit)
-- **Blocks**: with (scoped bindings), unsafe (gates std.mem intrinsics)
+- **Blocks**: with (scoped bindings), unsafe (gates mem intrinsics)
 - **Memory**: RawPtr (opaque prim), Ptr[T], Buf[T], Arr[T] — layered stack with Allocator interface. Bin interning (Arc<[u8]>, pointer-equality fast path)
-- **Modules**: import std.mem (scoped), import std.mem.{Ptr, Buf} (selective). Hierarchical std: std.core, std.mem, std.dsa
+- **Modules**: import mem (scoped), import mem.{Ptr, Buf} (selective). Top-level modules: core, mem, dsa. Prelude auto-loads core + Arr/ArrIter from dsa
 - **Lifecycle**: Drop protocol (auto-called on scope exit), Self type in impl blocks
 - **Error handling**: Res[T,E] + postfix `?` (unwrap or propagate) + postfix `!` (unwrap or panic), Res methods (unwrap, unwrap_or, is_val, is_err)
 - **Pattern matching**: match expression with variant/literal/wildcard/binding patterns
@@ -130,6 +130,6 @@ The interpreter is split across three files in `katars/src/ks/`:
 
 Key patterns to understand by reading the code:
 - **Postfix chains** — member access, indexing, and calls compose uniformly via `Expr::Attr`, `Expr::Item`, `Expr::Call`.
-- **Operator dispatch** — operators go through `std.ops` (a module in the native function tree). `&&`/`||` are control flow, not operators — they short-circuit.
+- **Operator dispatch** — operators go through `ops` (a native module). `&&`/`||` are control flow, not operators — they short-circuit.
 - **Truthiness** — nil, false, 0, 0.0, "" are falsy; everything else is truthy.
 - **Builtins** — native functions dispatched via `NativeFnRegistry` + handler function pointers. No string matching at call time.

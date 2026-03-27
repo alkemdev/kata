@@ -1,2 +1,2 @@
 # Calling intrinsics outside unsafe is an error
-std.mem.alloc(4)
+mem.alloc(4)

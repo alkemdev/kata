@@ -243,13 +243,13 @@ pub fn native_typeof(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
     Ok(Value::Type(args[0].type_id()))
 }
 
-// ── std.ops — binary operators ──────────────────────────────────────
+// ── ops — binary operators ──────────────────────────────────────────
 
 fn binop_native(_ctx: &mut NativeCtx, args: &[Value], op: BinOp) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         return Err(ErrorKind::ArityMismatch {
             target: ArityTarget::Builtin {
-                name: format!("std.ops.{}", op.method_name()),
+                name: format!("ops.{}", op.method_name()),
             },
             expected: 2,
             actual: args.len(),
@@ -290,7 +290,7 @@ pub fn native_ops_ge(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runti
     binop_native(ctx, args, BinOp::Ge)
 }
 
-// ── std.ops — unary operators ───────────────────────────────────────
+// ── ops — unary operators ───────────────────────────────────────────
 
 fn unaryop_native(
     _ctx: &mut NativeCtx,
@@ -300,7 +300,7 @@ fn unaryop_native(
     if args.len() != 1 {
         return Err(ErrorKind::ArityMismatch {
             target: ArityTarget::Builtin {
-                name: format!("std.ops.{}", op.method_name()),
+                name: format!("ops.{}", op.method_name()),
             },
             expected: 1,
             actual: args.len(),
@@ -321,7 +321,7 @@ pub fn native_ops_truth(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, R
     if args.len() != 1 {
         return Err(ErrorKind::ArityMismatch {
             target: ArityTarget::Builtin {
-                name: "std.ops.truth".into(),
+                name: "ops.truth".into(),
             },
             expected: 1,
             actual: args.len(),
@@ -331,7 +331,7 @@ pub fn native_ops_truth(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, R
     Ok(Value::Bool(truth(&args[0])))
 }
 
-// ── std.mem — allocation intrinsics ─────────────────────────────────
+// ── mem — allocation intrinsics ─────────────────────────────────────
 //
 // Minimal runtime escape hatch for memory management. All take/return
 // RawPtr (opaque handle). Only callable inside `unsafe` blocks.
@@ -932,7 +932,7 @@ fn bin_get_item(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeEr
     Ok(Value::Byte(b[i]))
 }
 
-/// `std.mem.bin_from_raw(raw: RawPtr, len: Int) -> Bin`
+/// `mem.bin_from_raw(raw: RawPtr, len: Int) -> Bin`
 ///
 /// Read `len` Byte values from the allocation at `raw` and intern as a Bin.
 /// Unsafe — accesses raw memory.
@@ -1053,7 +1053,8 @@ pub struct PrimMethods {
 /// Result of bootstrapping: the registry + IDs needed by the interpreter.
 pub struct BootResult {
     pub registry: NativeFnRegistry,
-    pub std_module: ModuleId,
+    pub ops_module: ModuleId,
+    pub mem_module: ModuleId,
     pub print_id: NativeFnId,
     pub typeof_id: NativeFnId,
     pub panic_id: NativeFnId,
@@ -1072,8 +1073,8 @@ pub fn bootstrap() -> BootResult {
     let typeof_id = reg.register("typeof", false, native_typeof);
     let panic_id = reg.register("panic", false, native_panic);
 
-    // std.ops module.
-    let ops = reg.create_module("ops");
+    // ops module — binary/unary operators.
+    let ops_module = reg.create_module("ops");
     for (name, handler) in [
         ("add", native_ops_add as NativeHandler),
         ("sub", native_ops_sub),
@@ -1090,11 +1091,11 @@ pub fn bootstrap() -> BootResult {
         ("truth", native_ops_truth),
     ] {
         let id = reg.register(name, false, handler);
-        reg.add_fn(ops, id);
+        reg.add_fn(ops_module, id);
     }
 
-    // std.mem module (all unsafe).
-    let mem = reg.create_module("mem");
+    // mem module — allocation intrinsics (all unsafe).
+    let mem_module = reg.create_module("mem");
     for (name, handler) in [
         ("alloc", native_mem_alloc as NativeHandler),
         ("free", native_mem_free),
@@ -1105,13 +1106,8 @@ pub fn bootstrap() -> BootResult {
         ("bin_from_raw", bin_from_raw),
     ] {
         let id = reg.register(name, true, handler);
-        reg.add_fn(mem, id);
+        reg.add_fn(mem_module, id);
     }
-
-    // std root module.
-    let std_module = reg.create_module("std");
-    reg.add_submodule(std_module, "ops", ops);
-    reg.add_submodule(std_module, "mem", mem);
 
     // Byte native methods.
     let byte_methods = {
@@ -1191,7 +1187,8 @@ pub fn bootstrap() -> BootResult {
 
     BootResult {
         registry: reg,
-        std_module,
+        ops_module,
+        mem_module,
         print_id,
         typeof_id,
         panic_id,

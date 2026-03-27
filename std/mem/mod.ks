@@ -1,17 +1,17 @@
-# std.mem — Memory management primitives
+# mem — Memory management primitives
 #
 # Layer stack:
 #   RawPtr       — prim Value, opaque handle to runtime storage
 #   Ptr[T]       — kind, typed view over RawPtr
 #   Buf[T]       — kind, allocated block (ptr + cap)
 #
-# Raw memory intrinsics (std.mem namespace, require unsafe):
-#   std.mem.alloc(cap)              -> RawPtr
-#   std.mem.free(raw: RawPtr)
-#   std.mem.read(raw: RawPtr, idx)  -> Value
-#   std.mem.write(raw: RawPtr, idx, val)
-#   std.mem.capacity(raw: RawPtr)   -> Int
-#   std.mem.len(raw: RawPtr)        -> Int
+# Raw memory intrinsics (mem namespace, require unsafe):
+#   mem.alloc(cap)              -> RawPtr
+#   mem.free(raw: RawPtr)
+#   mem.read(raw: RawPtr, idx)  -> Value
+#   mem.write(raw: RawPtr, idx, val)
+#   mem.capacity(raw: RawPtr)   -> Int
+#   mem.len(raw: RawPtr)        -> Int
 
 # ── Allocator interface ──────────────────────────────────────────
 
@@ -25,24 +25,24 @@ kind HeapAllocator {}
 
 impl HeapAllocator as Allocator {
     func make(self, cap: Int): RawPtr {
-        unsafe { ret std.mem.alloc(cap) }
+        unsafe { ret mem.alloc(cap) }
     }
 
     func grow(self, raw: RawPtr, old_cap: Int, new_cap: Int): RawPtr {
         unsafe {
-            let new_raw = std.mem.alloc(new_cap)
+            let new_raw = mem.alloc(new_cap)
             let i = 0
             while i < old_cap {
-                std.mem.write(new_raw, i, std.mem.read(raw, i))
+                mem.write(new_raw, i, mem.read(raw, i))
                 i = i + 1
             }
-            std.mem.free(raw)
+            mem.free(raw)
             ret new_raw
         }
     }
 
     func free(self, raw: RawPtr) {
-        unsafe { std.mem.free(raw) }
+        unsafe { mem.free(raw) }
     }
 }
 
@@ -54,11 +54,11 @@ kind Ptr[T] { raw: RawPtr }
 
 impl Ptr[@T] {
     func read(self, index: Int): T {
-        unsafe { ret std.mem.read(self.raw, index) }
+        unsafe { ret mem.read(self.raw, index) }
     }
 
     func write(self, index: Int, val: T) {
-        unsafe { std.mem.write(self.raw, index, val) }
+        unsafe { mem.write(self.raw, index, val) }
     }
 }
 

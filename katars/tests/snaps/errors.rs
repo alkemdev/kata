@@ -62,7 +62,7 @@ fn mixed_array() {
 
 #[test]
 fn unknown_module() {
-    insta::assert_snapshot!(helpers::run_error("import std.nonexistent"));
+    insta::assert_snapshot!(helpers::run_error("import nonexistent"));
 }
 
 #[test]
@@ -111,13 +111,13 @@ fn cont_outside_loop() {
 
 #[test]
 fn unsafe_required() {
-    insta::assert_snapshot!(helpers::run_error("std.mem.alloc(4)"));
+    insta::assert_snapshot!(helpers::run_error("mem.alloc(4)"));
 }
 
 #[test]
 fn use_after_free() {
     insta::assert_snapshot!(helpers::run_error(
-        "let raw = unsafe { std.mem.alloc(4) }\nunsafe { std.mem.free(raw) }\nunsafe { std.mem.read(raw, 0) }"
+        "let raw = unsafe { mem.alloc(4) }\nunsafe { mem.free(raw) }\nunsafe { mem.read(raw, 0) }"
     ));
 }
 

@@ -1,13 +1,13 @@
 ---
 source: katars/tests/snaps/errors.rs
-expression: "helpers::run_error(\"std.mem.alloc(4)\")"
+expression: "helpers::run_error(\"mem.alloc(4)\")"
 ---
 Error: intrinsic 'alloc' can only be called inside an unsafe block
    ╭─[<test>:1:1]
    │
- 1 │ std.mem.alloc(4)
-   │ ────────┬───────  
-   │         ╰───────── intrinsic 'alloc' can only be called inside an unsafe block
+ 1 │ mem.alloc(4)
+   │ ──────┬─────  
+   │       ╰─────── intrinsic 'alloc' can only be called inside an unsafe block
    │ 
    │ Help: wrap the call in an unsafe { ... } block
 ───╯

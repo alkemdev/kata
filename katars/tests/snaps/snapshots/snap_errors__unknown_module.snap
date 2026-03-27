@@ -1,11 +1,11 @@
 ---
 source: katars/tests/snaps/errors.rs
-expression: "helpers::run_error(\"import std.nonexistent\")"
+expression: "helpers::run_error(\"import nonexistent\")"
 ---
-Error: module 'std' has no export 'nonexistent'
-   ╭─[<test>:1:12]
+Error: unknown module 'nonexistent'
+   ╭─[<test>:1:8]
    │
- 1 │ import std.nonexistent
-   │            ─────┬─────  
-   │                 ╰─────── module 'std' has no export 'nonexistent'
+ 1 │ import nonexistent
+   │        ─────┬─────  
+   │             ╰─────── unknown module 'nonexistent'
 ───╯

@@ -1,4 +1,6 @@
 # Buf works with different element types
+import mem.{Ptr, Buf, heap}
+
 let ints = Buf[Int] { ptr: Ptr[Int] { raw: heap.make(2) }, cap: 2 }
 let strs = Buf[Str] { ptr: Ptr[Str] { raw: heap.make(2) }, cap: 2 }
 ints.write(0, 42)

@@ -1,11 +1,11 @@
 ---
 source: katars/tests/snaps/errors.rs
-expression: "helpers::run_error(\"let raw = unsafe { std.mem.alloc(4) }\\nunsafe { std.mem.free(raw) }\\nunsafe { std.mem.read(raw, 0) }\")"
+expression: "helpers::run_error(\"let raw = unsafe { mem.alloc(4) }\\nunsafe { mem.free(raw) }\\nunsafe { mem.read(raw, 0) }\")"
 ---
 Error: use of deallocated memory
    ╭─[<test>:3:10]
    │
- 3 │ unsafe { std.mem.read(raw, 0) }
-   │          ──────────┬─────────  
-   │                    ╰─────────── use of deallocated memory
+ 3 │ unsafe { mem.read(raw, 0) }
+   │          ────────┬───────  
+   │                  ╰───────── use of deallocated memory
 ───╯

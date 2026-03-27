@@ -1,4 +1,4 @@
-# std.core — fundamental types and protocols
+# core — fundamental types and protocols
 #
 # Types and protocols the language itself depends on.
 # The for-loop desugars to Iter/ToIter, scope exit dispatches Drop,

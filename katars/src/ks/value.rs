@@ -63,9 +63,9 @@ pub enum Value {
         receiver: Box<Value>,
         func: Box<Value>,
     },
-    /// A module in the module tree — e.g., `std`, `std.ops`.
+    /// A module in the module tree — e.g., `ops`, `mem`.
     Module(ModuleId),
-    /// A native (Rust-backed) function — e.g., `print`, `std.ops.add`.
+    /// A native (Rust-backed) function — e.g., `print`, `ops.add`.
     NativeFn(NativeFnId),
     /// An opaque handle to runtime-managed storage. Cannot be forged from KS.
     RawPtr(u32),

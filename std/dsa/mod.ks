@@ -1,9 +1,9 @@
-# std.dsa — Data structures and algorithms
+# dsa — Data structures and algorithms
 #
 # Arr[T] — safe, iterable, growable array
 
-import std.core.{Opt, GetItem, SetItem, ToBin}
-import std.mem.{Ptr, Buf, heap}
+import core.{Opt, GetItem, SetItem, ToBin}
+import mem.{Ptr, Buf, heap}
 
 # ── Arr[T] — safe, iterable array ────────────────────────────────
 #
@@ -94,7 +94,7 @@ impl Arr[@T] as ToIter[T] {
 impl Arr[Byte] as ToBin {
     func to_bin(self): Bin {
         unsafe {
-            ret std.mem.bin_from_raw(self.buf.ptr.raw, self.len)
+            ret mem.bin_from_raw(self.buf.ptr.raw, self.len)
         }
     }
 }

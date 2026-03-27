@@ -1,6 +1,5 @@
 # Identical Bin values are interned — equality is pointer-fast
-import std.dsa
-import std.mem
+import mem.{Ptr, Buf, heap}
 
 func make_bin(): Bin {
     let arr = Arr[Byte] { buf: Buf[Byte] { ptr: Ptr[Byte] { raw: heap.make(4) }, cap: 4 }, len: 0 }

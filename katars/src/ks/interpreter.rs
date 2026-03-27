@@ -119,7 +119,7 @@ pub struct Interpreter {
     in_unsafe: bool,
     /// Runtime heap: allocation table for Ptr handles.
     allocations: Vec<Option<Vec<Value>>>,
-    /// Embedded standard library modules: "std.mem" → source code.
+    /// Embedded standard library modules: "mem" → source code.
     std_modules: HashMap<String, &'static str>,
     /// Modules already loaded: key → ModuleId (prevent double-loading).
     loaded_modules: HashMap<String, native::ModuleId>,
@@ -140,9 +140,9 @@ impl Interpreter {
         let boot = native::bootstrap();
 
         let mut std_modules = HashMap::new();
-        std_modules.insert("std.core".into(), include_str!("../../../std/core/mod.ks"));
-        std_modules.insert("std.mem".into(), include_str!("../../../std/mem/mod.ks"));
-        std_modules.insert("std.dsa".into(), include_str!("../../../std/dsa/mod.ks"));
+        std_modules.insert("core".into(), include_str!("../../../std/core/mod.ks"));
+        std_modules.insert("mem".into(), include_str!("../../../std/mem/mod.ks"));
+        std_modules.insert("dsa".into(), include_str!("../../../std/dsa/mod.ks"));
 
         let mut interp = Self {
             types,
@@ -179,8 +179,9 @@ impl Interpreter {
         interp.set("typeof".into(), Value::NativeFn(boot.typeof_id));
         interp.set("panic".into(), Value::NativeFn(boot.panic_id));
 
-        // Module tree: `std.ops.*`, `std.mem.*`.
-        interp.set("std".into(), Value::Module(boot.std_module));
+        // Top-level native modules: `ops.*`, `mem.*`.
+        interp.set("ops".into(), Value::Module(boot.ops_module));
+        interp.set("mem".into(), Value::Module(boot.mem_module));
 
         // Native methods for prim types.
         for (name, fn_id) in &boot.byte_methods.methods {
@@ -696,7 +697,7 @@ impl Interpreter {
             .join(".");
 
         match names {
-            // Selective: `import std.mem.{Ptr, Buf}` — pull names into scope.
+            // Selective: `import mem.{Ptr, Buf}` — pull names into scope.
             Some(selected) => {
                 let module = self.native_registry.get_module(module_id);
                 let mut exports = Vec::new();
@@ -715,7 +716,7 @@ impl Interpreter {
                     self.set(name, val);
                 }
             }
-            // Scoped: `import std.mem` — add to the module tree in scope.
+            // Scoped: `import mem` — add to the module tree in scope.
             None => {
                 let path_strs: Vec<&str> = path.iter().map(|s| s.node.as_str()).collect();
                 self.ensure_module_path(&path_strs, module_id);
@@ -757,7 +758,7 @@ impl Interpreter {
                         format!("{existing}.{}", seg.node)
                     };
                     // A segment is "known" if it has embedded source, is loaded,
-                    // or exists as a module value in scope (e.g., native `std`).
+                    // or exists as a module value in scope (e.g., native `ops`).
                     let known = self.std_modules.contains_key(&partial)
                         || self.loaded_modules.contains_key(&partial)
                         || matches!(self.get(&partial), Some(Value::Module(_)));
@@ -775,7 +776,7 @@ impl Interpreter {
                     existing = partial;
                 }
                 // All segments known but no embedded source. Check if it's
-                // already a native module in scope (e.g., `import std`).
+                // already a native module in scope (e.g., `import ops`).
                 if let Some(Value::Module(mid)) = self.get(&module_key).cloned() {
                     return Ok(mid);
                 }
@@ -808,7 +809,7 @@ impl Interpreter {
             })?;
 
         // Collect the scope into a module. If a native module already exists
-        // for this path (e.g., std.mem has native intrinsics), merge KS exports
+        // for this path (e.g., mem has native intrinsics), merge KS exports
         // into it rather than replacing it.
         let frame = self.frames.pop().unwrap();
         let module_id = self
@@ -823,7 +824,7 @@ impl Interpreter {
         Ok(module_id)
     }
 
-    /// Walk a dotted module key (e.g., "std.mem") through the existing module
+    /// Walk a dotted module key (e.g., "mem") through the existing module
     /// tree to find a pre-existing native module. Returns None if any segment
     /// is missing.
     fn find_existing_module(&self, key: &str) -> Option<native::ModuleId> {
@@ -839,7 +840,7 @@ impl Interpreter {
     }
 
     /// Ensure a dotted path exists in scope as nested modules.
-    /// Reuses existing modules (including the native `std` module)
+    /// Reuses existing modules (including native `ops` and `mem`)
     /// instead of creating new ones that would shadow them.
     fn ensure_module_path(&mut self, path: &[&str], leaf_id: native::ModuleId) {
         if path.is_empty() {
@@ -925,7 +926,7 @@ impl Interpreter {
             }
         }
 
-        // Allocate: std.mem.alloc(len) → RawPtr
+        // Allocate: mem.alloc(len) → RawPtr
         let cap = vals.len();
         let alloc_id = self.allocations.len() as u32;
         self.allocations.push(Some(Vec::with_capacity(cap)));
@@ -943,15 +944,15 @@ impl Interpreter {
         let ptr_base = self
             .types
             .lookup("Ptr")
-            .ok_or_else(|| ErrorKind::InternalError("Ptr type not found — is std.mem loaded?"))?;
+            .ok_or_else(|| ErrorKind::InternalError("Ptr type not found — is mem loaded?"))?;
         let buf_base = self
             .types
             .lookup("Buf")
-            .ok_or_else(|| ErrorKind::InternalError("Buf type not found — is std.mem loaded?"))?;
+            .ok_or_else(|| ErrorKind::InternalError("Buf type not found — is mem loaded?"))?;
         let arr_base = self
             .types
             .lookup("Arr")
-            .ok_or_else(|| ErrorKind::InternalError("Arr type not found — is std.dsa loaded?"))?;
+            .ok_or_else(|| ErrorKind::InternalError("Arr type not found — is dsa loaded?"))?;
 
         let ptr_tid = self.types.instantiate_struct(ptr_base, vec![elem_tid])?;
         let buf_tid = self.types.instantiate_struct(buf_base, vec![elem_tid])?;

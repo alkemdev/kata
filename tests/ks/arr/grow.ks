@@ -1,4 +1,6 @@
 # Arr[T]: auto-grows past initial capacity
+import mem.{Ptr, Buf, heap}
+
 let a = Arr[Str] { buf: Buf[Str] { ptr: Ptr[Str] { raw: heap.make(2) }, cap: 2 }, len: 0 }
 a.push("a")
 a.push("b")

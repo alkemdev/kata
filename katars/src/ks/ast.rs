@@ -58,7 +58,7 @@ pub enum Stmt {
         target: AssignTarget,
         value: Spanned<Expr>,
     },
-    /// `import std.mem` (scoped) or `import std.mem.{Ptr, Buf}` (selective).
+    /// `import mem` (scoped) or `import mem.{Ptr, Buf}` (selective).
     Import {
         path: Vec<Spanned<String>>,
         names: Option<Vec<Spanned<String>>>,

@@ -1,6 +1,5 @@
 # Bin supports indexing via get_item, returns Byte
-import std.dsa
-import std.mem
+import mem.{Ptr, Buf, heap}
 
 let arr = Arr[Byte] { buf: Buf[Byte] { ptr: Ptr[Byte] { raw: heap.make(4) }, cap: 4 }, len: 0 }
 arr.push(Byte(0x01))

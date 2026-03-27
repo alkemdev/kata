@@ -1,4 +1,6 @@
 # cont skips elements
+import mem.{Ptr, Buf, heap}
+
 let a = Arr[Int] { buf: Buf[Int] { ptr: Ptr[Int] { raw: heap.make(8) }, cap: 8 }, len: 0 }
 a.push(1)
 a.push(2)

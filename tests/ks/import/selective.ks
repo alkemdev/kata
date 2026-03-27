@@ -1,2 +1,2 @@
-import std.core.{Opt}
+import core.{Opt}
 print(Opt[Int].Val(42))
