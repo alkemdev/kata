@@ -1,4 +1,5 @@
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -91,6 +92,8 @@ pub enum Value {
     /// Fixed-width F64 — distinct from Float (which will become arbitrary-precision).
     #[serde(rename = "F64Fixed")]
     F64(f64),
+    /// A tuple value: `(1, "hello", true)`. TypeId is the instantiated `Tup[Int, Str, Bool]`.
+    Tup(TypeId, Vec<Value>),
     /// A value viewed as an interface type. Method dispatch goes to the inner
     /// concrete type. Created by `expr as InterfaceType`.
     AsType {
@@ -213,6 +216,7 @@ impl Value {
             Value::RawPtr(_) => prim::RAW_PTR,
             Value::Byte(_) => prim::BYTE,
             Value::Char(_) => prim::CHAR,
+            Value::Tup(type_id, _) => *type_id,
             Value::AsType { interface_id, .. } => *interface_id,
             other => super::numeric::type_id_of(other),
         }
@@ -299,6 +303,10 @@ impl Value {
             Value::RawPtr(id) => format!("<rawptr:{id}>"),
             Value::Byte(b) => format!("0x{b:02x}"),
             Value::Char(c) => c.to_string(),
+            Value::Tup(_, elements) => {
+                let inner: Vec<String> = elements.iter().map(|v| v.display(types)).collect();
+                format!("({})", inner.join(", "))
+            }
             Value::AsType {
                 inner,
                 interface_id,
@@ -321,7 +329,7 @@ impl PartialEq for Value {
             (Value::Nil, Value::Nil) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bin(a), Value::Bin(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
@@ -355,9 +363,86 @@ impl PartialEq for Value {
             (Value::RawPtr(a), Value::RawPtr(b)) => a == b,
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::Tup(t1, e1), Value::Tup(t2, e2)) => t1 == t2 && e1 == e2,
             (Value::AsType { inner: a, .. }, Value::AsType { inner: b, .. }) => a == b,
             (l, r) => super::numeric::eq_numeric(l, r),
         }
+    }
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Value::Nil => {}
+            Value::Bool(b) => b.hash(state),
+            Value::Int(n) => n.to_signed_bytes_le().hash(state),
+            Value::Float(f) => f.to_bits().hash(state),
+            Value::Str(s) => s.hash(state),
+            Value::Bin(b) => b.as_ref().hash(state),
+            Value::Byte(b) => b.hash(state),
+            Value::Char(c) => c.hash(state),
+            Value::Type(tid) => tid.hash(state),
+            Value::RawPtr(id) => id.hash(state),
+            Value::Enum {
+                type_id,
+                variant_idx,
+                fields,
+            } => {
+                type_id.hash(state);
+                variant_idx.hash(state);
+                for f in fields {
+                    f.hash(state);
+                }
+            }
+            Value::Struct { type_id, fields } => {
+                type_id.hash(state);
+                for (k, v) in fields {
+                    k.hash(state);
+                    v.hash(state);
+                }
+            }
+            Value::Tup(type_id, elements) => {
+                type_id.hash(state);
+                for e in elements {
+                    e.hash(state);
+                }
+            }
+            // Unhashable types — delegate to numeric or panic.
+            other => {
+                if !super::numeric::hash_numeric(other, state) {
+                    panic!("unhashable type: {:?}", std::mem::discriminant(other));
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if this value can be used as a hash map key.
+pub fn is_hashable(v: &Value) -> bool {
+    match v {
+        Value::Nil
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Str(_)
+        | Value::Bin(_)
+        | Value::Byte(_)
+        | Value::Char(_)
+        | Value::Type(_)
+        | Value::RawPtr(_)
+        | Value::Enum { .. }
+        | Value::Struct { .. }
+        | Value::Tup(_, _) => true,
+        Value::Func { .. }
+        | Value::BoundMethod { .. }
+        | Value::VariantConstructor { .. }
+        | Value::Module(_)
+        | Value::NativeFn(_)
+        | Value::AsType { .. } => false,
+        other => super::numeric::is_numeric(other),
     }
 }
 
@@ -408,6 +493,10 @@ impl fmt::Display for Value {
             Value::RawPtr(id) => write!(f, "<rawptr:{id}>"),
             Value::Byte(b) => write!(f, "0x{b:02x}"),
             Value::Char(c) => write!(f, "{c}"),
+            Value::Tup(_, elements) => {
+                let parts: Vec<String> = elements.iter().map(|v| format!("{v}")).collect();
+                write!(f, "({})", parts.join(", "))
+            }
             Value::AsType {
                 inner,
                 interface_id,

@@ -1,0 +1,3 @@
+Tup[Int, Str]
+Tup[Bool]
+Tup[]

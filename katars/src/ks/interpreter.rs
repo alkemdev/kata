@@ -173,6 +173,7 @@ impl Interpreter {
         interp.set("RawPtr".into(), Value::Type(prim::RAW_PTR));
         interp.set("Byte".into(), Value::Type(prim::BYTE));
         interp.set("Char".into(), Value::Type(prim::CHAR));
+        interp.set("Tup".into(), Value::Type(prim::TUPLE));
 
         // Top-level native functions.
         interp.set("print".into(), Value::NativeFn(boot.print_id));
@@ -184,6 +185,27 @@ impl Interpreter {
         interp.set("mem".into(), Value::Module(boot.mem_module));
 
         // Native methods for prim types.
+        for (name, fn_id) in &boot.int_methods.methods {
+            interp
+                .methods
+                .entry(prim::INT)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
+        for (name, fn_id) in &boot.float_methods.methods {
+            interp
+                .methods
+                .entry(prim::FLOAT)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
+        for (name, fn_id) in &boot.bool_methods.methods {
+            interp
+                .methods
+                .entry(prim::BOOL)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
         for (name, fn_id) in &boot.byte_methods.methods {
             interp
                 .methods
@@ -209,6 +231,14 @@ impl Interpreter {
             interp
                 .methods
                 .entry(prim::BIN)
+                .or_insert_with(IndexMap::new)
+                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        }
+
+        for (name, fn_id) in &boot.tup_methods.methods {
+            interp
+                .methods
+                .entry(prim::TUPLE)
                 .or_insert_with(IndexMap::new)
                 .insert(name.to_string(), Value::NativeFn(*fn_id));
         }
@@ -470,25 +500,9 @@ impl Interpreter {
                 for a in args {
                     type_args.push(self.resolve_type_expr(&a.node)?);
                 }
-                match self.types.get(base_id) {
-                    TypeDef::Enum { .. } => self
-                        .types
-                        .instantiate_enum(base_id, type_args)
-                        .map_err(Into::into),
-                    TypeDef::Struct { .. } => self
-                        .types
-                        .instantiate_struct(base_id, type_args)
-                        .map_err(Into::into),
-                    TypeDef::Interface { .. } => self
-                        .types
-                        .instantiate_interface(base_id, type_args)
-                        .map_err(Into::into),
-                    _ => Err(ErrorKind::WrongTypeKind {
-                        type_id: base_id,
-                        expected: TypeKindExpectation::GenericType,
-                    }
-                    .into()),
-                }
+                self.types
+                    .instantiate_by_kind(base_id, type_args)
+                    .map_err(Into::into)
             }
             _ => Err(ErrorKind::Unsupported("unsupported type annotation expression").into()),
         }
@@ -1246,6 +1260,16 @@ impl Interpreter {
             Expr::ArrLit { elements } => self
                 .eval_arr_lit(elements, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
+
+            Expr::TupLit { elements } => {
+                let mut vals = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    vals.push(eval!(self, elem, out));
+                }
+                let type_args: Vec<TypeId> = vals.iter().map(|v| v.type_id()).collect();
+                let tup_tid = self.types.instantiate_tup(type_args);
+                Ok(Flow::Next(Value::Tup(tup_tid, vals)))
+            }
 
             Expr::Match {
                 keyword,
@@ -2272,6 +2296,30 @@ impl Interpreter {
                 }
                 .into())
             }
+            Value::Tup(type_id, elements) => {
+                // Tuple field access: ._0, ._1, ._2, etc.
+                if let Some(idx_str) = name.strip_prefix('_') {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx < elements.len() {
+                            return Ok(Flow::Next(elements[idx].clone()));
+                        }
+                        return Err(ErrorKind::PrimOutOfRange {
+                            type_name: "Tup",
+                            detail: format!("index {idx}, length {}", elements.len()),
+                        }
+                        .into());
+                    }
+                }
+                if let Ok(bound) = self.resolve_method(object, name) {
+                    return Ok(Flow::Next(bound));
+                }
+                Err(ErrorKind::NoAttr {
+                    type_id: *type_id,
+                    attr: name.to_string(),
+                    access: AccessKind::FieldOrMethod,
+                }
+                .into())
+            }
             other => {
                 if let Ok(bound) = self.resolve_method(other, name) {
                     return Ok(Flow::Next(bound));
@@ -2305,27 +2353,10 @@ impl Interpreter {
                         })),
                     })
                     .collect::<Result<_, _>>()?;
-                let instance_id = match self.types.get(*base_id) {
-                    TypeDef::Enum { .. } => self
-                        .types
-                        .instantiate_enum(*base_id, type_args)
-                        .map_err(RuntimeError::from)?,
-                    TypeDef::Struct { .. } => self
-                        .types
-                        .instantiate_struct(*base_id, type_args)
-                        .map_err(RuntimeError::from)?,
-                    TypeDef::Interface { .. } => self
-                        .types
-                        .instantiate_interface(*base_id, type_args)
-                        .map_err(RuntimeError::from)?,
-                    _ => {
-                        return Err(ErrorKind::WrongTypeKind {
-                            type_id: *base_id,
-                            expected: TypeKindExpectation::GenericType,
-                        }
-                        .into())
-                    }
-                };
+                let instance_id = self
+                    .types
+                    .instantiate_by_kind(*base_id, type_args)
+                    .map_err(RuntimeError::from)?;
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
             other => match self.call_method(other, METHOD_GET_ITEM, args, out) {

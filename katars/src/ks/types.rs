@@ -28,6 +28,7 @@ impl TypeId {
             prim::RAW_PTR => "RawPtr",
             prim::BYTE => "Byte",
             prim::CHAR => "Char",
+            prim::TUPLE => "Tup",
             _ => super::numeric::display_static(self).unwrap_or("<type>"),
         }
     }
@@ -83,6 +84,10 @@ pub enum TypeDef {
         base: TypeId,
         type_args: Vec<TypeId>,
     },
+
+    /// A concrete tuple type: `Tup[Int, Str, Bool]`.
+    /// Variadic — any number of element types.
+    TupleInstance { type_args: Vec<TypeId> },
 }
 
 impl TypeDef {
@@ -93,7 +98,8 @@ impl TypeDef {
             TypeDef::Struct { name, .. } => name,
             TypeDef::EnumInstance { .. }
             | TypeDef::StructInstance { .. }
-            | TypeDef::InterfaceInstance { .. } => "", // use display_name instead
+            | TypeDef::InterfaceInstance { .. }
+            | TypeDef::TupleInstance { .. } => "", // use display_name instead
             TypeDef::Interface { name, .. } => name,
         }
     }
@@ -176,6 +182,7 @@ pub mod prim {
     pub const F16: TypeId = TypeId(23);
     pub const F32: TypeId = TypeId(24);
     pub const F64: TypeId = TypeId(25);
+    pub const TUPLE: TypeId = TypeId(26);
 }
 
 impl TypeRegistry {
@@ -202,6 +209,9 @@ impl TypeRegistry {
 
         // Fixed-width numeric types.
         super::numeric::register_all(&mut reg);
+
+        // Tuple base type (variadic — instantiated as Tup[Int, Str], etc.)
+        reg.register_prim("Tup");
 
         reg
     }
@@ -247,15 +257,7 @@ impl TypeRegistry {
                     .map(|a| self.resolve_texpr(a, type_args))
                     .collect::<Result<_, _>>()?;
                 // Instantiate based on what the base type is.
-                match self.defs[base.0 as usize].clone() {
-                    TypeDef::Enum { .. } => self.instantiate_enum(base, resolved_args),
-                    TypeDef::Struct { .. } => self.instantiate_struct(base, resolved_args),
-                    TypeDef::Interface { .. } => self.instantiate_interface(base, resolved_args),
-                    _ => Err(ErrorKind::WrongTypeKind {
-                        type_id: base,
-                        expected: TypeKindExpectation::GenericType,
-                    }),
-                }
+                self.instantiate_by_kind(base, resolved_args)
             }
         }
     }
@@ -446,6 +448,10 @@ impl TypeRegistry {
                     format!("{base_name}[{}]", args.join(", "))
                 }
             }
+            TypeDef::TupleInstance { type_args } => {
+                let args: Vec<String> = type_args.iter().map(|&t| self.display_name(t)).collect();
+                format!("Tup[{}]", args.join(", "))
+            }
         }
     }
 
@@ -547,6 +553,20 @@ impl TypeRegistry {
         Ok(inst_id)
     }
 
+    /// Instantiate a tuple type: `Tup[Int, Str, Bool]`.
+    /// Variadic — accepts any number of type arguments.
+    pub fn instantiate_tup(&mut self, type_args: Vec<TypeId>) -> TypeId {
+        let key = (prim::TUPLE, type_args.clone());
+        if let Some(&id) = self.instances.get(&key) {
+            return id;
+        }
+        let id = self.push_def(TypeDef::TupleInstance {
+            type_args: type_args.clone(),
+        });
+        self.instances.insert(key, id);
+        id
+    }
+
     /// Register an interface type definition.
     pub fn register_interface(&mut self, name: String, type_params: Vec<String>) -> TypeId {
         let id = self.push_def(TypeDef::Interface {
@@ -603,7 +623,8 @@ impl TypeRegistry {
         match self.get(id) {
             TypeDef::EnumInstance { type_args, .. }
             | TypeDef::StructInstance { type_args, .. }
-            | TypeDef::InterfaceInstance { type_args, .. } => type_args.clone(),
+            | TypeDef::InterfaceInstance { type_args, .. }
+            | TypeDef::TupleInstance { type_args, .. } => type_args.clone(),
             _ => vec![],
         }
     }
@@ -614,6 +635,7 @@ impl TypeRegistry {
             TypeDef::EnumInstance { base, .. }
             | TypeDef::StructInstance { base, .. }
             | TypeDef::InterfaceInstance { base, .. } => *base,
+            TypeDef::TupleInstance { .. } => prim::TUPLE,
             _ => id,
         }
     }
@@ -629,6 +651,7 @@ impl TypeRegistry {
             TypeDef::Enum { .. } => self.instantiate_enum(base_id, type_args),
             TypeDef::Struct { .. } => self.instantiate_struct(base_id, type_args),
             TypeDef::Interface { .. } => self.instantiate_interface(base_id, type_args),
+            TypeDef::Prim { .. } if base_id == prim::TUPLE => Ok(self.instantiate_tup(type_args)),
             _ => Err(ErrorKind::WrongTypeKind {
                 type_id: base_id,
                 expected: TypeKindExpectation::GenericType,

@@ -8,6 +8,8 @@
 //!   - `signed`   — checked integer arithmetic, bitwise ops, checked negation
 //!   - `float`    — IEEE float arithmetic, no bitwise ops, negation
 
+use std::hash::Hash;
+
 use half::f16;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -42,6 +44,7 @@ trait NumericFloat:
     fn is_zero(&self) -> bool;
     fn from_f64(f: f64) -> Self;
     fn to_f64(self) -> f64;
+    fn to_bits_u64(self) -> u64;
 }
 
 impl NumericFloat for f16 {
@@ -53,6 +56,9 @@ impl NumericFloat for f16 {
     }
     fn to_f64(self) -> f64 {
         f64::from(self)
+    }
+    fn to_bits_u64(self) -> u64 {
+        self.to_bits() as u64
     }
 }
 
@@ -66,6 +72,9 @@ impl NumericFloat for f32 {
     fn to_f64(self) -> f64 {
         self as f64
     }
+    fn to_bits_u64(self) -> u64 {
+        self.to_bits() as u64
+    }
 }
 
 impl NumericFloat for f64 {
@@ -77,6 +86,9 @@ impl NumericFloat for f64 {
     }
     fn to_f64(self) -> f64 {
         self
+    }
+    fn to_bits_u64(self) -> u64 {
+        self.to_bits()
     }
 }
 
@@ -168,6 +180,15 @@ macro_rules! numeric_cmp {
     };
     ($int_kind:ident, $a:expr, $b:expr) => {
         Some($a.cmp($b))
+    };
+}
+
+macro_rules! numeric_hash_inner {
+    (float, $n:expr, $state:expr) => {
+        NumericFloat::to_bits_u64(*$n).hash($state)
+    };
+    ($int_kind:ident, $n:expr, $state:expr) => {
+        $n.hash($state)
     };
 }
 
@@ -295,6 +316,23 @@ macro_rules! define_numeric_prims {
                 $( prim::$C => Some(construct_dispatch!($kind, $name, $V, $T, arg)), )*
                 _ => None,
             }
+        }
+
+        // ── Hashing ───────────────────────────────────────────────
+
+        /// Hash a numeric value. Returns true if handled, false if not numeric.
+        pub fn hash_numeric(v: &Value, state: &mut impl std::hash::Hasher) -> bool {
+            match v {
+                $(
+                    Value::$V(n) => { numeric_hash_inner!($kind, n, state); true }
+                )*
+                _ => false,
+            }
+        }
+
+        /// Returns true if the value is a numeric type.
+        pub fn is_numeric(v: &Value) -> bool {
+            matches!(v, $( Value::$V(_) )|*)
         }
 
         // ── Native methods ────────────────────────────────────────
@@ -430,6 +468,7 @@ macro_rules! register_int_methods {
                 };
                 Ok(Value::Int(BigInt::from(*n)))
             })));
+        m.push(("hash", $reg.register("hash", false, native_hash)));
         method_binop!($reg, m, $prim, $V, "band", &);
         method_binop!($reg, m, $prim, $V, "ior",  |);
         method_binop!($reg, m, $prim, $V, "xor",  ^);
@@ -477,8 +516,18 @@ macro_rules! register_float_methods {
                 },
             ),
         ));
+        m.push(("hash", $reg.register("hash", false, native_hash)));
         $result.push(($prim, PrimMethods { methods: m }));
     }};
+}
+
+/// Native `.hash()` method — works for any hashable Value.
+fn native_hash(_: &mut NativeCtx, args: &[Value]) -> Result<Value, super::error::RuntimeError> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+    let mut hasher = DefaultHasher::new();
+    args[0].hash(&mut hasher);
+    Ok(Value::U64(hasher.finish()))
 }
 
 // ═══════════════════════════════════════════════════════════════════

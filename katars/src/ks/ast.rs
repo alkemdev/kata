@@ -293,6 +293,8 @@ pub enum Expr {
     },
     /// `[expr, expr, ...]` — array literal.
     ArrLit { elements: Vec<Spanned<Expr>> },
+    /// `(expr, expr, ...)` — tuple literal.
+    TupLit { elements: Vec<Spanned<Expr>> },
     /// Attribute access: `a.b`
     Attr {
         object: Box<Spanned<Expr>>,

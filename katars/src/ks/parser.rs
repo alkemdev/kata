@@ -54,7 +54,8 @@ use super::lexer::{BinPart, StringPart, Token};
 //   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}' | '?' | '!')*
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
-//   atom       = ident | str | num | 'true' | 'false' | 'nil' | '(' expr ')' | arr_lit
+//   atom       = ident | str | num | 'true' | 'false' | 'nil' | tup_or_group | arr_lit
+//   tup_or_group = '(' ')' | '(' expr ')' | '(' expr ',' ')' | '(' expr (',' expr)+ ','? ')'
 //   arr_lit    = '[' (expr (',' expr)* ','?)? ']'
 //   str        = '"' (text | escape | '{' expr '}')* '"'
 //   escape     = '\n' | '\t' | '\\' | '\"' | '\{' | '\}'
@@ -208,9 +209,26 @@ where
                 .or(just(Token::SelfValue).to(Expr::Name("self".to_string())))
                 .or(just(Token::SelfType).to(Expr::Name("Self".to_string())));
 
-            let paren = expr
-                .clone()
-                .delimited_by(just(Token::LParen), just(Token::RParen));
+            // Tuple literal or grouping: () | (expr,) | (expr, expr, ...) | (expr)
+            // () = empty tuple, (expr) = grouping, (expr,) = 1-tuple, (a, b) = 2-tuple
+            let paren = just(Token::LParen)
+                .then(
+                    expr.clone()
+                        .separated_by(just(Token::Comma))
+                        .collect::<Vec<_>>(),
+                )
+                .then(just(Token::Comma).or_not())
+                .then_ignore(just(Token::RParen))
+                .map_with(|((_, elements), trailing_comma), ex| {
+                    let s = span(&ex.span());
+                    if elements.len() == 1 && trailing_comma.is_none() {
+                        // (expr) — bare grouping, not a tuple
+                        elements.into_iter().next().unwrap()
+                    } else {
+                        // (), (expr,), (a, b), (a, b, c) — tuple literal
+                        Spanned::new(Expr::TupLit { elements }, s)
+                    }
+                });
 
             // arr_lit = '[' (expr (',' expr)* ','?)? ']'
             let arr_lit = expr
@@ -1067,13 +1085,10 @@ where
 /// Returns `Err(())` if any errors occurred.
 /// Parse without printing errors (for tab completion, etc.).
 pub fn parse_silent(source: &str) -> Result<Program, ()> {
-    let token_iter =
-        Token::lexer(source)
-            .spanned()
-            .map(|(result, span): (_, std::ops::Range<usize>)| {
-                let tok = result.unwrap_or(Token::Error);
-                (tok, SimpleSpan::from(span))
-            });
+    let spanned_tokens = super::lexer::lex(source);
+    let token_iter = spanned_tokens
+        .into_iter()
+        .map(|st| (st.token, SimpleSpan::from(st.start..st.end)));
     let token_stream = Stream::from_iter(token_iter).map(
         SimpleSpan::from(source.len()..source.len()),
         |(t, s): (_, _)| (t, s),
@@ -1089,15 +1104,11 @@ pub fn parse_silent(source: &str) -> Result<Program, ()> {
 pub fn parse(source: &str, filename: &str) -> Result<Program, ()> {
     info!(filename, bytes = source.len(), "parsing");
 
-    // Lex: logos iterator → (Token, SimpleSpan) stream.
-    let token_iter =
-        Token::lexer(source)
-            .spanned()
-            .map(|(result, span): (_, std::ops::Range<usize>)| {
-                let tok = result.unwrap_or(Token::Error);
-                (tok, SimpleSpan::from(span))
-            });
-
+    // Lex via the full pipeline (includes post-lex rewrites like float splitting).
+    let spanned_tokens = super::lexer::lex(source);
+    let token_iter = spanned_tokens
+        .into_iter()
+        .map(|st| (st.token, SimpleSpan::from(st.start..st.end)));
     let token_stream = Stream::from_iter(token_iter).map(
         SimpleSpan::from(source.len()..source.len()),
         |(t, s): (_, _)| (t, s),

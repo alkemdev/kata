@@ -243,6 +243,30 @@ pub fn native_typeof(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
     Ok(Value::Type(args[0].type_id()))
 }
 
+// ── hash — generic value hashing ────────────────────────────────────
+
+/// Native `.hash()` method — works for any hashable Value, returns U64.
+fn native_value_hash(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    args[0].hash(&mut hasher);
+    Ok(Value::U64(hasher.finish()))
+}
+
+// ── tup — tuple methods ─────────────────────────────────────────────
+
+fn native_tup_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    let Value::Tup(_, elements) = &args[0] else {
+        return Err(ErrorKind::TypeMismatch {
+            expected: prim::TUPLE,
+            actual: args[0].type_id(),
+        }
+        .into());
+    };
+    Ok(Value::Int(num_bigint::BigInt::from(elements.len())))
+}
+
 // ── ops — binary operators ──────────────────────────────────────────
 
 fn binop_native(_ctx: &mut NativeCtx, args: &[Value], op: BinOp) -> Result<Value, RuntimeError> {
@@ -415,6 +439,7 @@ pub fn truth(v: &Value) -> bool {
         Value::Int(n) => !n.is_zero(),
         Value::Float(f) => *f != 0.0,
         Value::Str(s) => !s.is_empty(),
+        Value::Tup(_, elements) => !elements.is_empty(),
         _ => super::numeric::try_truth(v).unwrap_or(true),
     }
 }
@@ -1064,10 +1089,14 @@ pub struct BootResult {
     pub print_id: NativeFnId,
     pub typeof_id: NativeFnId,
     pub panic_id: NativeFnId,
+    pub int_methods: PrimMethods,
+    pub float_methods: PrimMethods,
+    pub bool_methods: PrimMethods,
     pub byte_methods: PrimMethods,
     pub char_methods: PrimMethods,
     pub str_methods: PrimMethods,
     pub bin_methods: PrimMethods,
+    pub tup_methods: PrimMethods,
     pub numeric_methods: Vec<(super::types::TypeId, PrimMethods)>,
 }
 
@@ -1116,6 +1145,30 @@ pub fn bootstrap() -> BootResult {
         reg.add_fn(mem_module, id);
     }
 
+    // Int native methods.
+    let int_methods = {
+        let mut methods = Vec::new();
+        let id = reg.register("hash", false, native_value_hash);
+        methods.push(("hash", id));
+        PrimMethods { methods }
+    };
+
+    // Float native methods.
+    let float_methods = {
+        let mut methods = Vec::new();
+        let id = reg.register("hash", false, native_value_hash);
+        methods.push(("hash", id));
+        PrimMethods { methods }
+    };
+
+    // Bool native methods.
+    let bool_methods = {
+        let mut methods = Vec::new();
+        let id = reg.register("hash", false, native_value_hash);
+        methods.push(("hash", id));
+        PrimMethods { methods }
+    };
+
     // Byte native methods.
     let byte_methods = {
         let mut methods = Vec::new();
@@ -1127,6 +1180,7 @@ pub fn bootstrap() -> BootResult {
             ("inv", byte_not),
             ("shl", byte_shl),
             ("shr", byte_shr),
+            ("hash", native_value_hash),
         ] {
             let id = reg.register(name, false, handler);
             methods.push((name, id));
@@ -1145,6 +1199,7 @@ pub fn bootstrap() -> BootResult {
             ("is_lower", char_is_lower),
             ("to_upper", char_to_upper),
             ("to_lower", char_to_lower),
+            ("hash", native_value_hash),
         ] {
             let id = reg.register(name, false, handler);
             methods.push((name, id));
@@ -1171,6 +1226,7 @@ pub fn bootstrap() -> BootResult {
             ("to_int", str_to_int),
             ("to_float", str_to_float),
             ("to_bin", str_to_bin),
+            ("hash", native_value_hash),
         ] {
             let id = reg.register(name, false, handler);
             methods.push((name, id));
@@ -1185,10 +1241,21 @@ pub fn bootstrap() -> BootResult {
             ("len", bin_len as NativeHandler),
             ("get_item", bin_get_item),
             ("from_base64", bin_from_base64),
+            ("hash", native_value_hash),
         ] {
             let id = reg.register(name, false, handler);
             methods.push((name, id));
         }
+        PrimMethods { methods }
+    };
+
+    // Tuple native methods.
+    let tup_methods = {
+        let mut methods = Vec::new();
+        let id = reg.register("hash", false, native_value_hash);
+        methods.push(("hash", id));
+        let id = reg.register("len", false, native_tup_len);
+        methods.push(("len", id));
         PrimMethods { methods }
     };
 
@@ -1202,10 +1269,14 @@ pub fn bootstrap() -> BootResult {
         print_id,
         typeof_id,
         panic_id,
+        int_methods,
+        float_methods,
+        bool_methods,
         byte_methods,
         char_methods,
         str_methods,
         bin_methods,
+        tup_methods,
         numeric_methods,
     }
 }

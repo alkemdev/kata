@@ -108,3 +108,9 @@ type SetItem[K, V] {
 type ToBin {
     func to_bin(self): Bin
 }
+
+# ── Hashing protocol ───────────────────────────────────────────
+
+type Hash {
+    func hash(self): U64
+}

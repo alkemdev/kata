@@ -1,0 +1,10 @@
+# .hash() returns U64 for all prim types
+print(typeof(42.hash()))
+print(typeof(3.14.hash()))
+print(typeof(true.hash()))
+print(typeof("hello".hash()))
+print(typeof(Byte(0xff).hash()))
+print(typeof('a'.hash()))
+print(typeof(U32(100).hash()))
+print(typeof(I64(-5).hash()))
+print(typeof(F32(1.5).hash()))

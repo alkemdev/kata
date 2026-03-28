@@ -3,7 +3,7 @@
 
 # Core — fundamental types and protocols (always in scope).
 import core
-import core.{Opt, Res, Iter, ToIter, Drop, Copy, Dupe, GetItem, SetItem, ToBin}
+import core.{Opt, Res, Iter, ToIter, Drop, Copy, Dupe, GetItem, SetItem, ToBin, Hash}
 
 # Collections — Arr is the default collection.
 import dsa.{Arr, ArrIter}
