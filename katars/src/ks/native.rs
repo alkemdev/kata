@@ -415,12 +415,15 @@ pub fn truth(v: &Value) -> bool {
         Value::Int(n) => !n.is_zero(),
         Value::Float(f) => *f != 0.0,
         Value::Str(s) => !s.is_empty(),
-        _ => true,
+        _ => super::numeric::try_truth(v).unwrap_or(true),
     }
 }
 
 /// Evaluate a binary operator on two values.
 pub fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
+    if let Some(result) = super::numeric::try_binop(op, left, right) {
+        return result;
+    }
     match op {
         BinOp::Add => op_add(left, right),
         BinOp::Sub | BinOp::Mul => op_arith(op, left, right),
@@ -433,6 +436,9 @@ pub fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, Error
 
 /// Evaluate a unary operator.
 pub fn eval_unaryop(op: UnaryOp, operand: &Value) -> Result<Value, ErrorKind> {
+    if let Some(result) = super::numeric::try_unaryop(op, operand) {
+        return result;
+    }
     match op {
         UnaryOp::Neg => match operand {
             Value::Int(n) => Ok(Value::Int(-n)),
@@ -1062,6 +1068,7 @@ pub struct BootResult {
     pub char_methods: PrimMethods,
     pub str_methods: PrimMethods,
     pub bin_methods: PrimMethods,
+    pub numeric_methods: Vec<(super::types::TypeId, PrimMethods)>,
 }
 
 /// Build the complete native function registry and module tree.
@@ -1185,6 +1192,9 @@ pub fn bootstrap() -> BootResult {
         PrimMethods { methods }
     };
 
+    // Fixed-width numeric type methods.
+    let numeric_methods = super::numeric::bootstrap_methods_impl(&mut reg);
+
     BootResult {
         registry: reg,
         ops_module,
@@ -1196,6 +1206,7 @@ pub fn bootstrap() -> BootResult {
         char_methods,
         str_methods,
         bin_methods,
+        numeric_methods,
     }
 }
 

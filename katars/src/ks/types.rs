@@ -28,7 +28,7 @@ impl TypeId {
             prim::RAW_PTR => "RawPtr",
             prim::BYTE => "Byte",
             prim::CHAR => "Char",
-            _ => "<type>",
+            _ => super::numeric::display_static(self).unwrap_or("<type>"),
         }
     }
 }
@@ -159,6 +159,23 @@ pub mod prim {
     pub const RAW_PTR: TypeId = TypeId(8);
     pub const BYTE: TypeId = TypeId(9);
     pub const CHAR: TypeId = TypeId(10);
+
+    // Fixed-width numeric types — must match registration order in numeric::register_all.
+    pub const U8: TypeId = TypeId(11);
+    pub const U16: TypeId = TypeId(12);
+    pub const U32: TypeId = TypeId(13);
+    pub const U64: TypeId = TypeId(14);
+    pub const U128: TypeId = TypeId(15);
+    pub const I8: TypeId = TypeId(16);
+    pub const I16: TypeId = TypeId(17);
+    pub const I32: TypeId = TypeId(18);
+    pub const I64: TypeId = TypeId(19);
+    pub const I128: TypeId = TypeId(20);
+    pub const USZ: TypeId = TypeId(21);
+    pub const ISZ: TypeId = TypeId(22);
+    pub const F16: TypeId = TypeId(23);
+    pub const F32: TypeId = TypeId(24);
+    pub const F64: TypeId = TypeId(25);
 }
 
 impl TypeRegistry {
@@ -182,6 +199,9 @@ impl TypeRegistry {
         reg.register_prim("RawPtr");
         reg.register_prim("Byte");
         reg.register_prim("Char");
+
+        // Fixed-width numeric types.
+        super::numeric::register_all(&mut reg);
 
         reg
     }

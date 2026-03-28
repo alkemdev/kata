@@ -73,6 +73,24 @@ pub enum Value {
     Byte(u8),
     /// A Unicode scalar value (codepoint). Not a number.
     Char(char),
+    // ── Fixed-width numeric types ──────────────────────────────────
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    U128(u128),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    I128(i128),
+    Usz(usize),
+    Isz(isize),
+    F16(half::f16),
+    F32(f32),
+    /// Fixed-width F64 — distinct from Float (which will become arbitrary-precision).
+    #[serde(rename = "F64Fixed")]
+    F64(f64),
     /// A value viewed as an interface type. Method dispatch goes to the inner
     /// concrete type. Created by `expr as InterfaceType`.
     AsType {
@@ -196,6 +214,7 @@ impl Value {
             Value::Byte(_) => prim::BYTE,
             Value::Char(_) => prim::CHAR,
             Value::AsType { interface_id, .. } => *interface_id,
+            other => super::numeric::type_id_of(other),
         }
     }
 
@@ -290,6 +309,8 @@ impl Value {
                     types.display_name(*interface_id)
                 )
             }
+            other => super::numeric::display_numeric(other)
+                .unwrap_or_else(|| format!("<unknown:{}>", other.type_id().0)),
         }
     }
 }
@@ -335,7 +356,7 @@ impl PartialEq for Value {
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::AsType { inner: a, .. }, Value::AsType { inner: b, .. }) => a == b,
-            _ => false,
+            (l, r) => super::numeric::eq_numeric(l, r),
         }
     }
 }
@@ -392,6 +413,13 @@ impl fmt::Display for Value {
                 interface_id,
             } => {
                 write!(f, "{inner} as {interface_id}")
+            }
+            other => {
+                if let Some(s) = super::numeric::display_numeric(other) {
+                    write!(f, "{s}")
+                } else {
+                    write!(f, "<unknown>")
+                }
             }
         }
     }

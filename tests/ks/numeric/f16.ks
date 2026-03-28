@@ -1,0 +1,11 @@
+# F16 half-precision float
+let a = F16(1.5)
+let b = F16(2.5)
+print(a + b)
+print(a * b)
+print(a < b)
+print(-a)
+print(typeof(a))
+print(a.to_float())
+print(typeof(a.to_float()))
+print(a.to_int())

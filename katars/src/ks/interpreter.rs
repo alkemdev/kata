@@ -213,6 +213,20 @@ impl Interpreter {
                 .insert(name.to_string(), Value::NativeFn(*fn_id));
         }
 
+        // Fixed-width numeric types.
+        for (name, tid) in super::numeric::type_entries() {
+            interp.set((*name).into(), Value::Type(*tid));
+        }
+        for (tid, methods) in &boot.numeric_methods {
+            for (name, fn_id) in &methods.methods {
+                interp
+                    .methods
+                    .entry(*tid)
+                    .or_insert_with(IndexMap::new)
+                    .insert(name.to_string(), Value::NativeFn(*fn_id));
+            }
+        }
+
         interp
     }
 
@@ -2542,11 +2556,16 @@ impl Interpreter {
                 })?;
                 Ok(Flow::Next(Value::Char(ch)))
             }
-            _ => Err(ErrorKind::WrongTypeKind {
-                type_id,
-                expected: TypeKindExpectation::Callable,
+            _ => {
+                if let Some(result) = super::numeric::try_construct(type_id, arg) {
+                    return result.map(Flow::Next).map_err(|e| e.into());
+                }
+                Err(ErrorKind::WrongTypeKind {
+                    type_id,
+                    expected: TypeKindExpectation::Callable,
+                }
+                .into())
             }
-            .into()),
         }
     }
 

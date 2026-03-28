@@ -1,0 +1,11 @@
+# Usz and Isz are platform-dependent pointer-width integers
+let u = Usz(42)
+let i = Isz(-42)
+print(u)
+print(i)
+print(typeof(u))
+print(typeof(i))
+print(u + Usz(8))
+print(i + Isz(100))
+print(u.to_int())
+print(i.to_int())

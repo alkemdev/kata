@@ -6,7 +6,7 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 
 ## Language status
 
-- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin, Byte, Char, RawPtr
+- **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin, Byte, Char, RawPtr, U8..U128, I8..I128, Usz, Isz, F16, F32, F64
 - **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation). Escapes: `\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\xNN` (hex byte), `\uNNNN` (Unicode BMP), `\UNNNNNNNN` (full Unicode)
 - **Byte strings**: `b"..."` (interpolation) and `b'...'` (literal) produce interned `Bin` values. `\xNN` produces a single raw byte. Display: `b'hello\xff\n'`
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing

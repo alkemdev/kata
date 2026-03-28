@@ -1,0 +1,13 @@
+# Same-type arithmetic for fixed-width numerics
+print(U32(10) + U32(20))
+print(U32(50) - U32(30))
+print(U32(6) * U32(7))
+print(U32(100) / U32(4))
+print(I32(-5) + I32(15))
+print(I32(10) - I32(20))
+print(I32(-3) * I32(4))
+print(I32(100) / I32(-3))
+print(F32(1.5) + F32(2.5))
+print(F32(10.0) - F32(3.0))
+print(F32(2.0) * F32(3.0))
+print(F32(10.0) / F32(4.0))
