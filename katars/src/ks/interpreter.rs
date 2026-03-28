@@ -343,8 +343,10 @@ impl Interpreter {
                 let module = self.native_registry.get_module(*mid);
                 names.extend(module.entries.keys().cloned());
             }
-            Value::Struct { type_id, fields } => {
-                names.extend(fields.keys().cloned());
+            Value::Struct { type_id, .. } => {
+                if let Some(field_names) = self.types.field_names(*type_id) {
+                    names.extend(field_names.iter().map(|s| s.to_string()));
+                }
                 self.collect_methods(*type_id, &mut names);
             }
             Value::Type(type_id) => {
@@ -447,7 +449,7 @@ impl Interpreter {
         }
         // Recursively drop struct fields.
         if let Value::Struct { fields, .. } = value {
-            for (_, field_val) in fields {
+            for field_val in fields {
                 self.drop_value(field_val, out);
             }
         }
@@ -986,33 +988,18 @@ impl Interpreter {
         let buf_tid = self.types.instantiate_struct(buf_base, vec![elem_tid])?;
         let arr_tid = self.types.instantiate_struct(arr_base, vec![elem_tid])?;
 
+        // Fields must match declaration order: Ptr { raw }, Buf { ptr, cap }, Arr { buf, len }
         let ptr_val = Value::Struct {
             type_id: ptr_tid,
-            fields: {
-                let mut f = IndexMap::new();
-                f.insert("raw".into(), Value::RawPtr(alloc_id));
-                f
-            },
+            fields: vec![Value::RawPtr(alloc_id)],
         };
-
         let buf_val = Value::Struct {
             type_id: buf_tid,
-            fields: {
-                let mut f = IndexMap::new();
-                f.insert("ptr".into(), ptr_val);
-                f.insert("cap".into(), Value::Int(BigInt::from(cap)));
-                f
-            },
+            fields: vec![ptr_val, Value::Int(BigInt::from(cap))],
         };
-
         let arr_val = Value::Struct {
             type_id: arr_tid,
-            fields: {
-                let mut f = IndexMap::new();
-                f.insert("buf".into(), buf_val);
-                f.insert("len".into(), Value::Int(BigInt::from(vals.len())));
-                f
-            },
+            fields: vec![buf_val, Value::Int(BigInt::from(vals.len()))],
         };
 
         Ok(Flow::Next(arr_val))
@@ -1268,7 +1255,10 @@ impl Interpreter {
                 }
                 let type_args: Vec<TypeId> = vals.iter().map(|v| v.type_id()).collect();
                 let tup_tid = self.types.instantiate_tup(type_args);
-                Ok(Flow::Next(Value::Tup(tup_tid, vals)))
+                Ok(Flow::Next(Value::Struct {
+                    type_id: tup_tid,
+                    fields: vals,
+                }))
             }
 
             Expr::Match {
@@ -1674,7 +1664,7 @@ impl Interpreter {
                     provided.insert(fname.clone(), (val, fexpr.span));
                 }
 
-                let mut result_fields = IndexMap::new();
+                let mut result_fields = Vec::with_capacity(expected_fields.len());
                 for (fname, expected_tid) in &expected_fields {
                     let (val, val_span) =
                         provided.shift_remove(fname.as_str()).ok_or_else(|| {
@@ -1687,7 +1677,7 @@ impl Interpreter {
                     let checked_val = self
                         .check_type(val, *expected_tid)
                         .map_err(|e| e.at(val_span))?;
-                    result_fields.insert(fname.clone(), checked_val);
+                    result_fields.push(checked_val);
                 }
 
                 Ok(Flow::Next(Value::Struct {
@@ -2073,7 +2063,9 @@ impl Interpreter {
                 } = entry
                 {
                     debug_assert_eq!(*tid, type_id);
-                    fields.insert(attr.to_string(), val);
+                    if let Some(idx) = self.types.field_index(type_id, attr) {
+                        fields[idx] = val;
+                    }
                     return Ok(Flow::Next(Value::Nil));
                 }
             }
@@ -2256,8 +2248,26 @@ impl Interpreter {
                 }
             }
             Value::Struct { type_id, fields } => {
-                if let Some(val) = fields.get(name) {
-                    return Ok(Flow::Next(val.clone()));
+                // Named field access via TypeDef lookup.
+                if let Some(idx) = self.types.field_index(*type_id, name) {
+                    if idx < fields.len() {
+                        return Ok(Flow::Next(fields[idx].clone()));
+                    }
+                }
+                // Tuple positional access: ._0, ._1, etc.
+                if self.types.base_type(*type_id) == prim::TUPLE {
+                    if let Some(idx_str) = name.strip_prefix('_') {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            if idx < fields.len() {
+                                return Ok(Flow::Next(fields[idx].clone()));
+                            }
+                            return Err(ErrorKind::PrimOutOfRange {
+                                type_name: "Tup",
+                                detail: format!("index {idx}, length {}", fields.len()),
+                            }
+                            .into());
+                        }
+                    }
                 }
                 if let Ok(bound) = self.resolve_method(object, name) {
                     return Ok(Flow::Next(bound));
@@ -2293,30 +2303,6 @@ impl Interpreter {
                     type_id: *interface_id,
                     attr: name.to_string(),
                     access: AccessKind::Method,
-                }
-                .into())
-            }
-            Value::Tup(type_id, elements) => {
-                // Tuple field access: ._0, ._1, ._2, etc.
-                if let Some(idx_str) = name.strip_prefix('_') {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        if idx < elements.len() {
-                            return Ok(Flow::Next(elements[idx].clone()));
-                        }
-                        return Err(ErrorKind::PrimOutOfRange {
-                            type_name: "Tup",
-                            detail: format!("index {idx}, length {}", elements.len()),
-                        }
-                        .into());
-                    }
-                }
-                if let Ok(bound) = self.resolve_method(object, name) {
-                    return Ok(Flow::Next(bound));
-                }
-                Err(ErrorKind::NoAttr {
-                    type_id: *type_id,
-                    attr: name.to_string(),
-                    access: AccessKind::FieldOrMethod,
                 }
                 .into())
             }

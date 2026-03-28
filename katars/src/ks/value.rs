@@ -2,7 +2,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use indexmap::IndexMap;
 use num_bigint::BigInt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -54,10 +53,12 @@ pub enum Value {
         variant_idx: u32,
         field_types: Vec<TypeId>,
     },
-    /// A struct value — e.g., `Point { x: 1.0, y: 2.0 }`.
+    /// A struct or tuple value — fields stored positionally, names in TypeDef.
+    /// Structs: `Point { x: 1, y: 2 }` — field names from StructInstance.
+    /// Tuples: `(1, "hello")` — field indices are positions.
     Struct {
         type_id: TypeId,
-        fields: IndexMap<String, Value>,
+        fields: Vec<Value>,
     },
     /// A bound method — a Func with `self` already captured.
     BoundMethod {
@@ -92,8 +93,6 @@ pub enum Value {
     /// Fixed-width F64 — distinct from Float (which will become arbitrary-precision).
     #[serde(rename = "F64Fixed")]
     F64(f64),
-    /// A tuple value: `(1, "hello", true)`. TypeId is the instantiated `Tup[Int, Str, Bool]`.
-    Tup(TypeId, Vec<Value>),
     /// A value viewed as an interface type. Method dispatch goes to the inner
     /// concrete type. Created by `expr as InterfaceType`.
     AsType {
@@ -216,7 +215,6 @@ impl Value {
             Value::RawPtr(_) => prim::RAW_PTR,
             Value::Byte(_) => prim::BYTE,
             Value::Char(_) => prim::CHAR,
-            Value::Tup(type_id, _) => *type_id,
             Value::AsType { interface_id, .. } => *interface_id,
             other => super::numeric::type_id_of(other),
         }
@@ -260,15 +258,26 @@ impl Value {
                 }
             }
             Value::Struct { type_id, fields } => {
-                let type_name = types.display_name(*type_id);
-                if fields.is_empty() {
-                    format!("{type_name} {{}}")
+                if types.base_type(*type_id) == prim::TUPLE {
+                    // Tuple display: (1, hello, true)
+                    let inner: Vec<String> = fields.iter().map(|v| v.display(types)).collect();
+                    format!("({})", inner.join(", "))
+                } else if let Some(names) = types.field_names(*type_id) {
+                    // Named struct display: Point { x: 1, y: 2 }
+                    let type_name = types.display_name(*type_id);
+                    if fields.is_empty() {
+                        format!("{type_name} {{}}")
+                    } else {
+                        let inner: Vec<String> = names
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(k, v)| format!("{k}: {}", v.display(types)))
+                            .collect();
+                        format!("{type_name} {{ {} }}", inner.join(", "))
+                    }
                 } else {
-                    let inner: Vec<String> = fields
-                        .iter()
-                        .map(|(k, v)| format!("{k}: {}", v.display(types)))
-                        .collect();
-                    format!("{type_name} {{ {} }}", inner.join(", "))
+                    let type_name = types.display_name(*type_id);
+                    format!("{type_name} {{ ... }}")
                 }
             }
             Value::Type(tid) => types.display_name(*tid),
@@ -303,10 +312,6 @@ impl Value {
             Value::RawPtr(id) => format!("<rawptr:{id}>"),
             Value::Byte(b) => format!("0x{b:02x}"),
             Value::Char(c) => c.to_string(),
-            Value::Tup(_, elements) => {
-                let inner: Vec<String> = elements.iter().map(|v| v.display(types)).collect();
-                format!("({})", inner.join(", "))
-            }
             Value::AsType {
                 inner,
                 interface_id,
@@ -363,7 +368,6 @@ impl PartialEq for Value {
             (Value::RawPtr(a), Value::RawPtr(b)) => a == b,
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
-            (Value::Tup(t1, e1), Value::Tup(t2, e2)) => t1 == t2 && e1 == e2,
             (Value::AsType { inner: a, .. }, Value::AsType { inner: b, .. }) => a == b,
             (l, r) => super::numeric::eq_numeric(l, r),
         }
@@ -399,15 +403,8 @@ impl Hash for Value {
             }
             Value::Struct { type_id, fields } => {
                 type_id.hash(state);
-                for (k, v) in fields {
-                    k.hash(state);
+                for v in fields {
                     v.hash(state);
-                }
-            }
-            Value::Tup(type_id, elements) => {
-                type_id.hash(state);
-                for e in elements {
-                    e.hash(state);
                 }
             }
             // Unhashable types — delegate to numeric or panic.
@@ -434,8 +431,7 @@ pub fn is_hashable(v: &Value) -> bool {
         | Value::Type(_)
         | Value::RawPtr(_)
         | Value::Enum { .. }
-        | Value::Struct { .. }
-        | Value::Tup(_, _) => true,
+        | Value::Struct { .. } => true,
         Value::Func { .. }
         | Value::BoundMethod { .. }
         | Value::VariantConstructor { .. }
@@ -473,7 +469,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::Struct { type_id, fields } => {
-                let inner: Vec<String> = fields.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+                let inner: Vec<String> = fields.iter().map(|v| format!("{v}")).collect();
                 write!(f, "<struct:{type_id} {{ {} }}>", inner.join(", "))
             }
             Value::Type(tid) => write!(f, "<type:{tid}>"),
@@ -493,10 +489,6 @@ impl fmt::Display for Value {
             Value::RawPtr(id) => write!(f, "<rawptr:{id}>"),
             Value::Byte(b) => write!(f, "0x{b:02x}"),
             Value::Char(c) => write!(f, "{c}"),
-            Value::Tup(_, elements) => {
-                let parts: Vec<String> = elements.iter().map(|v| format!("{v}")).collect();
-                write!(f, "({})", parts.join(", "))
-            }
             Value::AsType {
                 inner,
                 interface_id,

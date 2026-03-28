@@ -684,6 +684,24 @@ impl TypeRegistry {
         }
     }
 
+    /// Get the index of a field by name in a struct instance.
+    pub fn field_index(&self, type_id: TypeId, name: &str) -> Option<usize> {
+        match self.get(type_id) {
+            TypeDef::StructInstance { fields, .. } => fields.get_index_of(name),
+            _ => None,
+        }
+    }
+
+    /// Get the field names for a struct instance, in declaration order.
+    pub fn field_names(&self, type_id: TypeId) -> Option<Vec<&str>> {
+        match self.get(type_id) {
+            TypeDef::StructInstance { fields, .. } => {
+                Some(fields.keys().map(|s| s.as_str()).collect())
+            }
+            _ => None,
+        }
+    }
+
     /// Classify an enum for the `?` operator.
     /// 2-variant enum with Val+Non → OptLike, Val+Err → ResLike.
     pub fn try_shape(&self, type_id: TypeId) -> Option<TryShape> {
