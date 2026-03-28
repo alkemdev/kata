@@ -85,84 +85,48 @@ impl NumericFloat for f64 {
 // ═══════════════════════════════════════════════════════════════════
 
 macro_rules! numeric_nonzero {
-    (unsigned, $n:expr) => {
-        *$n != 0
-    };
-    (signed,  $n:expr) => {
-        *$n != 0
-    };
-    (float,   $n:expr) => {
+    (float, $n:expr) => {
         !NumericFloat::is_zero($n)
+    };
+    ($int_kind:ident, $n:expr) => {
+        *$n != 0
     };
 }
 
 macro_rules! numeric_add {
-    (unsigned, $V:ident, $a:expr, $b:expr) => {
-        $a.checked_add(*$b)
-            .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
-    };
-    (signed, $V:ident, $a:expr, $b:expr) => {
-        $a.checked_add(*$b)
-            .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
-    };
     (float, $V:ident, $a:expr, $b:expr) => {
         Ok(Value::$V(*$a + *$b))
+    };
+    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+        $a.checked_add(*$b)
+            .map(Value::$V)
+            .ok_or(ErrorKind::IntegerOverflow)
     };
 }
 
 macro_rules! numeric_sub {
-    (unsigned, $V:ident, $a:expr, $b:expr) => {
-        $a.checked_sub(*$b)
-            .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
-    };
-    (signed, $V:ident, $a:expr, $b:expr) => {
-        $a.checked_sub(*$b)
-            .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
-    };
     (float, $V:ident, $a:expr, $b:expr) => {
         Ok(Value::$V(*$a - *$b))
+    };
+    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+        $a.checked_sub(*$b)
+            .map(Value::$V)
+            .ok_or(ErrorKind::IntegerOverflow)
     };
 }
 
 macro_rules! numeric_mul {
-    (unsigned, $V:ident, $a:expr, $b:expr) => {
-        $a.checked_mul(*$b)
-            .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
-    };
-    (signed, $V:ident, $a:expr, $b:expr) => {
-        $a.checked_mul(*$b)
-            .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
-    };
     (float, $V:ident, $a:expr, $b:expr) => {
         Ok(Value::$V(*$a * *$b))
+    };
+    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+        $a.checked_mul(*$b)
+            .map(Value::$V)
+            .ok_or(ErrorKind::IntegerOverflow)
     };
 }
 
 macro_rules! numeric_div {
-    (unsigned, $V:ident, $a:expr, $b:expr) => {
-        if *$b == 0 {
-            Err(ErrorKind::DivisionByZero)
-        } else {
-            $a.checked_div(*$b)
-                .map(Value::$V)
-                .ok_or(ErrorKind::IntegerOverflow)
-        }
-    };
-    (signed, $V:ident, $a:expr, $b:expr) => {
-        if *$b == 0 {
-            Err(ErrorKind::DivisionByZero)
-        } else {
-            $a.checked_div(*$b)
-                .map(Value::$V)
-                .ok_or(ErrorKind::IntegerOverflow)
-        }
-    };
     (float, $V:ident, $a:expr, $b:expr) => {
         if NumericFloat::is_zero($b) {
             Err(ErrorKind::DivisionByZero)
@@ -170,12 +134,22 @@ macro_rules! numeric_div {
             Ok(Value::$V(*$a / *$b))
         }
     };
+    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+        if *$b == 0 {
+            Err(ErrorKind::DivisionByZero)
+        } else {
+            $a.checked_div(*$b)
+                .map(Value::$V)
+                .ok_or(ErrorKind::IntegerOverflow)
+        }
+    };
 }
 
 macro_rules! numeric_neg {
-    (unsigned, $V:ident, $a:expr) => {
+    (unsigned, $V:ident, $a:expr) => {{
+        let _ = $a;
         None
-    };
+    }};
     (signed,  $V:ident, $a:expr) => {
         Some(
             $a.checked_neg()
@@ -189,38 +163,29 @@ macro_rules! numeric_neg {
 }
 
 macro_rules! numeric_cmp {
-    (unsigned, $a:expr, $b:expr) => {
-        Some($a.cmp($b))
-    };
-    (signed,  $a:expr, $b:expr) => {
-        Some($a.cmp($b))
-    };
-    (float,   $a:expr, $b:expr) => {
+    (float, $a:expr, $b:expr) => {
         $a.partial_cmp($b)
+    };
+    ($int_kind:ident, $a:expr, $b:expr) => {
+        Some($a.cmp($b))
     };
 }
 
 macro_rules! construct_dispatch {
-    (unsigned, $name:literal, $V:ident, $T:ty, $arg:expr) => {
-        construct_int::<$T>($name, $arg, Value::$V)
-    };
-    (signed, $name:literal, $V:ident, $T:ty, $arg:expr) => {
-        construct_int::<$T>($name, $arg, Value::$V)
-    };
     (float, $name:literal, $V:ident, $T:ty, $arg:expr) => {
         construct_float::<$T>($name, $arg, Value::$V)
+    };
+    ($int_kind:ident, $name:literal, $V:ident, $T:ty, $arg:expr) => {
+        construct_int::<$T>($name, $arg, Value::$V)
     };
 }
 
 macro_rules! bootstrap_dispatch {
-    (unsigned, $reg:expr, $result:expr, $prim:expr, $V:ident) => {
-        register_int_methods!($reg, $result, $prim, $V)
-    };
-    (signed, $reg:expr, $result:expr, $prim:expr, $V:ident) => {
-        register_int_methods!($reg, $result, $prim, $V)
-    };
     (float, $reg:expr, $result:expr, $prim:expr, $V:ident) => {
         register_float_methods!($reg, $result, $prim, $V)
+    };
+    ($int_kind:ident, $reg:expr, $result:expr, $prim:expr, $V:ident) => {
+        register_int_methods!($reg, $result, $prim, $V)
     };
 }
 
@@ -384,7 +349,7 @@ fn construct_int<T: TryFrom<i128> + TryFrom<u128>>(
 
 /// Construct a float from a Float or Int.
 fn construct_float<T: NumericFloat>(
-    name: &'static str,
+    _name: &'static str,
     arg: &Value,
     wrap: fn(T) -> Value,
 ) -> Result<Value, ErrorKind> {
@@ -405,138 +370,72 @@ fn construct_float<T: NumericFloat>(
 // Native method registration
 // ═══════════════════════════════════════════════════════════════════
 
+/// Register a binary same-type method: `self.op(other) -> Self`.
+macro_rules! method_binop {
+    ($reg:expr, $m:expr, $prim:expr, $V:ident, $name:literal, $op:tt) => {
+        $m.push(($name, $reg.register($name, false,
+            |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
+                let (Value::$V(a), Value::$V(b)) = (&args[0], &args[1]) else {
+                    return Err(ErrorKind::TypeMismatch { expected: $prim, actual: args[1].type_id() }.into());
+                };
+                Ok(Value::$V(a $op b))
+            })));
+    };
+}
+
+/// Register a unary method: `self.op() -> Self`.
+macro_rules! method_unary {
+    ($reg:expr, $m:expr, $prim:expr, $V:ident, $name:literal, $op:tt) => {
+        $m.push(($name, $reg.register($name, false,
+            |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
+                let Value::$V(a) = &args[0] else {
+                    return Err(ErrorKind::TypeMismatch { expected: $prim, actual: args[0].type_id() }.into());
+                };
+                Ok(Value::$V($op a))
+            })));
+    };
+}
+
+/// Register a shift method: `self.shl(Int) -> Self`.
+macro_rules! method_shift {
+    ($reg:expr, $m:expr, $V:ident, $name:literal, $method:ident) => {
+        $m.push((
+            $name,
+            $reg.register(
+                $name,
+                false,
+                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
+                    let (Value::$V(a), Value::Int(b)) = (&args[0], &args[1]) else {
+                        return Err(ErrorKind::TypeMismatch {
+                            expected: prim::INT,
+                            actual: args[1].type_id(),
+                        }
+                        .into());
+                    };
+                    let shift = b.to_u32().ok_or(ErrorKind::IntegerOverflow)?;
+                    Ok(Value::$V(a.$method(shift)))
+                },
+            ),
+        ));
+    };
+}
+
 macro_rules! register_int_methods {
     ($reg:expr, $result:expr, $prim:expr, $V:ident) => {{
         let mut m = Vec::new();
-
-        m.push((
-            "to_int",
-            $reg.register(
-                "to_int",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let Value::$V(n) = &args[0] else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: $prim,
-                            actual: args[0].type_id(),
-                        }
-                        .into());
-                    };
-                    Ok(Value::Int(BigInt::from(*n)))
-                },
-            ),
-        ));
-
-        m.push((
-            "band",
-            $reg.register(
-                "band",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let (Value::$V(a), Value::$V(b)) = (&args[0], &args[1]) else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: $prim,
-                            actual: args[1].type_id(),
-                        }
-                        .into());
-                    };
-                    Ok(Value::$V(a & b))
-                },
-            ),
-        ));
-
-        m.push((
-            "ior",
-            $reg.register(
-                "ior",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let (Value::$V(a), Value::$V(b)) = (&args[0], &args[1]) else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: $prim,
-                            actual: args[1].type_id(),
-                        }
-                        .into());
-                    };
-                    Ok(Value::$V(a | b))
-                },
-            ),
-        ));
-
-        m.push((
-            "xor",
-            $reg.register(
-                "xor",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let (Value::$V(a), Value::$V(b)) = (&args[0], &args[1]) else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: $prim,
-                            actual: args[1].type_id(),
-                        }
-                        .into());
-                    };
-                    Ok(Value::$V(a ^ b))
-                },
-            ),
-        ));
-
-        m.push((
-            "inv",
-            $reg.register(
-                "inv",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let Value::$V(a) = &args[0] else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: $prim,
-                            actual: args[0].type_id(),
-                        }
-                        .into());
-                    };
-                    Ok(Value::$V(!a))
-                },
-            ),
-        ));
-
-        m.push((
-            "shl",
-            $reg.register(
-                "shl",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let (Value::$V(a), Value::Int(b)) = (&args[0], &args[1]) else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: prim::INT,
-                            actual: args[1].type_id(),
-                        }
-                        .into());
-                    };
-                    let shift = b.to_u32().ok_or(ErrorKind::IntegerOverflow)?;
-                    Ok(Value::$V(a.wrapping_shl(shift)))
-                },
-            ),
-        ));
-
-        m.push((
-            "shr",
-            $reg.register(
-                "shr",
-                false,
-                |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
-                    let (Value::$V(a), Value::Int(b)) = (&args[0], &args[1]) else {
-                        return Err(ErrorKind::TypeMismatch {
-                            expected: prim::INT,
-                            actual: args[1].type_id(),
-                        }
-                        .into());
-                    };
-                    let shift = b.to_u32().ok_or(ErrorKind::IntegerOverflow)?;
-                    Ok(Value::$V(a.wrapping_shr(shift)))
-                },
-            ),
-        ));
-
+        m.push(("to_int", $reg.register("to_int", false,
+            |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
+                let Value::$V(n) = &args[0] else {
+                    return Err(ErrorKind::TypeMismatch { expected: $prim, actual: args[0].type_id() }.into());
+                };
+                Ok(Value::Int(BigInt::from(*n)))
+            })));
+        method_binop!($reg, m, $prim, $V, "band", &);
+        method_binop!($reg, m, $prim, $V, "ior",  |);
+        method_binop!($reg, m, $prim, $V, "xor",  ^);
+        method_unary!($reg, m, $prim, $V, "inv",  !);
+        method_shift!($reg, m, $V, "shl", wrapping_shl);
+        method_shift!($reg, m, $V, "shr", wrapping_shr);
         $result.push(($prim, PrimMethods { methods: m }));
     }};
 }
@@ -544,7 +443,6 @@ macro_rules! register_int_methods {
 macro_rules! register_float_methods {
     ($reg:expr, $result:expr, $prim:expr, $V:ident) => {{
         let mut m = Vec::new();
-
         m.push((
             "to_int",
             $reg.register(
@@ -558,12 +456,10 @@ macro_rules! register_float_methods {
                         }
                         .into());
                     };
-                    let f = NumericFloat::to_f64(*n);
-                    Ok(Value::Int(BigInt::from(f as i128)))
+                    Ok(Value::Int(BigInt::from(NumericFloat::to_f64(*n) as i128)))
                 },
             ),
         ));
-
         m.push((
             "to_float",
             $reg.register(
@@ -581,7 +477,6 @@ macro_rules! register_float_methods {
                 },
             ),
         ));
-
         $result.push(($prim, PrimMethods { methods: m }));
     }};
 }
