@@ -11,6 +11,15 @@ use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Serde helpers for Rc<[u8]> ──────────────────────────────────────────────
 
+fn serialize_arc_bigint<S: Serializer>(n: &Arc<BigInt>, s: S) -> Result<S::Ok, S::Error> {
+    n.as_ref().serialize(s)
+}
+
+fn deserialize_arc_bigint<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<BigInt>, D::Error> {
+    let n = BigInt::deserialize(d)?;
+    Ok(Arc::new(n))
+}
+
 fn serialize_arc_str<S: Serializer>(s: &Arc<str>, ser: S) -> Result<S::Ok, S::Error> {
     s.as_ref().serialize(ser)
 }
@@ -36,7 +45,11 @@ fn deserialize_arc_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<[u8]>, D
 pub enum Value {
     Nil,
     Bool(bool),
-    Int(BigInt),
+    #[serde(
+        serialize_with = "serialize_arc_bigint",
+        deserialize_with = "deserialize_arc_bigint"
+    )]
+    Int(Arc<BigInt>),
     Float(f64),
     #[serde(
         serialize_with = "serialize_arc_str",
@@ -208,6 +221,11 @@ fn format_bin(b: &[u8]) -> String {
 }
 
 impl Value {
+    /// Construct an Int value from a BigInt.
+    pub fn int(n: BigInt) -> Self {
+        Value::Int(Arc::new(n))
+    }
+
     /// Get the TypeId for this value's type.
     pub fn type_id(&self) -> TypeId {
         match self {
@@ -346,7 +364,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Nil, Value::Nil) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             (Value::Str(a), Value::Str(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Bin(a), Value::Bin(b)) => Arc::ptr_eq(a, b) || a == b,

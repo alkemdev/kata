@@ -466,7 +466,7 @@ macro_rules! register_int_methods {
                 let Value::$V(n) = &args[0] else {
                     return Err(ErrorKind::TypeMismatch { expected: $prim, actual: args[0].type_id() }.into());
                 };
-                Ok(Value::Int(BigInt::from(*n)))
+                Ok(Value::int(BigInt::from(*n)))
             })));
         m.push(("hash", $reg.register("hash", false, native_hash)));
         method_binop!($reg, m, $prim, $V, "band", &);
@@ -495,7 +495,7 @@ macro_rules! register_float_methods {
                         }
                         .into());
                     };
-                    Ok(Value::Int(BigInt::from(NumericFloat::to_f64(*n) as i128)))
+                    Ok(Value::int(BigInt::from(NumericFloat::to_f64(*n) as i128)))
                 },
             ),
         ));

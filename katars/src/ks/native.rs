@@ -258,7 +258,7 @@ fn native_tup_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runtime
         }
         .into());
     };
-    Ok(Value::Int(num_bigint::BigInt::from(fields.len())))
+    Ok(Value::int(num_bigint::BigInt::from(fields.len())))
 }
 
 // ── ops — binary operators ──────────────────────────────────────────
@@ -408,7 +408,7 @@ pub fn native_mem_capacity(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value,
         .get(id as usize)
         .and_then(|s| s.as_ref())
         .ok_or(ErrorKind::UseAfterFree)?;
-    Ok(Value::Int(BigInt::from(alloc.capacity())))
+    Ok(Value::int(BigInt::from(alloc.capacity())))
 }
 
 pub fn native_mem_len(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -418,7 +418,7 @@ pub fn native_mem_len(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
         .get(id as usize)
         .and_then(|s| s.as_ref())
         .ok_or(ErrorKind::UseAfterFree)?;
-    Ok(Value::Int(BigInt::from(alloc.len())))
+    Ok(Value::int(BigInt::from(alloc.len())))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -460,7 +460,7 @@ pub fn eval_unaryop(op: UnaryOp, operand: &Value) -> Result<Value, ErrorKind> {
     }
     match op {
         UnaryOp::Neg => match operand {
-            Value::Int(n) => Ok(Value::Int(-n)),
+            Value::Int(n) => Ok(Value::int(-n.as_ref())),
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => Err(ErrorKind::UnaryOpType {
                 op,
@@ -481,7 +481,7 @@ fn int_to_f64(n: &BigInt) -> Result<f64, ErrorKind> {
 
 fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
     match (left, right) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+        (Value::Int(a), Value::Int(b)) => Ok(Value::int(a.as_ref() + b.as_ref())),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(int_to_f64(a)? + b)),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + int_to_f64(b)?)),
@@ -497,8 +497,8 @@ fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
 fn op_arith(op: BinOp, left: &Value, right: &Value) -> Result<Value, ErrorKind> {
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => match op {
-            BinOp::Sub => Ok(Value::Int(a - b)),
-            BinOp::Mul => Ok(Value::Int(a * b)),
+            BinOp::Sub => Ok(Value::int(a.as_ref() - b.as_ref())),
+            BinOp::Mul => Ok(Value::int(a.as_ref() * b.as_ref())),
             _ => unreachable!(),
         },
         (Value::Float(a), Value::Float(b)) => {
@@ -541,7 +541,7 @@ fn op_div(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
             if b.is_zero() {
                 return Err(ErrorKind::DivisionByZero);
             }
-            Ok(Value::Int(a / b))
+            Ok(Value::int(a.as_ref() / b.as_ref()))
         }
         (Value::Float(a), Value::Float(b)) => {
             if *b == 0.0 {
@@ -624,7 +624,7 @@ fn byte_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErr
         }
         .into());
     };
-    Ok(Value::Int(BigInt::from(*b)))
+    Ok(Value::int(BigInt::from(*b)))
 }
 
 fn byte_and(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -686,7 +686,10 @@ fn byte_shl(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError>
         }
         .into());
     };
-    let shift: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+    let shift: u32 = n
+        .as_ref()
+        .try_into()
+        .map_err(|_| ErrorKind::IntegerOverflow)?;
     Ok(Value::Byte(b.wrapping_shl(shift)))
 }
 
@@ -705,7 +708,10 @@ fn byte_shr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError>
         }
         .into());
     };
-    let shift: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+    let shift: u32 = n
+        .as_ref()
+        .try_into()
+        .map_err(|_| ErrorKind::IntegerOverflow)?;
     Ok(Value::Byte(b.wrapping_shr(shift)))
 }
 
@@ -719,7 +725,7 @@ fn char_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErr
         }
         .into());
     };
-    Ok(Value::Int(BigInt::from(*c as u32)))
+    Ok(Value::int(BigInt::from(*c as u32)))
 }
 
 fn char_is_alpha(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -806,7 +812,7 @@ fn expect_str(args: &[Value], pos: usize) -> Result<&str, RuntimeError> {
 
 fn str_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Int(BigInt::from(s.chars().count())))
+    Ok(Value::int(BigInt::from(s.chars().count())))
 }
 
 fn str_contains(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -904,7 +910,7 @@ fn str_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErro
     let n: BigInt = s.trim().parse().map_err(|_| -> RuntimeError {
         ErrorKind::Other(format!("cannot parse '{s}' as Int")).into()
     })?;
-    Ok(Value::Int(n))
+    Ok(Value::int(n))
 }
 
 fn str_to_float(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -930,7 +936,7 @@ fn bin_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> 
         }
         .into());
     };
-    Ok(Value::Int(BigInt::from(b.len())))
+    Ok(Value::int(BigInt::from(b.len())))
 }
 
 fn bin_get_item(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {

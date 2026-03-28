@@ -988,11 +988,11 @@ impl Interpreter {
         };
         let buf_val = Value::Struct {
             type_id: buf_tid,
-            fields: vec![ptr_val, Value::Int(BigInt::from(cap))],
+            fields: vec![ptr_val, Value::int(BigInt::from(cap))],
         };
         let arr_val = Value::Struct {
             type_id: arr_tid,
-            fields: vec![buf_val, Value::Int(BigInt::from(vals.len()))],
+            fields: vec![buf_val, Value::int(BigInt::from(vals.len()))],
         };
 
         Ok(Flow::Next(arr_val))
@@ -1076,7 +1076,7 @@ impl Interpreter {
                 Expr::Int(s) => {
                     if let Value::Int(n) = val {
                         if let Ok(lit_n) = parse_int_literal(s) {
-                            if *n == lit_n {
+                            if **n == lit_n {
                                 return Some(vec![]);
                             }
                         }
@@ -1150,7 +1150,7 @@ impl Interpreter {
                     })
                     .at(expr.span)
                 })?;
-                Ok(Flow::Next(Value::Int(n)))
+                Ok(Flow::Next(Value::int(n)))
             }
             Expr::Float(s) => {
                 let n: f64 = s.parse().map_err(|e: std::num::ParseFloatError| {
@@ -2543,7 +2543,10 @@ impl Interpreter {
                     }
                     .into());
                 };
-                let val: i64 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+                let val: i64 = n
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| ErrorKind::IntegerOverflow)?;
                 if !(0..=255).contains(&val) {
                     return Err(ErrorKind::PrimOutOfRange {
                         type_name: "Byte",
@@ -2561,7 +2564,10 @@ impl Interpreter {
                     }
                     .into());
                 };
-                let val: u32 = n.try_into().map_err(|_| ErrorKind::IntegerOverflow)?;
+                let val: u32 = n
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| ErrorKind::IntegerOverflow)?;
                 let ch = char::from_u32(val).ok_or_else(|| ErrorKind::PrimOutOfRange {
                     type_name: "Char",
                     detail: format!("invalid Unicode codepoint 0x{val:X}"),
