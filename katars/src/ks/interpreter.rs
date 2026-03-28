@@ -128,8 +128,8 @@ pub struct Interpreter {
     /// Conformance registry: (concrete_base_type, interface_base_type) pairs.
     /// Populated during `impl K as T`. Queried for `as` and implicit coercion.
     conformances: HashSet<(TypeId, TypeId)>,
-    /// Intern table for Bin values. Identical byte sequences share one allocation.
-    bin_intern: HashSet<Arc<[u8]>>,
+    /// Interning tables for immutable shared data (strings, bins, ints).
+    intern: super::intern::InternTables,
 }
 
 impl Interpreter {
@@ -158,7 +158,7 @@ impl Interpreter {
             allocations: Vec::new(),
             native_registry: boot.registry,
             conformances: HashSet::new(),
-            bin_intern: HashSet::new(),
+            intern: super::intern::InternTables::new(),
         };
 
         // Populate scope with prim type values so `Int`, `Str`, etc. resolve.
@@ -266,15 +266,8 @@ impl Interpreter {
     }
 
     /// Intern a byte sequence, returning a shared `Bin` value.
-    /// Identical byte sequences share one `Arc<[u8]>` allocation.
     pub fn intern_bin(&mut self, bytes: Vec<u8>) -> Value {
-        if let Some(existing) = self.bin_intern.get(bytes.as_slice()) {
-            Value::Bin(Arc::clone(existing))
-        } else {
-            let arc: Arc<[u8]> = bytes.into();
-            self.bin_intern.insert(Arc::clone(&arc));
-            Value::Bin(arc)
-        }
+        Value::Bin(self.intern.intern_bin(bytes))
     }
 
     /// All names visible in the current scope (for REPL completion).
@@ -1092,7 +1085,7 @@ impl Interpreter {
                 }
                 Expr::Str(s) => {
                     if let Value::Str(v) = val {
-                        if v == s {
+                        if &**v == s.as_str() {
                             return Some(vec![]);
                         }
                     }
@@ -1170,7 +1163,7 @@ impl Interpreter {
                 })?;
                 Ok(Flow::Next(Value::Float(n)))
             }
-            Expr::Str(s) => Ok(Flow::Next(Value::Str(s.clone()))),
+            Expr::Str(s) => Ok(Flow::Next(Value::Str(self.intern.intern_str(s)))),
 
             Expr::Interp { parts } => {
                 let mut result = String::new();
@@ -1190,7 +1183,9 @@ impl Interpreter {
                         }
                     }
                 }
-                Ok(Flow::Next(Value::Str(result)))
+                Ok(Flow::Next(Value::Str(
+                    super::intern::InternTables::make_str(result),
+                )))
             }
 
             Expr::BinLit(bytes) => Ok(Flow::Next(self.intern_bin(bytes.clone()))),
@@ -2487,7 +2482,7 @@ impl Interpreter {
                     let mut ctx = NativeCtx {
                         types: &self.types,
                         allocations: &mut self.allocations,
-                        bin_intern: &mut self.bin_intern,
+                        intern: &mut self.intern,
                         out,
                         in_unsafe: self.in_unsafe,
                     };
@@ -2509,7 +2504,7 @@ impl Interpreter {
                 let mut ctx = NativeCtx {
                     types: &self.types,
                     allocations: &mut self.allocations,
-                    bin_intern: &mut self.bin_intern,
+                    intern: &mut self.intern,
                     out,
                     in_unsafe: self.in_unsafe,
                 };

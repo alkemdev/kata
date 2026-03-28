@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod error;
+pub mod intern;
 pub mod interpreter;
 pub mod lexer;
 pub mod native;

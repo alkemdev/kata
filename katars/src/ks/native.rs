@@ -70,7 +70,7 @@ pub struct NativeFnEntry {
 pub struct NativeCtx<'a> {
     pub types: &'a TypeRegistry,
     pub allocations: &'a mut Vec<Option<Vec<Value>>>,
-    pub bin_intern: &'a mut HashSet<Arc<[u8]>>,
+    pub intern: &'a mut super::intern::InternTables,
     pub out: &'a mut dyn Write,
     /// Available for native fns that need to know if they're in an unsafe context.
     /// Currently checked at the dispatch level before the handler is called.
@@ -109,13 +109,7 @@ impl<'a> NativeCtx<'a> {
 
     /// Intern a byte vector and return a Bin value.
     pub fn intern_bin(&mut self, bytes: Vec<u8>) -> Value {
-        if let Some(existing) = self.bin_intern.get(bytes.as_slice()) {
-            Value::Bin(Arc::clone(existing))
-        } else {
-            let arc: Arc<[u8]> = bytes.into();
-            self.bin_intern.insert(Arc::clone(&arc));
-            Value::Bin(arc)
-        }
+        Value::Bin(self.intern.intern_bin(bytes))
     }
 }
 
@@ -491,7 +485,7 @@ fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(int_to_f64(a)? + b)),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + int_to_f64(b)?)),
-        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
+        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(Arc::from(format!("{a}{b}")))),
         _ => Err(ErrorKind::BinOpType {
             op: BinOp::Add,
             left: left.type_id(),
@@ -800,7 +794,7 @@ fn char_to_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeE
 /// Helper: extract &str from args[0], or return TypeMismatch.
 fn expect_str(args: &[Value], pos: usize) -> Result<&str, RuntimeError> {
     match args.get(pos) {
-        Some(Value::Str(s)) => Ok(s.as_str()),
+        Some(Value::Str(s)) => Ok(s),
         Some(other) => Err(ErrorKind::TypeMismatch {
             expected: prim::STR,
             actual: other.type_id(),
@@ -835,34 +829,34 @@ fn str_ends_with(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeE
 
 fn str_trim(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Str(s.trim().to_string()))
+    Ok(Value::Str(Arc::from(s.trim())))
 }
 
 fn str_trim_start(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Str(s.trim_start().to_string()))
+    Ok(Value::Str(Arc::from(s.trim_start())))
 }
 
 fn str_trim_end(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Str(s.trim_end().to_string()))
+    Ok(Value::Str(Arc::from(s.trim_end())))
 }
 
 fn str_to_upper(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Str(s.to_uppercase()))
+    Ok(Value::Str(Arc::from(s.to_uppercase())))
 }
 
 fn str_to_lower(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
-    Ok(Value::Str(s.to_lowercase()))
+    Ok(Value::Str(Arc::from(s.to_lowercase())))
 }
 
 fn str_replace(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
     let from = expect_str(args, 1)?;
     let to = expect_str(args, 2)?;
-    Ok(Value::Str(s.replace(from, to)))
+    Ok(Value::Str(Arc::from(s.replace(from, to))))
 }
 
 fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -891,7 +885,7 @@ fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErro
     };
     // Codepoint-indexed substr.
     let result: String = s.chars().skip(start).take(len).collect();
-    Ok(Value::Str(result))
+    Ok(Value::Str(Arc::from(result)))
 }
 
 fn str_split(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -902,7 +896,7 @@ fn str_split(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError
     // construct arrays from native code.
     let parts: Vec<&str> = s.split(delim).collect();
     let joined = parts.join("\n");
-    Ok(Value::Str(joined))
+    Ok(Value::Str(Arc::from(joined)))
 }
 
 fn str_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {

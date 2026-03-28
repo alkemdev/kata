@@ -11,6 +11,15 @@ use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Serde helpers for Rc<[u8]> ──────────────────────────────────────────────
 
+fn serialize_arc_str<S: Serializer>(s: &Arc<str>, ser: S) -> Result<S::Ok, S::Error> {
+    s.as_ref().serialize(ser)
+}
+
+fn deserialize_arc_str<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<str>, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(Arc::from(s))
+}
+
 fn serialize_arc_bytes<S: Serializer>(bytes: &Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
     bytes.as_ref().serialize(s)
 }
@@ -29,7 +38,11 @@ pub enum Value {
     Bool(bool),
     Int(BigInt),
     Float(f64),
-    Str(String),
+    #[serde(
+        serialize_with = "serialize_arc_str",
+        deserialize_with = "deserialize_arc_str"
+    )]
+    Str(Arc<str>),
     #[serde(
         serialize_with = "serialize_arc_bytes",
         deserialize_with = "deserialize_arc_bytes"
@@ -235,7 +248,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
             Value::Float(n) => format!("{n}"),
-            Value::Str(s) => s.clone(),
+            Value::Str(s) => s.to_string(),
             Value::Bin(b) => format_bin(b),
             Value::Func {
                 params, ret_type, ..
@@ -335,7 +348,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Bin(a), Value::Bin(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
             (
