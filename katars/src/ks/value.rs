@@ -275,6 +275,12 @@ impl Value {
         }
     }
 
+    /// Returns a Value::Type representing this value's type.
+    /// This is what the `typeof` builtin calls.
+    pub fn typeof_val(&self) -> Value {
+        Value::Type(self.type_id())
+    }
+
     /// Unwrap AsType wrappers to get the concrete value.
     pub fn concrete(&self) -> &Value {
         match self {

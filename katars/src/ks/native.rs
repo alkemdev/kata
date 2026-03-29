@@ -234,7 +234,7 @@ pub fn native_typeof(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
         }
         .into());
     }
-    Ok(Value::Type(args[0].type_id()))
+    Ok(args[0].typeof_val())
 }
 
 // ── hash — generic value hashing ────────────────────────────────────
