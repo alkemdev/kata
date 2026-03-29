@@ -16,7 +16,7 @@ use super::error::{
 };
 use super::native::{self, NativeCtx, NativeFnRegistry};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
-use super::value::{FuncParam, Value};
+use super::value::{FuncData, FuncParam, Value};
 
 // ── Protocol constants ──────────────────────────────────────────────────────
 
@@ -646,11 +646,11 @@ impl Interpreter {
                     })
                     .transpose()?;
 
-                let func = Value::Func {
+                let func = Value::Func(Arc::new(FuncData {
                     params: func_params,
                     ret_type: ret_texpr,
                     body: body.clone(),
-                };
+                }));
                 self.set(name.clone(), func);
                 Ok(Flow::Next(Value::Nil))
             }
@@ -1803,15 +1803,15 @@ impl Interpreter {
                 .into()
             })?;
 
-            if let Value::Func { params, .. } = func {
-                if params.len() != sig.params.len() {
+            if let Value::Func(f) = func {
+                if f.params.len() != sig.params.len() {
                     return Err(ErrorKind::ConformanceFailure {
                         type_name: type_display.clone(),
                         iface_name: iface_name.to_string(),
                         detail: ConformanceError::ParamCountMismatch {
                             method: sig.name.clone(),
                             expected: sig.params.len(),
-                            actual: params.len(),
+                            actual: f.params.len(),
                         },
                     }
                     .into());
@@ -1945,11 +1945,11 @@ impl Interpreter {
                 .map(|ann| self.resolve_type_ann(&ann.node, type_params))
                 .transpose()?;
 
-            let func = Value::Func {
+            let func = Value::Func(Arc::new(FuncData {
                 params: func_params,
                 ret_type: ret_texpr,
                 body: body.clone(),
-            };
+            }));
 
             self.methods
                 .entry(type_id)
@@ -2149,7 +2149,7 @@ impl Interpreter {
         method: Value,
         _name: &str,
     ) -> Result<Value, RuntimeError> {
-        if !matches!(method, Value::Func { .. } | Value::NativeFn(_)) {
+        if !matches!(method, Value::Func(_) | Value::NativeFn(_)) {
             return Err(
                 ErrorKind::InternalError("bound method must wrap a Func or NativeFn").into(),
             );
@@ -2380,26 +2380,22 @@ impl Interpreter {
         out: &mut impl Write,
     ) -> Result<Flow, RuntimeError> {
         match func {
-            Value::Func {
-                params,
-                ret_type,
-                body,
-            } => {
-                if args.len() != params.len() {
+            Value::Func(f) => {
+                if args.len() != f.params.len() {
                     return Err(ErrorKind::ArityMismatch {
                         target: ArityTarget::Function,
-                        expected: params.len(),
+                        expected: f.params.len(),
                         actual: args.len(),
                     }
                     .into());
                 }
 
                 let result = self.call_func_body(
-                    &params,
+                    &f.params,
                     args,
                     arg_spans,
-                    &ret_type,
-                    &body,
+                    &f.ret_type,
+                    &f.body,
                     false,
                     &[],
                     out,
@@ -2444,12 +2440,8 @@ impl Interpreter {
             }
 
             Value::BoundMethod { receiver, func } => match *func {
-                Value::Func {
-                    params,
-                    ret_type,
-                    body,
-                } => {
-                    let method_params = &params[1..];
+                Value::Func(f) => {
+                    let method_params = &f.params[1..];
                     if args.len() != method_params.len() {
                         return Err(ErrorKind::ArityMismatch {
                             target: ArityTarget::Method,
@@ -2459,21 +2451,21 @@ impl Interpreter {
                         .into());
                     }
 
-                    let mut full_args = Vec::with_capacity(params.len());
+                    let mut full_args = Vec::with_capacity(f.params.len());
                     let receiver_type_args = self.types.instance_type_args(receiver.type_id());
                     full_args.push(*receiver);
                     full_args.extend_from_slice(args);
 
-                    let mut full_spans = Vec::with_capacity(params.len());
+                    let mut full_spans = Vec::with_capacity(f.params.len());
                     full_spans.push((0, 0));
                     full_spans.extend_from_slice(arg_spans);
 
                     let result = self.call_func_body(
-                        &params,
+                        &f.params,
                         &full_args,
                         &full_spans,
-                        &ret_type,
-                        &body,
+                        &f.ret_type,
+                        &f.body,
                         true,
                         &receiver_type_args,
                         out,

@@ -11,6 +11,15 @@ use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Serde helpers for Rc<[u8]> ──────────────────────────────────────────────
 
+fn serialize_arc_funcdata<S: Serializer>(f: &Arc<FuncData>, s: S) -> Result<S::Ok, S::Error> {
+    f.as_ref().serialize(s)
+}
+
+fn deserialize_arc_funcdata<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<FuncData>, D::Error> {
+    let f = FuncData::deserialize(d)?;
+    Ok(Arc::new(f))
+}
+
 fn serialize_arc_values<S: Serializer>(vals: &Arc<[Value]>, s: S) -> Result<S::Ok, S::Error> {
     vals.as_ref().serialize(s)
 }
@@ -70,11 +79,11 @@ pub enum Value {
         deserialize_with = "deserialize_arc_bytes"
     )]
     Bin(Arc<[u8]>),
-    Func {
-        params: Vec<FuncParam>,
-        ret_type: Option<TypeExpr>,
-        body: Vec<Spanned<Stmt>>,
-    },
+    #[serde(
+        serialize_with = "serialize_arc_funcdata",
+        deserialize_with = "deserialize_arc_funcdata"
+    )]
+    Func(Arc<FuncData>),
     Enum {
         type_id: TypeId,
         variant_idx: u32,
@@ -149,6 +158,14 @@ pub enum Value {
         inner: Box<Value>,
         interface_id: TypeId,
     },
+}
+
+/// Function body data — shared via Arc for cheap cloning of closures.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuncData {
+    pub params: Vec<FuncParam>,
+    pub ret_type: Option<TypeExpr>,
+    pub body: Vec<Spanned<Stmt>>,
 }
 
 /// A function parameter with an optional type annotation.
@@ -259,7 +276,7 @@ impl Value {
             Value::Float(_) => prim::FLOAT,
             Value::Str(_) => prim::STR,
             Value::Bin(_) => prim::BIN,
-            Value::Func { .. } => prim::FUNC,
+            Value::Func(_) => prim::FUNC,
             Value::Enum { type_id, .. } => *type_id,
             Value::Rec { type_id, .. } | Value::Tup { type_id, .. } => *type_id,
             Value::BoundMethod { .. } => prim::FUNC,
@@ -298,11 +315,9 @@ impl Value {
             Value::Float(n) => format!("{n}"),
             Value::Str(s) => s.to_string(),
             Value::Bin(b) => format_bin(b),
-            Value::Func {
-                params, ret_type, ..
-            } => {
-                let sig = format_params(params, types);
-                let ret = format_ret(ret_type.as_ref(), types);
+            Value::Func(f) => {
+                let sig = format_params(&f.params, types);
+                let ret = format_ret(f.ret_type.as_ref(), types);
                 format!("func({sig}){ret}")
             }
             Value::Enum {
@@ -350,17 +365,14 @@ impl Value {
                 format!("<constructor {type_name}.{variant_name}>")
             }
             Value::BoundMethod { receiver, func } => {
-                if let Value::Func {
-                    params, ret_type, ..
-                } = func.as_ref()
-                {
+                if let Value::Func(f) = func.as_ref() {
                     // Resolve generic type params from the receiver's instance.
                     let instance_args = types.instance_type_args(receiver.type_id());
                     // Skip 'self' param in display — it's implicit.
                     let visible: Vec<&FuncParam> =
-                        params.iter().filter(|p| p.name != "self").collect();
+                        f.params.iter().filter(|p| p.name != "self").collect();
                     let sig = format_param_refs_resolved(&visible, types, &instance_args);
-                    let ret = format_ret_resolved(ret_type.as_ref(), types, &instance_args);
+                    let ret = format_ret_resolved(f.ret_type.as_ref(), types, &instance_args);
                     format!("func({sig}){ret}")
                 } else {
                     "func(?)".to_string()
@@ -429,7 +441,7 @@ impl PartialEq for Value {
                     fields: f2,
                 },
             ) => t1 == t2 && f1 == f2,
-            (Value::Func { .. }, Value::Func { .. }) => false,
+            (Value::Func(_), Value::Func(_)) => false,
             (Value::BoundMethod { .. }, Value::BoundMethod { .. }) => false,
             (Value::VariantConstructor { .. }, Value::VariantConstructor { .. }) => false,
             (Value::Module(a), Value::Module(b)) => a == b,
@@ -502,7 +514,7 @@ pub fn is_hashable(v: &Value) -> bool {
         | Value::Enum { .. }
         | Value::Rec { .. }
         | Value::Tup { .. } => true,
-        Value::Func { .. }
+        Value::Func(_)
         | Value::BoundMethod { .. }
         | Value::VariantConstructor { .. }
         | Value::Module(_)
@@ -522,8 +534,8 @@ impl fmt::Display for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bin(b) => write!(f, "{}", format_bin(b)),
-            Value::Func { params, .. } => {
-                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            Value::Func(fd) => {
+                let names: Vec<&str> = fd.params.iter().map(|p| p.name.as_str()).collect();
                 write!(f, "<func({})>", names.join(", "))
             }
             Value::Enum {
@@ -551,8 +563,8 @@ impl fmt::Display for Value {
                 write!(f, "<constructor:variant:{variant_idx}>")
             }
             Value::BoundMethod { func, .. } => {
-                if let Value::Func { params, .. } = func.as_ref() {
-                    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                if let Value::Func(fd) = func.as_ref() {
+                    let names: Vec<&str> = fd.params.iter().map(|p| p.name.as_str()).collect();
                     write!(f, "<bound-method({})>", names.join(", "))
                 } else {
                     write!(f, "<bound-method(?)>")
