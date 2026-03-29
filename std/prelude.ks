@@ -5,5 +5,8 @@
 import core
 import core.{Opt, Res, Iter, ToIter, Drop, Copy, Dupe, GetItem, SetItem, ToBin, Hash}
 
+# Memory module — available for types that need allocation internals.
+import mem
+
 # Collections — Arr is the default collection.
 import dsa.{Arr, ArrIter, Slot, Map, MapIter}

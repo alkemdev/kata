@@ -4,6 +4,7 @@
 # Load factor threshold: resize at count > cap * 3 / 4.
 
 import core.{Opt, Hash, GetItem, SetItem}
+import mem.{Ptr, Buf, heap}
 import dsa.arr.{Arr}
 
 enum Slot[K, V] {
@@ -20,9 +21,8 @@ kind Map[K, V] {
 
 impl Map[@K, @V] {
     func new(): Map[K, V] {
-        import mem.{Ptr, Buf, heap}
         let cap = 8
-        let raw = heap.make(cap)
+        let raw = mem.heap.make(cap)
         let i = 0
         while i < cap {
             unsafe { mem.write(raw, i, Slot[K, V].Empty) }
@@ -30,7 +30,7 @@ impl Map[@K, @V] {
         }
         ret Map[K, V] {
             slots: Arr[Slot[K, V]] {
-                buf: Buf[Slot[K, V]] { ptr: Ptr[Slot[K, V]] { raw: raw }, cap: cap },
+                buf: mem.Buf[Slot[K, V]] { ptr: mem.Ptr[Slot[K, V]] { raw: raw }, cap: cap },
                 len: cap,
             },
             count: 0,
@@ -65,20 +65,19 @@ impl Map[@K, @V] {
     }
 
     func _grow(self) {
-        import mem.{Ptr, Buf, heap}
         let old_slots = self.slots
         let old_cap = self.cap
         self.cap = self.cap * 2
         self.count = 0
 
-        let raw = heap.make(self.cap)
+        let raw = mem.heap.make(self.cap)
         let i = 0
         while i < self.cap {
             unsafe { mem.write(raw, i, Slot[K, V].Empty) }
             i = i + 1
         }
         self.slots = Arr[Slot[K, V]] {
-            buf: Buf[Slot[K, V]] { ptr: Ptr[Slot[K, V]] { raw: raw }, cap: self.cap },
+            buf: mem.Buf[Slot[K, V]] { ptr: mem.Ptr[Slot[K, V]] { raw: raw }, cap: self.cap },
             len: self.cap,
         }
 
