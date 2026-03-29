@@ -6,6 +6,7 @@ pub mod lexer;
 pub mod native;
 pub mod numeric;
 pub mod parser;
+pub mod scope;
 pub mod types;
 pub mod value;
 
