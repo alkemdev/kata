@@ -42,6 +42,7 @@ trait NumericFloat:
     + std::ops::Neg<Output = Self>
 {
     fn is_zero(&self) -> bool;
+    fn is_neg(&self) -> bool;
     fn from_f64(f: f64) -> Self;
     fn to_f64(self) -> f64;
     fn to_bits_u64(self) -> u64;
@@ -50,6 +51,9 @@ trait NumericFloat:
 impl NumericFloat for f16 {
     fn is_zero(&self) -> bool {
         *self == f16::ZERO
+    }
+    fn is_neg(&self) -> bool {
+        self.is_sign_negative()
     }
     fn from_f64(f: f64) -> Self {
         f16::from_f64(f)
@@ -66,6 +70,9 @@ impl NumericFloat for f32 {
     fn is_zero(&self) -> bool {
         *self == 0.0
     }
+    fn is_neg(&self) -> bool {
+        self.is_sign_negative()
+    }
     fn from_f64(f: f64) -> Self {
         f as f32
     }
@@ -80,6 +87,9 @@ impl NumericFloat for f32 {
 impl NumericFloat for f64 {
     fn is_zero(&self) -> bool {
         *self == 0.0
+    }
+    fn is_neg(&self) -> bool {
+        self.is_sign_negative()
     }
     fn from_f64(f: f64) -> Self {
         f
@@ -155,6 +165,52 @@ macro_rules! numeric_div {
                 .ok_or(ErrorKind::IntegerOverflow)
         }
     };
+}
+
+/// True modulo: result sign follows the divisor (right operand).
+macro_rules! numeric_mod {
+    (float, $V:ident, $a:expr, $b:expr) => {{
+        if NumericFloat::is_zero($b) {
+            Err(ErrorKind::DivisionByZero)
+        } else {
+            let rem = *$a % *$b;
+            let result = if !NumericFloat::is_zero(&rem)
+                && (NumericFloat::is_neg(&rem) != NumericFloat::is_neg($b))
+            {
+                rem + *$b
+            } else {
+                rem
+            };
+            Ok(Value::$V(result))
+        }
+    }};
+    (unsigned, $V:ident, $a:expr, $b:expr) => {
+        // Unsigned: remainder == modulo, no sign adjustment needed.
+        if *$b == 0 {
+            Err(ErrorKind::DivisionByZero)
+        } else {
+            $a.checked_rem(*$b)
+                .map(Value::$V)
+                .ok_or(ErrorKind::IntegerOverflow)
+        }
+    };
+    (signed, $V:ident, $a:expr, $b:expr) => {{
+        if *$b == 0 {
+            Err(ErrorKind::DivisionByZero)
+        } else {
+            match $a.checked_rem(*$b) {
+                Some(rem) => {
+                    let result = if rem != 0 && ((rem < 0) != (*$b < 0)) {
+                        rem + *$b
+                    } else {
+                        rem
+                    };
+                    Ok(Value::$V(result))
+                }
+                None => Err(ErrorKind::IntegerOverflow),
+            }
+        }
+    }};
 }
 
 macro_rules! numeric_neg {
@@ -279,6 +335,7 @@ macro_rules! define_numeric_prims {
                         BinOp::Sub => numeric_sub!($kind, $V, a, b),
                         BinOp::Mul => numeric_mul!($kind, $V, a, b),
                         BinOp::Div => numeric_div!($kind, $V, a, b),
+                        BinOp::Mod => numeric_mod!($kind, $V, a, b),
                         BinOp::Eq  => Ok(Value::Bool(a == b)),
                         BinOp::Ne  => Ok(Value::Bool(a != b)),
                         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {

@@ -289,6 +289,9 @@ pub fn native_ops_mul(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
 pub fn native_ops_div(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     binop_native(ctx, args, BinOp::Div)
 }
+pub fn native_ops_mod(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    binop_native(ctx, args, BinOp::Mod)
+}
 pub fn native_ops_eq(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     binop_native(ctx, args, BinOp::Eq)
 }
@@ -447,6 +450,7 @@ pub fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value, Error
         BinOp::Add => op_add(left, right),
         BinOp::Sub | BinOp::Mul => op_arith(op, left, right),
         BinOp::Div => op_div(left, right),
+        BinOp::Mod => op_mod(left, right),
         BinOp::Eq => Ok(Value::Bool(left == right || cross_eq(left, right))),
         BinOp::Ne => Ok(Value::Bool(left != right && !cross_eq(left, right))),
         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => op_cmp(op, left, right),
@@ -563,6 +567,43 @@ fn op_div(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
         }
         _ => Err(ErrorKind::BinOpType {
             op: BinOp::Div,
+            left: left.type_id(),
+            right: right.type_id(),
+        }),
+    }
+}
+
+/// True modulo: result sign follows the divisor (right operand).
+/// `-10 % 3 = 2`, `10 % -3 = -2`. Same as Python's `%`.
+fn op_mod(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => {
+            if b.is_zero() {
+                return Err(ErrorKind::DivisionByZero);
+            }
+            let rem = a.as_ref() % b.as_ref();
+            // Adjust: if rem and divisor have different signs, add divisor.
+            let result = if (!rem.is_zero()) && (rem.sign() != b.sign()) {
+                rem + b.as_ref()
+            } else {
+                rem
+            };
+            Ok(Value::int(result))
+        }
+        (Value::Float(a), Value::Float(b)) => {
+            if *b == 0.0 {
+                return Err(ErrorKind::DivisionByZero);
+            }
+            let rem = a % b;
+            let result = if rem != 0.0 && (rem.is_sign_negative() != b.is_sign_negative()) {
+                rem + b
+            } else {
+                rem
+            };
+            Ok(Value::Float(result))
+        }
+        _ => Err(ErrorKind::BinOpType {
+            op: BinOp::Mod,
             left: left.type_id(),
             right: right.type_id(),
         }),
@@ -1116,6 +1157,7 @@ pub fn bootstrap() -> BootResult {
         ("sub", native_ops_sub),
         ("mul", native_ops_mul),
         ("div", native_ops_div),
+        ("mod", native_ops_mod),
         ("eq", native_ops_eq),
         ("ne", native_ops_ne),
         ("lt", native_ops_lt),

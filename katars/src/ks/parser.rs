@@ -48,7 +48,7 @@ use super::lexer::{BinPart, StringPart, Token};
 //   binding    = IDENT '=' expr
 //   if_expr    = 'if' expr '{' stmt* '}' ('else' '{' stmt* '}' | 'elif' if_expr)?
 //   op_expr    = unary (binop unary)*          -- pratt precedence climbing
-//   binop      = '+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>='
+//   binop      = '+' | '-' | '*' | '/' | '%' | '==' | '!=' | '<' | '>' | '<=' | '>='
 //              | '&&' | '||'
 //   unary      = ('-' | '!') unary | postfix
 //   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}' | '?' | '!')*
@@ -662,6 +662,7 @@ where
                 // Multiplicative
                 infix(left(5), just(Token::Star), bin!(BinOp::Mul)),
                 infix(left(5), just(Token::Slash), bin!(BinOp::Div)),
+                infix(left(5), just(Token::Percent), bin!(BinOp::Mod)),
                 // Additive
                 infix(left(4), just(Token::Plus), bin!(BinOp::Add)),
                 infix(left(4), just(Token::Minus), bin!(BinOp::Sub)),
