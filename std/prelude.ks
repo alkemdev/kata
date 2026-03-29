@@ -6,4 +6,4 @@ import core
 import core.{Opt, Res, Iter, ToIter, Drop, Copy, Dupe, GetItem, SetItem, ToBin, Hash}
 
 # Collections — Arr is the default collection.
-import dsa.{Arr, ArrIter}
+import dsa.{Arr, ArrIter, Slot, Map, MapIter}

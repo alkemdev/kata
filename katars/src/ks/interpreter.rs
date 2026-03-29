@@ -499,6 +499,13 @@ impl Interpreter {
                     .instantiate_by_kind(base_id, type_args)
                     .map_err(Into::into)
             }
+            Expr::TupLit { elements } => {
+                let mut type_args = Vec::with_capacity(elements.len());
+                for e in elements {
+                    type_args.push(self.resolve_type_expr(&e.node)?);
+                }
+                Ok(self.types.instantiate_tup(type_args))
+            }
             _ => Err(ErrorKind::Unsupported("unsupported type annotation expression").into()),
         }
     }
