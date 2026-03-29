@@ -11,6 +11,15 @@ use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Serde helpers for Rc<[u8]> ──────────────────────────────────────────────
 
+fn serialize_arc_values<S: Serializer>(vals: &Arc<[Value]>, s: S) -> Result<S::Ok, S::Error> {
+    vals.as_ref().serialize(s)
+}
+
+fn deserialize_arc_values<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<[Value]>, D::Error> {
+    let v = Vec::<Value>::deserialize(d)?;
+    Ok(v.into())
+}
+
 fn serialize_arc_bigint<S: Serializer>(n: &Arc<BigInt>, s: S) -> Result<S::Ok, S::Error> {
     n.as_ref().serialize(s)
 }
@@ -69,7 +78,11 @@ pub enum Value {
     Enum {
         type_id: TypeId,
         variant_idx: u32,
-        fields: Vec<Value>,
+        #[serde(
+            serialize_with = "serialize_arc_values",
+            deserialize_with = "deserialize_arc_values"
+        )]
+        fields: Arc<[Value]>,
     },
     /// A type value — types are first-class.
     Type(TypeId),
@@ -82,12 +95,20 @@ pub enum Value {
     /// A record (kind) value — named fields stored positionally, names in TypeDef.
     Rec {
         type_id: TypeId,
-        fields: Vec<Value>,
+        #[serde(
+            serialize_with = "serialize_arc_values",
+            deserialize_with = "deserialize_arc_values"
+        )]
+        fields: Arc<[Value]>,
     },
     /// A tuple value — positional fields, type is Tup[T1, T2, ...].
     Tup {
         type_id: TypeId,
-        fields: Vec<Value>,
+        #[serde(
+            serialize_with = "serialize_arc_values",
+            deserialize_with = "deserialize_arc_values"
+        )]
+        fields: Arc<[Value]>,
     },
     /// A bound method — a Func with `self` already captured.
     BoundMethod {
@@ -439,13 +460,13 @@ impl Hash for Value {
             } => {
                 type_id.hash(state);
                 variant_idx.hash(state);
-                for f in fields {
+                for f in fields.iter() {
                     f.hash(state);
                 }
             }
             Value::Rec { type_id, fields } | Value::Tup { type_id, fields } => {
                 type_id.hash(state);
-                for v in fields {
+                for v in fields.iter() {
                     v.hash(state);
                 }
             }

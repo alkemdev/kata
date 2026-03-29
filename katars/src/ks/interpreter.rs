@@ -441,9 +441,9 @@ impl Interpreter {
             self.dropping = false;
         }
         // Recursively drop struct fields.
-        if let Value::Rec { fields, .. } | Value::Tup { fields, .. } = value {
-            for field_val in fields {
-                self.drop_value(field_val, out);
+        if let Value::Rec { fields, .. } | Value::Tup { fields, .. } = &value {
+            for field_val in fields.iter() {
+                self.drop_value(field_val.clone(), out);
             }
         }
     }
@@ -984,15 +984,15 @@ impl Interpreter {
         // Fields must match declaration order: Ptr { raw }, Buf { ptr, cap }, Arr { buf, len }
         let ptr_val = Value::Rec {
             type_id: ptr_tid,
-            fields: vec![Value::RawPtr(alloc_id)],
+            fields: Arc::from(vec![Value::RawPtr(alloc_id)]),
         };
         let buf_val = Value::Rec {
             type_id: buf_tid,
-            fields: vec![ptr_val, Value::int(BigInt::from(cap))],
+            fields: Arc::from(vec![ptr_val, Value::int(BigInt::from(cap))]),
         };
         let arr_val = Value::Rec {
             type_id: arr_tid,
-            fields: vec![buf_val, Value::int(BigInt::from(vals.len()))],
+            fields: Arc::from(vec![buf_val, Value::int(BigInt::from(vals.len()))]),
         };
 
         Ok(Flow::Next(arr_val))
@@ -1252,7 +1252,7 @@ impl Interpreter {
                 let tup_tid = self.types.instantiate_tup(type_args);
                 Ok(Flow::Next(Value::Tup {
                     type_id: tup_tid,
-                    fields: vals,
+                    fields: Arc::from(vals),
                 }))
             }
 
@@ -1677,7 +1677,7 @@ impl Interpreter {
 
                 Ok(Flow::Next(Value::Rec {
                     type_id,
-                    fields: result_fields,
+                    fields: Arc::from(result_fields),
                 }))
             }
         }
@@ -2059,7 +2059,7 @@ impl Interpreter {
                 {
                     debug_assert_eq!(*tid, type_id);
                     if let Some(idx) = self.types.field_index(type_id, attr) {
-                        fields[idx] = val;
+                        Arc::make_mut(fields)[idx] = val;
                     }
                     return Ok(Flow::Next(Value::Nil));
                 }
@@ -2208,7 +2208,7 @@ impl Interpreter {
                                 return Ok(Flow::Next(Value::Enum {
                                     type_id: *type_id,
                                     variant_idx,
-                                    fields: vec![],
+                                    fields: Arc::from(vec![]),
                                 }));
                             } else {
                                 return Ok(Flow::Next(Value::VariantConstructor {
@@ -2439,7 +2439,7 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Enum {
                     type_id,
                     variant_idx,
-                    fields: checked_fields,
+                    fields: Arc::from(checked_fields),
                 }))
             }
 
