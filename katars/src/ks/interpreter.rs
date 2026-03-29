@@ -453,6 +453,21 @@ impl Interpreter {
         self.call_stack.push(super::scope::Frame::new());
     }
 
+    /// Freeze the current scope for closure capture.
+    /// Returns an Arc<Scope> representing everything visible now.
+    fn capture_scope(&self) -> Arc<super::scope::Scope> {
+        // Build chain: innermost call_stack frame → ... → outermost → closure_scope.
+        // call_stack[last] is innermost, so we iterate forward and nest.
+        let mut scope = self.closure_scope.clone();
+        for frame in self.call_stack.iter() {
+            scope = Some(Arc::new(super::scope::Scope {
+                frame: frame.clone(),
+                parent: scope,
+            }));
+        }
+        scope.expect("capture_scope called with no scope")
+    }
+
     fn pop_scope(&mut self, out: &mut impl Write) {
         debug_assert!(self.call_stack.len() > 1, "cannot pop the global frame");
         let frame = self.call_stack.pop().unwrap();
@@ -485,12 +500,24 @@ impl Interpreter {
     /// Update an existing variable in the nearest enclosing scope that contains it.
     /// Returns the old value (if any) for drop dispatch by the caller.
     fn update_in_scope(&mut self, name: &str, value: Value) -> Result<Option<Value>, RuntimeError> {
-        // Only update in the mutable call stack — frozen closure scopes are immutable.
+        // Update in the mutable call stack.
         for frame in self.call_stack.iter_mut().rev() {
             if frame.contains(name) {
                 let old = frame.set(name.to_string(), value);
                 return Ok(old);
             }
+        }
+        // If the variable exists in the frozen closure scope, the update is
+        // a no-op — closures capture values, not mutable references.
+        // This handles copy-out on captured variables (e.g., heap.grow()
+        // tries to write back to `heap` which lives in a closure).
+        if self
+            .closure_scope
+            .as_ref()
+            .and_then(|s| s.lookup(name))
+            .is_some()
+        {
+            return Ok(None);
         }
         Err(ErrorKind::Undefined {
             kind: NameKind::Variable,
@@ -688,10 +715,12 @@ impl Interpreter {
                     })
                     .transpose()?;
 
+                let captured = self.capture_scope();
                 let func = Value::Func(Arc::new(FuncData {
                     params: func_params,
                     ret_type: ret_texpr,
                     body: body.clone(),
+                    closure_scope: Some(captured),
                 }));
                 self.set(name.clone(), func);
                 Ok(Flow::Next(Value::Nil))
@@ -1987,10 +2016,12 @@ impl Interpreter {
                 .map(|ann| self.resolve_type_ann(&ann.node, type_params))
                 .transpose()?;
 
+            let captured = self.capture_scope();
             let func = Value::Func(Arc::new(FuncData {
                 params: func_params,
                 ret_type: ret_texpr,
                 body: body.clone(),
+                closure_scope: Some(captured),
             }));
 
             self.methods
@@ -2445,6 +2476,7 @@ impl Interpreter {
                     &f.body,
                     false,
                     &[],
+                    &f.closure_scope,
                     out,
                 )?;
                 Ok(Flow::Next(result))
@@ -2500,15 +2532,20 @@ impl Interpreter {
                             .into());
                         }
                         // Resolve generic type params: Map[Str, Int] → K=Str, V=Int
+                        // Augment the closure scope with type param bindings.
                         let type_args = self.types.instance_type_args(tid);
                         let base_id = self.types.base_type(tid);
                         let param_names = self.types.type_param_names(base_id);
-
-                        // Bind type params in a new scope before calling.
-                        self.push_scope();
-                        for (name, &ta) in param_names.iter().zip(type_args.iter()) {
-                            self.set(name.clone(), Value::Type(ta));
-                        }
+                        let augmented_scope = {
+                            let mut type_frame = super::scope::Frame::new();
+                            for (name, &ta) in param_names.iter().zip(type_args.iter()) {
+                                type_frame.set(name.clone(), Value::Type(ta));
+                            }
+                            Some(Arc::new(super::scope::Scope {
+                                frame: type_frame,
+                                parent: f.closure_scope.clone(),
+                            }))
+                        };
 
                         let result = self.call_func_body(
                             &f.params,
@@ -2518,10 +2555,10 @@ impl Interpreter {
                             &f.body,
                             false,
                             &type_args,
+                            &augmented_scope,
                             out,
-                        );
-                        self.pop_scope(out);
-                        return Ok(Flow::Next(result?));
+                        )?;
+                        return Ok(Flow::Next(result));
                     }
 
                     // Instance method call: prepend receiver as self.
@@ -2552,6 +2589,7 @@ impl Interpreter {
                         &f.body,
                         true,
                         &receiver_type_args,
+                        &f.closure_scope,
                         out,
                     )?;
                     Ok(Flow::Next(result))
@@ -2817,8 +2855,10 @@ impl Interpreter {
         body: &[Spanned<Stmt>],
         is_method: bool,
         instance_type_args: &[TypeId],
+        func_closure: &Option<Arc<super::scope::Scope>>,
         out: &mut impl Write,
     ) -> Result<Value, RuntimeError> {
+        // Type-check arguments before switching context.
         let mut checked_args: Vec<Value> = Vec::with_capacity(args.len());
         for (i, (param, val)) in params.iter().zip(args.iter()).enumerate() {
             let checked = if let Some(ref texpr) = param.type_ann {
@@ -2838,13 +2878,16 @@ impl Interpreter {
             checked_args.push(checked);
         }
 
-        self.push_scope();
+        // Context switch: enter the callee's lexical scope.
+        let saved_stack = std::mem::take(&mut self.call_stack);
+        let saved_closure = self.closure_scope.take();
+        self.closure_scope = func_closure.clone();
+        self.call_stack = vec![super::scope::Frame::new()];
         for (param, val) in params.iter().zip(checked_args.iter()) {
             self.set(param.name.clone(), val.clone());
         }
 
-        // Bind generic type params as Type values so method bodies can
-        // reference T, E, etc. (e.g., Opt[T].Some(...) in a generic method).
+        // Bind generic type params (T, K, V, etc.) in the callee's frame.
         if is_method && !instance_type_args.is_empty() {
             if let Some(receiver) = args.first() {
                 let base_id = self.types.base_type(receiver.type_id());
@@ -2855,36 +2898,42 @@ impl Interpreter {
             }
         }
 
-        let mut result = match self.exec_block(body, out) {
+        let block_result = self.exec_block(body, out);
+
+        // Copy-out: stash mutated self before cleanup.
+        if is_method {
+            self.last_method_self = self.get(SELF_PARAM).cloned();
+            self.remove(SELF_PARAM);
+        }
+
+        // Drop locals in the callee frame.
+        let callee_frame = self.call_stack.pop().unwrap_or_default();
+        if !self.dropping {
+            for (_name, value) in callee_frame.drain() {
+                self.drop_value(value, out);
+            }
+        }
+
+        // Restore caller context.
+        self.call_stack = saved_stack;
+        self.closure_scope = saved_closure;
+
+        let mut result = match block_result {
             Ok(
                 Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. },
             ) => v,
             Ok(Flow::Bail(span)) => {
-                self.pop_scope(out);
                 return Err(
                     RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::BailOutsideLoop)).at(span),
                 );
             }
             Ok(Flow::Cont(span)) => {
-                self.pop_scope(out);
                 return Err(
                     RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::ContOutsideLoop)).at(span),
                 );
             }
-            Err(e) => {
-                self.pop_scope(out);
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         };
-
-        if is_method {
-            self.last_method_self = self.get(SELF_PARAM).cloned();
-            // Remove self from the frame before popping so it doesn't get
-            // dropped — the caller owns the original, not this copy.
-            self.remove(SELF_PARAM);
-        }
-
-        self.pop_scope(out);
 
         if let Some(ref ret_texpr) = ret_type {
             let expected_ret = self

@@ -166,6 +166,9 @@ pub struct FuncData {
     pub params: Vec<FuncParam>,
     pub ret_type: Option<TypeExpr>,
     pub body: Vec<Spanned<Stmt>>,
+    /// Captured lexical scope — the scope visible at the function's definition site.
+    #[serde(skip)]
+    pub closure_scope: Option<Arc<super::scope::Scope>>,
 }
 
 /// A function parameter with an optional type annotation.
