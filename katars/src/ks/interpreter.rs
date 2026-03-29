@@ -103,8 +103,10 @@ struct InterfaceDef {
 pub struct Interpreter {
     /// All registered types.
     pub types: TypeRegistry,
-    /// Lexically-scoped variable frames. Lookup walks innermost to outermost.
-    frames: Vec<IndexMap<String, Value>>,
+    /// Mutable call stack — live execution frames.
+    call_stack: Vec<super::scope::Frame>,
+    /// Frozen closure scope — base for lookup after call_stack is exhausted.
+    closure_scope: Option<Arc<super::scope::Scope>>,
     /// Method tables: TypeId → method_name → Func value.
     methods: HashMap<TypeId, IndexMap<String, Value>>,
     /// Interface definitions: name → method signatures.
@@ -175,7 +177,8 @@ impl Interpreter {
 
         let mut interp = Self {
             types,
-            frames: vec![IndexMap::new()],
+            call_stack: vec![super::scope::Frame::new()],
+            closure_scope: None,
             methods: HashMap::new(),
             interfaces: IndexMap::new(),
             last_method_self: None,
@@ -303,7 +306,7 @@ impl Interpreter {
     pub fn visible_names(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         let mut names = Vec::new();
-        for frame in self.frames.iter().rev() {
+        for frame in self.call_stack.iter().rev() {
             for key in frame.keys() {
                 if seen.insert(key.clone()) {
                     names.push(key.clone());
@@ -422,37 +425,39 @@ impl Interpreter {
     // ── Scope ────────────────────────────────────────────────────────────
 
     fn get(&self, name: &str) -> Option<&Value> {
-        for frame in self.frames.iter().rev() {
+        // Walk mutable call stack (innermost first)
+        for frame in self.call_stack.iter().rev() {
             if let Some(v) = frame.get(name) {
                 return Some(v);
             }
         }
-        None
+        // Walk frozen closure scope chain
+        self.closure_scope.as_ref().and_then(|s| s.lookup(name))
     }
 
     fn set(&mut self, name: String, value: Value) {
-        self.frames
+        self.call_stack
             .last_mut()
             .expect("interpreter always has at least one frame")
-            .insert(name, value);
+            .set(name, value);
     }
 
     /// Remove a name from the current (innermost) scope frame.
     fn remove(&mut self, name: &str) {
-        if let Some(frame) = self.frames.last_mut() {
-            frame.shift_remove(name);
+        if let Some(frame) = self.call_stack.last_mut() {
+            frame.remove(name);
         }
     }
 
     fn push_scope(&mut self) {
-        self.frames.push(IndexMap::new());
+        self.call_stack.push(super::scope::Frame::new());
     }
 
     fn pop_scope(&mut self, out: &mut impl Write) {
-        debug_assert!(self.frames.len() > 1, "cannot pop the global frame");
-        let frame = self.frames.pop().unwrap();
+        debug_assert!(self.call_stack.len() > 1, "cannot pop the global frame");
+        let frame = self.call_stack.pop().unwrap();
         if !self.dropping {
-            for (_name, value) in frame {
+            for (_name, value) in frame.drain() {
                 self.drop_value(value, out);
             }
         }
@@ -480,9 +485,10 @@ impl Interpreter {
     /// Update an existing variable in the nearest enclosing scope that contains it.
     /// Returns the old value (if any) for drop dispatch by the caller.
     fn update_in_scope(&mut self, name: &str, value: Value) -> Result<Option<Value>, RuntimeError> {
-        for frame in self.frames.iter_mut().rev() {
-            if frame.contains_key(name) {
-                let old = frame.insert(name.to_string(), value);
+        // Only update in the mutable call stack — frozen closure scopes are immutable.
+        for frame in self.call_stack.iter_mut().rev() {
+            if frame.contains(name) {
+                let old = frame.set(name.to_string(), value);
                 return Ok(old);
             }
         }
@@ -870,11 +876,11 @@ impl Interpreter {
         // Collect the scope into a module. If a native module already exists
         // for this path (e.g., mem has native intrinsics), merge KS exports
         // into it rather than replacing it.
-        let frame = self.frames.pop().unwrap();
+        let frame = self.call_stack.pop().unwrap();
         let module_id = self
             .find_existing_module(&module_key)
             .unwrap_or_else(|| self.native_registry.create_module(&module_key));
-        for (name, value) in frame {
+        for (name, value) in frame.drain() {
             self.native_registry.add_value(module_id, name, value);
         }
 
@@ -2086,7 +2092,7 @@ impl Interpreter {
 
         let val = self.check_type(val, expected_tid)?;
 
-        for frame in self.frames.iter_mut().rev() {
+        for frame in self.call_stack.iter_mut().rev() {
             if let Some(entry) = frame.get_mut(var_name) {
                 if let Value::Rec {
                     type_id: tid,
