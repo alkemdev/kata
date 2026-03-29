@@ -22,7 +22,7 @@ kind Map[K, V] {
 impl Map[@K, @V] {
     func new(): Map[K, V] {
         let cap = 8
-        let raw = mem.heap.make(cap)
+        let raw = heap.make(cap)
         let i = 0
         while i < cap {
             unsafe { mem.write(raw, i, Slot[K, V].Empty) }
@@ -30,7 +30,7 @@ impl Map[@K, @V] {
         }
         ret Map[K, V] {
             slots: Arr[Slot[K, V]] {
-                buf: mem.Buf[Slot[K, V]] { ptr: mem.Ptr[Slot[K, V]] { raw: raw }, cap: cap },
+                buf: Buf[Slot[K, V]] { ptr: Ptr[Slot[K, V]] { raw: raw }, cap: cap },
                 len: cap,
             },
             count: 0,
@@ -70,14 +70,14 @@ impl Map[@K, @V] {
         self.cap = self.cap * 2
         self.count = 0
 
-        let raw = mem.heap.make(self.cap)
+        let raw = heap.make(self.cap)
         let i = 0
         while i < self.cap {
             unsafe { mem.write(raw, i, Slot[K, V].Empty) }
             i = i + 1
         }
         self.slots = Arr[Slot[K, V]] {
-            buf: mem.Buf[Slot[K, V]] { ptr: mem.Ptr[Slot[K, V]] { raw: raw }, cap: self.cap },
+            buf: Buf[Slot[K, V]] { ptr: Ptr[Slot[K, V]] { raw: raw }, cap: self.cap },
             len: self.cap,
         }
 

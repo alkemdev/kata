@@ -2,9 +2,6 @@
 #
 # Arr adds the "valid region" (len) on top of Buf's raw capacity.
 # Bounds-checked access, push/pop, type-safe — all at this layer.
-#
-# Static methods use mem.X paths (run in caller scope where only the
-# scoped `mem` module is available, not selective imports).
 
 import core.{Opt, GetItem, SetItem, ToBin}
 import mem.{Ptr, Buf, heap}
@@ -14,9 +11,9 @@ kind Arr[T] { buf: Buf[T], len: Int }
 impl Arr[@T] {
     func new(): Arr[T] {
         let cap = 4
-        let raw = mem.heap.make(cap)
+        let raw = heap.make(cap)
         ret Arr[T] {
-            buf: mem.Buf[T] { ptr: mem.Ptr[T] { raw: raw }, cap: cap },
+            buf: Buf[T] { ptr: Ptr[T] { raw: raw }, cap: cap },
             len: 0,
         }
     }
@@ -54,8 +51,6 @@ impl Arr[@T] {
         ret true
     }
 }
-
-# ── ArrIter[T] ───────────────────────────────────────────────────
 
 kind ArrIter[T] { arr: Arr[T], idx: Int }
 
