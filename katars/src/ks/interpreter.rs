@@ -2237,8 +2237,13 @@ impl Interpreter {
                     }
                     _ => {
                         // Try static method lookup on this type.
+                        // Bind as BoundMethod with Type receiver so the call
+                        // path can resolve generic type parameters.
                         if let Some(method) = self.lookup_method(*type_id, name) {
-                            return Ok(Flow::Next(method));
+                            return Ok(Flow::Next(Value::BoundMethod {
+                                receiver: Box::new(Value::Type(*type_id)),
+                                func: Box::new(method),
+                            }));
                         }
                         Err(ErrorKind::NoAttr {
                             type_id: *type_id,
@@ -2448,6 +2453,43 @@ impl Interpreter {
 
             Value::BoundMethod { receiver, func } => match *func {
                 Value::Func(f) => {
+                    // Static method call: receiver is Value::Type(tid).
+                    // Don't prepend self, just pass type args for generic resolution.
+                    if let Value::Type(tid) = *receiver {
+                        if args.len() != f.params.len() {
+                            return Err(ErrorKind::ArityMismatch {
+                                target: ArityTarget::Function,
+                                expected: f.params.len(),
+                                actual: args.len(),
+                            }
+                            .into());
+                        }
+                        // Resolve generic type params: Map[Str, Int] → K=Str, V=Int
+                        let type_args = self.types.instance_type_args(tid);
+                        let base_id = self.types.base_type(tid);
+                        let param_names = self.types.type_param_names(base_id);
+
+                        // Bind type params in a new scope before calling.
+                        self.push_scope();
+                        for (name, &ta) in param_names.iter().zip(type_args.iter()) {
+                            self.set(name.clone(), Value::Type(ta));
+                        }
+
+                        let result = self.call_func_body(
+                            &f.params,
+                            args,
+                            arg_spans,
+                            &f.ret_type,
+                            &f.body,
+                            false,
+                            &type_args,
+                            out,
+                        );
+                        self.pop_scope(out);
+                        return Ok(Flow::Next(result?));
+                    }
+
+                    // Instance method call: prepend receiver as self.
                     let method_params = &f.params[1..];
                     if args.len() != method_params.len() {
                         return Err(ErrorKind::ArityMismatch {
@@ -2480,12 +2522,18 @@ impl Interpreter {
                     Ok(Flow::Next(result))
                 }
                 Value::NativeFn(fn_id) => {
-                    // Native method: prepend receiver to args.
                     let entry = self.native_registry.get(fn_id);
                     let handler = entry.handler;
-                    let mut full_args = Vec::with_capacity(args.len() + 1);
-                    full_args.push(*receiver);
-                    full_args.extend_from_slice(args);
+                    // Static native method (Type receiver): don't prepend self.
+                    // Instance native method: prepend receiver as first arg.
+                    let full_args = if matches!(*receiver, Value::Type(_)) {
+                        args.to_vec()
+                    } else {
+                        let mut fa = Vec::with_capacity(args.len() + 1);
+                        fa.push(*receiver);
+                        fa.extend_from_slice(args);
+                        fa
+                    };
                     let mut ctx = NativeCtx {
                         types: &self.types,
                         allocations: &mut self.allocations,

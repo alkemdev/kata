@@ -115,6 +115,25 @@ kind Map[K, V] {
 }
 
 impl Map[@K, @V] {
+    func new(): Map[K, V] {
+        import mem.{Ptr, Buf, heap}
+        let cap = 8
+        let raw = heap.make(cap)
+        let i = 0
+        while i < cap {
+            unsafe { mem.write(raw, i, Slot[K, V].Empty) }
+            i = i + 1
+        }
+        ret Map[K, V] {
+            slots: Arr[Slot[K, V]] {
+                buf: Buf[Slot[K, V]] { ptr: Ptr[Slot[K, V]] { raw: raw }, cap: cap },
+                len: cap,
+            },
+            count: 0,
+            cap: cap,
+        }
+    }
+
     func _idx(self, key: K): Int {
         ret key.hash().to_int() % self.cap
     }
