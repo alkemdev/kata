@@ -143,6 +143,8 @@ impl Interpreter {
         std_modules.insert("core".into(), include_str!("../../../std/core/mod.ks"));
         std_modules.insert("mem".into(), include_str!("../../../std/mem/mod.ks"));
         std_modules.insert("dsa".into(), include_str!("../../../std/dsa/mod.ks"));
+        std_modules.insert("dsa.arr".into(), include_str!("../../../std/dsa/arr.ks"));
+        std_modules.insert("dsa.map".into(), include_str!("../../../std/dsa/map.ks"));
 
         let mut interp = Self {
             types,
