@@ -140,8 +140,35 @@ impl Interpreter {
         let boot = native::bootstrap();
 
         let mut std_modules = HashMap::new();
+        // core and sub-modules
         std_modules.insert("core".into(), include_str!("../../../std/core/mod.ks"));
+        std_modules.insert("core.opt".into(), include_str!("../../../std/core/opt.ks"));
+        std_modules.insert("core.res".into(), include_str!("../../../std/core/res.ks"));
+        std_modules.insert(
+            "core.iter".into(),
+            include_str!("../../../std/core/iter.ks"),
+        );
+        std_modules.insert(
+            "core.lifecycle".into(),
+            include_str!("../../../std/core/lifecycle.ks"),
+        );
+        std_modules.insert(
+            "core.indexing".into(),
+            include_str!("../../../std/core/indexing.ks"),
+        );
+        std_modules.insert(
+            "core.conv".into(),
+            include_str!("../../../std/core/conv.ks"),
+        );
+        // mem and sub-modules
         std_modules.insert("mem".into(), include_str!("../../../std/mem/mod.ks"));
+        std_modules.insert(
+            "mem.allocator".into(),
+            include_str!("../../../std/mem/allocator.ks"),
+        );
+        std_modules.insert("mem.ptr".into(), include_str!("../../../std/mem/ptr.ks"));
+        std_modules.insert("mem.buf".into(), include_str!("../../../std/mem/buf.ks"));
+        // dsa and sub-modules
         std_modules.insert("dsa".into(), include_str!("../../../std/dsa/mod.ks"));
         std_modules.insert("dsa.arr".into(), include_str!("../../../std/dsa/arr.ks"));
         std_modules.insert("dsa.map".into(), include_str!("../../../std/dsa/map.ks"));
