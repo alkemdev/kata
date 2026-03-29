@@ -162,6 +162,7 @@ impl Map[@K, @V] {
     }
 
     func _grow(self) {
+        import mem.{Ptr, Buf, heap}
         let old_slots = self.slots
         let old_cap = self.cap
         self.cap = self.cap * 2
