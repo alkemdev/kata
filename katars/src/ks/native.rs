@@ -251,7 +251,7 @@ fn native_value_hash(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
 // ── tup — tuple methods ─────────────────────────────────────────────
 
 fn native_tup_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let Value::Struct { fields, .. } = &args[0] else {
+    let Value::Tup { fields, .. } = &args[0] else {
         return Err(ErrorKind::TypeMismatch {
             expected: prim::TUPLE,
             actual: args[0].type_id(),
@@ -433,7 +433,7 @@ pub fn truth(v: &Value) -> bool {
         Value::Int(n) => !n.is_zero(),
         Value::Float(f) => *f != 0.0,
         Value::Str(s) => !s.is_empty(),
-        Value::Struct { fields, .. } => !fields.is_empty(),
+        Value::Rec { fields, .. } | Value::Tup { fields, .. } => !fields.is_empty(),
         _ => super::numeric::try_truth(v).unwrap_or(true),
     }
 }

@@ -79,10 +79,13 @@ pub enum Value {
         variant_idx: u32,
         field_types: Vec<TypeId>,
     },
-    /// A struct or tuple value — fields stored positionally, names in TypeDef.
-    /// Structs: `Point { x: 1, y: 2 }` — field names from StructInstance.
-    /// Tuples: `(1, "hello")` — field indices are positions.
-    Struct {
+    /// A record (kind) value — named fields stored positionally, names in TypeDef.
+    Rec {
+        type_id: TypeId,
+        fields: Vec<Value>,
+    },
+    /// A tuple value — positional fields, type is Tup[T1, T2, ...].
+    Tup {
         type_id: TypeId,
         fields: Vec<Value>,
     },
@@ -237,7 +240,7 @@ impl Value {
             Value::Bin(_) => prim::BIN,
             Value::Func { .. } => prim::FUNC,
             Value::Enum { type_id, .. } => *type_id,
-            Value::Struct { type_id, .. } => *type_id,
+            Value::Rec { type_id, .. } | Value::Tup { type_id, .. } => *type_id,
             Value::BoundMethod { .. } => prim::FUNC,
             Value::Type(_) => prim::TYPE,
             Value::VariantConstructor { .. } => prim::FUNC,
@@ -288,14 +291,9 @@ impl Value {
                     format!("{variant_name}({})", inner.join(", "))
                 }
             }
-            Value::Struct { type_id, fields } => {
-                if types.base_type(*type_id) == prim::TUPLE {
-                    // Tuple display: (1, hello, true)
-                    let inner: Vec<String> = fields.iter().map(|v| v.display(types)).collect();
-                    format!("({})", inner.join(", "))
-                } else if let Some(names) = types.field_names(*type_id) {
-                    // Named struct display: Point { x: 1, y: 2 }
-                    let type_name = types.display_name(*type_id);
+            Value::Rec { type_id, fields } => {
+                let type_name = types.display_name(*type_id);
+                if let Some(names) = types.field_names(*type_id) {
                     if fields.is_empty() {
                         format!("{type_name} {{}}")
                     } else {
@@ -307,9 +305,12 @@ impl Value {
                         format!("{type_name} {{ {} }}", inner.join(", "))
                     }
                 } else {
-                    let type_name = types.display_name(*type_id);
                     format!("{type_name} {{ ... }}")
                 }
+            }
+            Value::Tup { fields, .. } => {
+                let inner: Vec<String> = fields.iter().map(|v| v.display(types)).collect();
+                format!("({})", inner.join(", "))
             }
             Value::Type(tid) => types.display_name(*tid),
             Value::VariantConstructor {
@@ -382,11 +383,21 @@ impl PartialEq for Value {
                 },
             ) => t1 == t2 && v1 == v2 && f1 == f2,
             (
-                Value::Struct {
+                Value::Rec {
                     type_id: t1,
                     fields: f1,
                 },
-                Value::Struct {
+                Value::Rec {
+                    type_id: t2,
+                    fields: f2,
+                },
+            ) => t1 == t2 && f1 == f2,
+            (
+                Value::Tup {
+                    type_id: t1,
+                    fields: f1,
+                },
+                Value::Tup {
                     type_id: t2,
                     fields: f2,
                 },
@@ -432,7 +443,7 @@ impl Hash for Value {
                     f.hash(state);
                 }
             }
-            Value::Struct { type_id, fields } => {
+            Value::Rec { type_id, fields } | Value::Tup { type_id, fields } => {
                 type_id.hash(state);
                 for v in fields {
                     v.hash(state);
@@ -462,7 +473,8 @@ pub fn is_hashable(v: &Value) -> bool {
         | Value::Type(_)
         | Value::RawPtr(_)
         | Value::Enum { .. }
-        | Value::Struct { .. } => true,
+        | Value::Rec { .. }
+        | Value::Tup { .. } => true,
         Value::Func { .. }
         | Value::BoundMethod { .. }
         | Value::VariantConstructor { .. }
@@ -499,9 +511,13 @@ impl fmt::Display for Value {
                     write!(f, "<variant:{variant_idx}>({})", inner.join(", "))
                 }
             }
-            Value::Struct { type_id, fields } => {
+            Value::Rec { type_id, fields } => {
                 let inner: Vec<String> = fields.iter().map(|v| format!("{v}")).collect();
-                write!(f, "<struct:{type_id} {{ {} }}>", inner.join(", "))
+                write!(f, "<rec:{type_id} {{ {} }}>", inner.join(", "))
+            }
+            Value::Tup { fields, .. } => {
+                let parts: Vec<String> = fields.iter().map(|v| format!("{v}")).collect();
+                write!(f, "({})", parts.join(", "))
             }
             Value::Type(tid) => write!(f, "<type:{tid}>"),
             Value::VariantConstructor { variant_idx, .. } => {
