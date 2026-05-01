@@ -13,7 +13,7 @@ func describe(a: Animal): Str {
     ret match a {
         Cat(name) -> "a cat named {name}",
         Dog(name) -> "a dog named {name}",
-        Fish -> "a fish",
+        Fish() -> "a fish",
     }
 }
 
@@ -42,7 +42,7 @@ func find_cat(animals: Arr[Animal], index: Int): Str {
     let opt = animals.get(index)
     let a = match opt {
         Val(x) -> x,
-        Non -> ret "not found",
+        Non() -> ret "not found",
     }
     ret match a {
         Cat(name) -> name,
@@ -64,7 +64,7 @@ impl Cage {
         ret match self.animal {
             Cat(name) -> "Cat: {name} (size {self.size})",
             Dog(name) -> "Dog: {name} (size {self.size})",
-            Fish -> "Fish (size {self.size})",
+            Fish() -> "Fish (size {self.size})",
         }
     }
 }

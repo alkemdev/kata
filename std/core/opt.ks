@@ -9,14 +9,14 @@ impl Opt[@T] {
     func unwrap(self): T {
         ret match self {
             Val(x) -> x,
-            Non -> panic("Opt.unwrap called on Non"),
+            Non() -> panic("Opt.unwrap called on Non"),
         }
     }
 
     func unwrap_or(self, default: T): T {
         ret match self {
             Val(x) -> x,
-            Non -> default,
+            Non() -> default,
         }
     }
 }

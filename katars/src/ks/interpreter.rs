@@ -1118,6 +1118,13 @@ impl Interpreter {
     ) -> Result<Flow, RuntimeError> {
         let val = eval!(self, subject, out);
 
+        // Validate every arm before any matching — catches typos/syntax mistakes
+        // in arms that wouldn't be reached by the first matching arm.
+        let subject_ty = val.type_id();
+        for arm in arms {
+            self.validate_pattern(&arm.pattern, subject_ty)?;
+        }
+
         for arm in arms {
             if let Some(bindings) = self.match_pattern(&val, &arm.pattern.node) {
                 self.push_scope();
@@ -1137,6 +1144,70 @@ impl Interpreter {
                 format!("this value: {}", val.display(&self.types)),
             )
             .help("add a wildcard arm: _ -> ..."))
+    }
+
+    /// Validate a pattern against an expected TypeId before any matching attempt.
+    /// Catches structural mistakes that would otherwise silently produce no-match
+    /// (typo'd variant names, dual-purpose bindings, etc.).
+    ///
+    /// Currently enforces the bare-ident-as-variant safety net: a `Pattern::Binding`
+    /// whose name is also a variant name of the enum subject is almost certainly
+    /// a forgotten `Name()` — error with a helpful suggestion. Recurses into Variant
+    /// and Tuple sub-patterns using field/element types from the registry.
+    fn validate_pattern(
+        &self,
+        pat: &Spanned<Pattern>,
+        expected_ty: TypeId,
+    ) -> Result<(), RuntimeError> {
+        match &pat.node {
+            Pattern::Wildcard => Ok(()),
+            Pattern::Literal(_) => Ok(()), // type-compat check deferred
+            Pattern::Binding(name) => {
+                // If the subject is an enum and the binding name happens to match a
+                // variant name, error out — the user almost certainly forgot the
+                // parens for a unit-variant pattern.
+                if let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) {
+                    if variants.contains_key(&name.node) {
+                        let type_name = self.types.display_name(expected_ty);
+                        return Err(RuntimeError::new(ErrorKind::Other(format!(
+                            "'{}' is a variant of {}; use {}() to match it as a variant, \
+                             or rename the binding",
+                            name.node, type_name, name.node
+                        )))
+                        .at(name.span));
+                    }
+                }
+                Ok(())
+            }
+            Pattern::Variant { name, bindings } => {
+                // Recurse into sub-patterns using the variant's field types.
+                if let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) {
+                    if let Some(vdef) = variants.get(&name.node) {
+                        let field_types: Vec<TypeId> = vdef.fields.clone();
+                        if bindings.len() == field_types.len() {
+                            for (sub, field_ty) in bindings.iter().zip(field_types.iter()) {
+                                self.validate_pattern(sub, *field_ty)?;
+                            }
+                        }
+                        // arity mismatch is reported lazily by match_pattern
+                    }
+                    // unknown variant name is also reported lazily by match_pattern
+                }
+                Ok(())
+            }
+            Pattern::Tuple(sub_pats) => {
+                // Recurse using tuple element types.
+                if let TypeDef::TupleInstance { type_args } = self.types.get(expected_ty) {
+                    if sub_pats.len() == type_args.len() {
+                        let elt_types = type_args.clone();
+                        for (sub, elt_ty) in sub_pats.iter().zip(elt_types.iter()) {
+                            self.validate_pattern(sub, *elt_ty)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Destructure an irrefutable pattern (Binding/Wildcard/Tuple) against a value,
@@ -1189,20 +1260,10 @@ impl Interpreter {
             Pattern::Wildcard => Some(vec![]),
 
             Pattern::Binding(name) => {
-                // If the value is an enum, treat bare idents as variant names.
-                if let Value::Enum {
-                    type_id,
-                    variant_idx,
-                    ..
-                } = val
-                {
-                    let variant_name = self.types.variant_name(*type_id, *variant_idx);
-                    if variant_name == name.node {
-                        return Some(vec![]); // Matched as unit variant
-                    }
-                    return None; // Enum value, but variant name doesn't match
-                }
-                // Non-enum: catch-all binding.
+                // Always a catch-all binding. The safety net (PatternAmbiguousBinding)
+                // is enforced by validate_match_arm before this code runs, so a
+                // Binding name that collides with a variant of an enum subject has
+                // already errored out. Here we just bind.
                 Some(vec![(name.node.clone(), val.clone())])
             }
 

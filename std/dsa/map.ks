@@ -48,8 +48,8 @@ impl Map[@K, @V] {
         while true {
             let slot = self.slots[i]
             match slot {
-                Empty -> ret (i, false),
-                Del -> {},
+                Empty() -> ret (i, false),
+                Del() -> {},
                 Used(k, v) -> {
                     if k == key {
                         ret (i, true)
