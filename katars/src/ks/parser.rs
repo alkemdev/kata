@@ -116,9 +116,10 @@ where
         // pattern    = IDENT '(' pattern (',' pattern)* ','? ')'    -- variant
         //            | tup_pat                                       -- tuple
         //            | '_'                                            -- wildcard
-        //            | literal                                        -- 42, "hello", true, false, nil
+        //            | literal                                        -- 42, -42, 3.14, "hello", true, false, nil
         //            | IDENT                                          -- binding
         // tup_pat    = '(' ')' | '(' pat ',' ')' | '(' pat (',' pat)+ ','? ')'
+        // literal    = '-'? NUM | STR | 'true' | 'false' | 'nil'
 
         let pattern = recursive(|pat| {
             // Variant: IDENT '(' pat (',' pat)* ','? ')'
@@ -160,14 +161,26 @@ where
                 .filter(|n| n == "_")
                 .map_with(|_, ex| Spanned::new(Pattern::Wildcard, span(&ex.span())));
 
-            // Literal: 42, "hello", true, false, nil
-            let lit_int = select! { Token::Num(s) => s }.map_with(|s, ex| {
-                let s_pan = span(&ex.span());
-                Spanned::new(
-                    Pattern::Literal(Spanned::new(Literal::Int(s), s_pan)),
-                    s_pan,
-                )
-            });
+            // Literal: -?Num | "hello" | true | false | nil
+            // Number literals support an optional unary minus directly in the
+            // literal so `-42` is `Literal::Int("-42")`, not UnaryOp(Neg, 42).
+            // Distinguishes Int (no '.') from Float (has '.') based on lexed text.
+            let lit_num = just(Token::Minus)
+                .or_not()
+                .then(select! { Token::Num(s) => s })
+                .map_with(|(neg, s), ex| {
+                    let s_pan = span(&ex.span());
+                    let text = if neg.is_some() { format!("-{s}") } else { s };
+                    let lit = if text.contains('.') {
+                        Literal::Float(text)
+                    } else {
+                        Literal::Int(text)
+                    };
+                    Spanned::new(
+                        Pattern::Literal(Spanned::new(lit, s_pan)),
+                        s_pan,
+                    )
+                });
             let lit_str = select! { Token::Str(parts) => parts }
                 .try_map(|parts, _span| {
                     // Only plain string literals (no interpolation) in patterns
@@ -226,7 +239,7 @@ where
             variant_with_bindings
                 .or(tuple_pat)
                 .or(wildcard)
-                .or(lit_int)
+                .or(lit_num)
                 .or(lit_str)
                 .or(lit_true)
                 .or(lit_false)

@@ -213,7 +213,7 @@ fn generic_method_type_error() {
 fn match_body_error() {
     // Error inside a match arm body
     insta::assert_snapshot!(helpers::run_error(
-        "let x = Opt[Int].Val(42)\nmatch x {\n    Val(n) -> n + \"bad\",\n    Non -> 0,\n}"
+        "let x = Opt[Int].Val(42)\nmatch x {\n    Val(n) -> n + \"bad\",\n    Non() -> 0,\n}"
     ));
 }
 

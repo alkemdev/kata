@@ -21,7 +21,7 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 - **Modules**: import mem (scoped), import mem.{Ptr, Buf} (selective). Top-level modules: core, mem, dsa. Prelude auto-loads core + Arr/ArrIter from dsa
 - **Lifecycle**: Drop protocol (auto-called on scope exit), Self type in impl blocks
 - **Error handling**: Res[T,E] + postfix `?` (unwrap or propagate) + postfix `!` (unwrap or panic), Res methods (unwrap, unwrap_or, is_val, is_err)
-- **Pattern matching**: match expression with variant/literal/wildcard/binding patterns
+- **Pattern matching**: match expression with variant/literal/wildcard/binding/tuple patterns (recursive); negative number literals; let/for destructuring (irrefutable patterns); repeat-binding check
 - **Collections**: array literals `[1, 2, 3]`, `a[i]`/`a[i] = v` indexing via GetItem/SetItem protocols
 - **String methods**: len (codepoints), contains, starts_with, ends_with, trim, trim_start, trim_end, to_upper, to_lower, replace, substr (codepoint-indexed), split, to_int, to_float, to_bin — all native
 - **Not yet**: maps, const

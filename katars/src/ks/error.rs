@@ -154,6 +154,13 @@ pub enum ErrorKind {
     PatternRefutableInLet {
         kind: PatternKind,
     },
+    /// Same binding name appears more than once in a single pattern.
+    /// Example: `match p { (x, x) -> ... }` or `let (a, a) = ...`.
+    PatternRepeatedBinding {
+        name: String,
+        first_span: Span,
+        repeat_span: Span,
+    },
 
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
@@ -424,6 +431,9 @@ impl ErrorKind {
                     "{} pattern is refutable; use match instead of let/for",
                     kind.name(),
                 )
+            }
+            ErrorKind::PatternRepeatedBinding { name, .. } => {
+                format!("binding '{name}' appears twice in pattern")
             }
             ErrorKind::Other(msg) => msg.clone(),
         }

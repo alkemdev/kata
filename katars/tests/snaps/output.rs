@@ -27,7 +27,7 @@ fn opt_display() {
 #[test]
 fn match_expression() {
     insta::assert_snapshot!(helpers::run_ok(
-        "let x = match Opt[Int].Val(42) {\n    Val(n) -> n * 2,\n    Non -> 0,\n}\nprint(x)"
+        "let x = match Opt[Int].Val(42) {\n    Val(n) -> n * 2,\n    Non() -> 0,\n}\nprint(x)"
     ));
 }
 

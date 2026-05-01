@@ -824,6 +824,7 @@ impl Interpreter {
 
             Stmt::Let { pattern, value } => match self.eval_expr(value, out)? {
                 Flow::Next(val) => {
+                    self.check_unique_bindings(pattern)?;
                     let bindings = self.destructure_irrefutable(pattern, &val)?;
                     for (name, v) in bindings {
                         self.set(name, v);
@@ -1185,7 +1186,10 @@ impl Interpreter {
         let subject_ty = val.type_id();
         let resolved: Vec<ResolvedPattern> = arms
             .iter()
-            .map(|arm| self.resolve_pattern(&arm.pattern, subject_ty))
+            .map(|arm| {
+                self.check_unique_bindings(&arm.pattern)?;
+                self.resolve_pattern(&arm.pattern, subject_ty)
+            })
             .collect::<Result<_, RuntimeError>>()?;
 
         // Phase 2: handle-based structural matching against the resolved trees.
@@ -1347,6 +1351,47 @@ impl Interpreter {
                     bound.extend(self.match_resolved(field, sub)?);
                 }
                 Some(bound)
+            }
+        }
+    }
+
+    /// Walk a pattern and ensure no binding name repeats. Pure structural —
+    /// no registry lookups. Wildcards never participate.
+    fn check_unique_bindings(&self, pat: &Spanned<Pattern>) -> Result<(), RuntimeError> {
+        let mut seen: Vec<(String, Span)> = Vec::new();
+        Self::collect_bindings(pat, &mut seen)?;
+        Ok(())
+    }
+
+    fn collect_bindings(
+        pat: &Spanned<Pattern>,
+        seen: &mut Vec<(String, Span)>,
+    ) -> Result<(), RuntimeError> {
+        match &pat.node {
+            Pattern::Wildcard | Pattern::Literal(_) => Ok(()),
+            Pattern::Binding(name) => {
+                if let Some((_, first_span)) = seen.iter().find(|(n, _)| n == &name.node) {
+                    return Err(RuntimeError::new(ErrorKind::PatternRepeatedBinding {
+                        name: name.node.clone(),
+                        first_span: *first_span,
+                        repeat_span: name.span,
+                    })
+                    .at(name.span));
+                }
+                seen.push((name.node.clone(), name.span));
+                Ok(())
+            }
+            Pattern::Variant { bindings, .. } => {
+                for sub in bindings {
+                    Self::collect_bindings(sub, seen)?;
+                }
+                Ok(())
+            }
+            Pattern::Tuple(sub_pats) => {
+                for sub in sub_pats {
+                    Self::collect_bindings(sub, seen)?;
+                }
+                Ok(())
             }
         }
     }
@@ -1804,6 +1849,9 @@ impl Interpreter {
                 iter_expr,
                 body,
             } => {
+                // 0. Validate the loop pattern once (no duplicate bindings).
+                self.check_unique_bindings(pattern)?;
+
                 // 1. Evaluate the iterable expression.
                 let iterable = eval!(self, iter_expr, out);
 
