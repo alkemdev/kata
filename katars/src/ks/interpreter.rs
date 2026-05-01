@@ -1683,6 +1683,34 @@ impl Interpreter {
                     .map_err(|e: RuntimeError| e.at(*name_span))
             }
 
+            Expr::TupIdx {
+                object,
+                idx,
+                idx_span,
+            } => {
+                let obj = eval!(self, object, out);
+                let Value::Tup { fields, type_id } = &obj else {
+                    return Err(RuntimeError::new(ErrorKind::TupIdxOnNonTuple {
+                        type_id: obj.type_id(),
+                        idx: *idx,
+                    })
+                    .at(*idx_span));
+                };
+                let i = *idx as usize;
+                if i >= fields.len() {
+                    return Err(RuntimeError::new(ErrorKind::PrimOutOfRange {
+                        type_name: "Tup",
+                        detail: format!(
+                            "index {i}, length {} for {}",
+                            fields.len(),
+                            self.types.display_name(*type_id),
+                        ),
+                    })
+                    .at(*idx_span));
+                }
+                Ok(Flow::Next(fields[i].clone()))
+            }
+
             Expr::Item { object, args } => {
                 let obj = eval!(self, object, out);
                 let mut arg_vals = Vec::with_capacity(args.len());
@@ -2609,20 +2637,10 @@ impl Interpreter {
                 }
                 .into())
             }
-            Value::Tup { type_id, fields } => {
-                // Positional access: ._0, ._1, etc.
-                if let Some(idx_str) = name.strip_prefix('_') {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        if idx < fields.len() {
-                            return Ok(Flow::Next(fields[idx].clone()));
-                        }
-                        return Err(ErrorKind::PrimOutOfRange {
-                            type_name: "Tup",
-                            detail: format!("index {idx}, length {}", fields.len()),
-                        }
-                        .into());
-                    }
-                }
+            Value::Tup { type_id, fields: _ } => {
+                // Positional access uses Expr::TupIdx (e.g., `t.0`), not name
+                // lookup — the parser routes integer suffixes to TupIdx, so
+                // we only land here for method calls like `t.len()`.
                 if let Ok(bound) = self.resolve_method(object, name) {
                     return Ok(Flow::Next(bound));
                 }

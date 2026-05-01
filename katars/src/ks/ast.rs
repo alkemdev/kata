@@ -333,6 +333,15 @@ pub enum Expr {
         name: String,
         name_span: Span,
     },
+    /// Positional tuple field access: `a.0`, `a.1`, …
+    /// Distinct from `Attr` because the index is a real integer, not a
+    /// name. Disambiguates from struct/method dispatch at parse time —
+    /// the interpreter never has to look at a string and decide.
+    TupIdx {
+        object: Box<Spanned<Expr>>,
+        idx: u32,
+        idx_span: Span,
+    },
     /// Item access / type args: `a[b, c]`
     Item {
         object: Box<Spanned<Expr>>,

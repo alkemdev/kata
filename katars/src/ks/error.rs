@@ -161,6 +161,12 @@ pub enum ErrorKind {
         first_span: Span,
         repeat_span: Span,
     },
+    /// Positional tuple index `.N` applied to a non-tuple value.
+    /// Example: `let x = 5; print(x.0)`.
+    TupIdxOnNonTuple {
+        type_id: TypeId,
+        idx: u32,
+    },
 
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
@@ -434,6 +440,12 @@ impl ErrorKind {
             }
             ErrorKind::PatternRepeatedBinding { name, .. } => {
                 format!("binding '{name}' appears twice in pattern")
+            }
+            ErrorKind::TupIdxOnNonTuple { type_id, idx } => {
+                format!(
+                    "cannot apply tuple index .{idx} to {} (positional indexing requires a tuple)",
+                    types.display_name(*type_id),
+                )
             }
             ErrorKind::Other(msg) => msg.clone(),
         }

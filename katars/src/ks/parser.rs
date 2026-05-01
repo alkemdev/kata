@@ -52,7 +52,8 @@ use super::lexer::{BinPart, StringPart, Token};
 //   binop      = '+' | '-' | '*' | '/' | '%' | '==' | '!=' | '<' | '>' | '<=' | '>='
 //              | '&&' | '||'
 //   unary      = ('-' | '!') unary | postfix
-//   postfix    = atom ('.' IDENT | '[' args ']' | '(' args ')' | '{' field_init* '}' | '?' | '!')*
+//   postfix    = atom ('.' IDENT | '.' NUM | '[' args ']' | '(' args ')' | '{' field_init* '}' | '?' | '!')*
+//                                  -- '.' NUM is positional tuple field access (`t.0`, `t.0.1`)
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
 //   atom       = ident | str | num | 'true' | 'false' | 'nil' | tup_or_group | arr_lit
@@ -552,9 +553,12 @@ where
 
             // Each postfix carries (data, end_position) so the foldl can
             // compute the full span from lhs.start to postfix.end.
+            // `TupIdx` carries a Vec because a single Num token like "0.1"
+            // (lexer fuses these) expands into two consecutive index ops.
             #[derive(Clone)]
             enum Postfix {
                 Attr(String, Span, usize), // name, name_span, end
+                TupIdx(Vec<(u32, Span)>, usize), // (idx, idx_span)+, end
                 Item(Vec<Spanned<Expr>>, usize),
                 Call(Vec<Spanned<Expr>>, Span, usize), // args, args_span, end
                 Construct(Vec<(String, Spanned<Expr>)>, Span, usize), // fields, brace_span, end
@@ -566,6 +570,7 @@ where
                 fn end(&self) -> usize {
                     match self {
                         Postfix::Attr(_, _, e)
+                        | Postfix::TupIdx(_, e)
                         | Postfix::Item(_, e)
                         | Postfix::Call(_, _, e)
                         | Postfix::Construct(_, _, e)
@@ -575,13 +580,64 @@ where
                 }
             }
 
+            // After `.`: either an identifier (attribute / method) or a Num
+            // (tuple positional index). We parse them as two select arms inside
+            // a single ignore_then so chumsky doesn't have to backtrack across
+            // the consumed Dot.
+            #[derive(Clone)]
+            enum DotPart {
+                Ident(String),
+                Num(String),
+            }
             let attr = just(Token::Dot)
                 .ignore_then(
-                    select! { Token::Ident(name) => name }
-                        .map_with(|name, ex| (name, span(&ex.span()))),
+                    select! {
+                        Token::Ident(name) => DotPart::Ident(name),
+                        Token::Num(n) => DotPart::Num(n),
+                    }
+                    .map_with(|p, ex| (p, span(&ex.span()))),
                 )
-                .map_with(|(name, name_span), ex| {
-                    Postfix::Attr(name, name_span, span(&ex.span()).1)
+                .try_map(|(part, sp), full_span| match part {
+                    DotPart::Ident(name) => Ok(Postfix::Attr(name, sp, sp.1)),
+                    DotPart::Num(text) => {
+                        // Reject non-decimal forms — tuple field indices
+                        // must be plain decimal integers.
+                        if text.starts_with("0x")
+                            || text.starts_with("0X")
+                            || text.starts_with("0b")
+                            || text.starts_with("0B")
+                        {
+                            return Err(Rich::custom(
+                                full_span,
+                                format!("tuple field index must be a decimal integer, got '{text}'"),
+                            ));
+                        }
+                        // The lexer fuses "0.1" into one Num. Split on '.' so
+                        // `t.0.1` becomes two consecutive TupIdx ops.
+                        let mut parts = Vec::new();
+                        if let Some((a, b)) = text.split_once('.') {
+                            let ia: u32 = a.parse().map_err(|_| {
+                                Rich::custom(full_span, format!("invalid tuple field index '{a}'"))
+                            })?;
+                            let ib: u32 = b.parse().map_err(|_| {
+                                Rich::custom(full_span, format!("invalid tuple field index '{b}'"))
+                            })?;
+                            // Split the Num span at the decimal point. ASCII digits,
+                            // so byte offsets equal char counts.
+                            let dot_pos = sp.0 + a.len();
+                            parts.push((ia, (sp.0, dot_pos)));
+                            parts.push((ib, (dot_pos + 1, sp.1)));
+                        } else {
+                            let i: u32 = text.parse().map_err(|_| {
+                                Rich::custom(
+                                    full_span,
+                                    format!("invalid tuple field index '{text}'"),
+                                )
+                            })?;
+                            parts.push((i, sp));
+                        }
+                        Ok(Postfix::TupIdx(parts, sp.1))
+                    }
                 });
 
             let item = expr
@@ -636,6 +692,24 @@ where
                         },
                         s,
                     ),
+                    Postfix::TupIdx(indices, _) => {
+                        // `t.0.1` (lexer-fused as one Num) expands into two
+                        // nested TupIdx ops; build them left-associatively.
+                        let start = lhs.span.0;
+                        let mut acc = lhs;
+                        for (idx, idx_span) in indices {
+                            let span = (start, idx_span.1);
+                            acc = Spanned::new(
+                                Expr::TupIdx {
+                                    object: Box::new(acc),
+                                    idx,
+                                    idx_span,
+                                },
+                                span,
+                            );
+                        }
+                        acc
+                    }
                     Postfix::Item(args, _) => Spanned::new(
                         Expr::Item {
                             object: Box::new(lhs),
