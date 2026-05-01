@@ -1,0 +1,10 @@
+# Map: integer keys hash and compare correctly
+let m = Map[Int, Str].new()
+m.set(0, "zero")
+m.set(1, "one")
+m.set(-1, "neg")
+print(m[0])
+print(m[1])
+print(m[-1])
+print(m.has(0))
+print(m.has(99))
