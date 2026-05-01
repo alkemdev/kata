@@ -115,8 +115,70 @@ pub enum ErrorKind {
     },
     /// Interpreter invariant violation — should never reach user code.
     InternalError(&'static str),
+
+    // ── Pattern errors ──────────────────────────────────────────────────────
+    /// Variant pattern names a non-existent variant of the subject's enum.
+    /// Example: `Vla(x)` on `Opt[Int]`.
+    PatternUnknownVariant {
+        type_id: TypeId,
+        variant_name: String,
+    },
+    /// Variant pattern's binding count doesn't match the variant's field count.
+    /// Example: `Val(x, y)` on a 1-field variant.
+    PatternVariantArity {
+        type_id: TypeId,
+        variant_name: String,
+        expected: usize,
+        actual: usize,
+    },
+    /// Tuple pattern length doesn't match the tuple's arity.
+    PatternTupleArity {
+        expected: usize,
+        actual: usize,
+    },
+    /// Pattern shape is incompatible with the subject's type.
+    /// Example: tuple pattern on `Int`, variant pattern on `Rec`.
+    PatternTypeMismatch {
+        pattern_kind: PatternKind,
+        subject_type: TypeId,
+    },
+    /// Bare identifier in a match arm matches a variant name of the subject's
+    /// enum — almost certainly a forgotten `Name()`. Catches the syntax-migration
+    /// gap. The hint is rendered with the subject type for context.
+    PatternAmbiguousBinding {
+        binding_name: String,
+        type_id: TypeId,
+    },
+    /// Refutable pattern appears in a `let` or `for` binding (which require
+    /// irrefutable patterns).
+    PatternRefutableInLet {
+        kind: PatternKind,
+    },
+
     /// Migration bridge — wraps bare String errors not yet converted.
     Other(String),
+}
+
+/// Categorizes patterns for error reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternKind {
+    Wildcard,
+    Binding,
+    Literal,
+    Variant,
+    Tuple,
+}
+
+impl PatternKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            PatternKind::Wildcard => "wildcard",
+            PatternKind::Binding => "binding",
+            PatternKind::Literal => "literal",
+            PatternKind::Variant => "variant",
+            PatternKind::Tuple => "tuple",
+        }
+    }
 }
 
 impl ErrorKind {
@@ -315,6 +377,54 @@ impl ErrorKind {
             }
             ErrorKind::IntegerOverflow => "integer out of representable range".to_string(),
             ErrorKind::InternalError(msg) => format!("internal error: {msg}"),
+            ErrorKind::PatternUnknownVariant {
+                type_id,
+                variant_name,
+            } => {
+                format!(
+                    "no variant '{variant_name}' on type {}",
+                    types.display_name(*type_id),
+                )
+            }
+            ErrorKind::PatternVariantArity {
+                type_id,
+                variant_name,
+                expected,
+                actual,
+            } => {
+                format!(
+                    "variant '{variant_name}' of {} has {expected} field(s) but pattern has {actual}",
+                    types.display_name(*type_id),
+                )
+            }
+            ErrorKind::PatternTupleArity { expected, actual } => {
+                format!("tuple pattern has {actual} element(s) but tuple has {expected}")
+            }
+            ErrorKind::PatternTypeMismatch {
+                pattern_kind,
+                subject_type,
+            } => {
+                format!(
+                    "{} pattern cannot match {} value",
+                    pattern_kind.name(),
+                    types.display_name(*subject_type),
+                )
+            }
+            ErrorKind::PatternAmbiguousBinding {
+                binding_name,
+                type_id,
+            } => {
+                format!(
+                    "'{binding_name}' is a variant of {}; use {binding_name}() to match it as a variant, or rename the binding",
+                    types.display_name(*type_id),
+                )
+            }
+            ErrorKind::PatternRefutableInLet { kind } => {
+                format!(
+                    "{} pattern is refutable; use match instead of let/for",
+                    kind.name(),
+                )
+            }
             ErrorKind::Other(msg) => msg.clone(),
         }
     }

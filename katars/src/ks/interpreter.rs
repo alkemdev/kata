@@ -12,7 +12,7 @@ use super::ast::{
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
-    RuntimeError, TypeKindExpectation,
+    PatternKind, RuntimeError, TypeKindExpectation,
 };
 use super::native::{self, NativeCtx, NativeFnRegistry};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
@@ -1148,12 +1148,9 @@ impl Interpreter {
 
     /// Validate a pattern against an expected TypeId before any matching attempt.
     /// Catches structural mistakes that would otherwise silently produce no-match
-    /// (typo'd variant names, dual-purpose bindings, etc.).
-    ///
-    /// Currently enforces the bare-ident-as-variant safety net: a `Pattern::Binding`
-    /// whose name is also a variant name of the enum subject is almost certainly
-    /// a forgotten `Name()` — error with a helpful suggestion. Recurses into Variant
-    /// and Tuple sub-patterns using field/element types from the registry.
+    /// (typo'd variant names, arity errors, dual-purpose bindings, type mismatches).
+    /// Recurses into Variant and Tuple sub-patterns using field/element types from
+    /// the registry — every nesting depth is validated, not just the top level.
     fn validate_pattern(
         &self,
         pat: &Spanned<Pattern>,
@@ -1163,47 +1160,67 @@ impl Interpreter {
             Pattern::Wildcard => Ok(()),
             Pattern::Literal(_) => Ok(()), // type-compat check deferred
             Pattern::Binding(name) => {
-                // If the subject is an enum and the binding name happens to match a
-                // variant name, error out — the user almost certainly forgot the
-                // parens for a unit-variant pattern.
+                // Safety net: if the subject is an enum and the binding name matches
+                // a variant name, the user almost certainly forgot Name() syntax.
                 if let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) {
                     if variants.contains_key(&name.node) {
-                        let type_name = self.types.display_name(expected_ty);
-                        return Err(RuntimeError::new(ErrorKind::Other(format!(
-                            "'{}' is a variant of {}; use {}() to match it as a variant, \
-                             or rename the binding",
-                            name.node, type_name, name.node
-                        )))
+                        return Err(RuntimeError::new(ErrorKind::PatternAmbiguousBinding {
+                            binding_name: name.node.clone(),
+                            type_id: expected_ty,
+                        })
                         .at(name.span));
                     }
                 }
                 Ok(())
             }
             Pattern::Variant { name, bindings } => {
-                // Recurse into sub-patterns using the variant's field types.
-                if let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) {
-                    if let Some(vdef) = variants.get(&name.node) {
-                        let field_types: Vec<TypeId> = vdef.fields.clone();
-                        if bindings.len() == field_types.len() {
-                            for (sub, field_ty) in bindings.iter().zip(field_types.iter()) {
-                                self.validate_pattern(sub, *field_ty)?;
-                            }
-                        }
-                        // arity mismatch is reported lazily by match_pattern
-                    }
-                    // unknown variant name is also reported lazily by match_pattern
+                let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) else {
+                    return Err(RuntimeError::new(ErrorKind::PatternTypeMismatch {
+                        pattern_kind: PatternKind::Variant,
+                        subject_type: expected_ty,
+                    })
+                    .at(pat.span));
+                };
+                let Some(vdef) = variants.get(&name.node) else {
+                    return Err(RuntimeError::new(ErrorKind::PatternUnknownVariant {
+                        type_id: expected_ty,
+                        variant_name: name.node.clone(),
+                    })
+                    .at(name.span));
+                };
+                if bindings.len() != vdef.fields.len() {
+                    return Err(RuntimeError::new(ErrorKind::PatternVariantArity {
+                        type_id: expected_ty,
+                        variant_name: name.node.clone(),
+                        expected: vdef.fields.len(),
+                        actual: bindings.len(),
+                    })
+                    .at(pat.span));
+                }
+                let field_types: Vec<TypeId> = vdef.fields.clone();
+                for (sub, field_ty) in bindings.iter().zip(field_types.iter()) {
+                    self.validate_pattern(sub, *field_ty)?;
                 }
                 Ok(())
             }
             Pattern::Tuple(sub_pats) => {
-                // Recurse using tuple element types.
-                if let TypeDef::TupleInstance { type_args } = self.types.get(expected_ty) {
-                    if sub_pats.len() == type_args.len() {
-                        let elt_types = type_args.clone();
-                        for (sub, elt_ty) in sub_pats.iter().zip(elt_types.iter()) {
-                            self.validate_pattern(sub, *elt_ty)?;
-                        }
-                    }
+                let TypeDef::TupleInstance { type_args } = self.types.get(expected_ty) else {
+                    return Err(RuntimeError::new(ErrorKind::PatternTypeMismatch {
+                        pattern_kind: PatternKind::Tuple,
+                        subject_type: expected_ty,
+                    })
+                    .at(pat.span));
+                };
+                if sub_pats.len() != type_args.len() {
+                    return Err(RuntimeError::new(ErrorKind::PatternTupleArity {
+                        expected: type_args.len(),
+                        actual: sub_pats.len(),
+                    })
+                    .at(pat.span));
+                }
+                let elt_types = type_args.clone();
+                for (sub, elt_ty) in sub_pats.iter().zip(elt_types.iter()) {
+                    self.validate_pattern(sub, *elt_ty)?;
                 }
                 Ok(())
             }
@@ -1223,18 +1240,17 @@ impl Interpreter {
             Pattern::Wildcard => Ok(vec![]),
             Pattern::Tuple(sub_pats) => {
                 let Value::Tup { fields, .. } = val else {
-                    return Err(RuntimeError::new(ErrorKind::Other(format!(
-                        "tuple pattern cannot match {} value",
-                        self.types.display_name(val.type_id())
-                    )))
+                    return Err(RuntimeError::new(ErrorKind::PatternTypeMismatch {
+                        pattern_kind: PatternKind::Tuple,
+                        subject_type: val.type_id(),
+                    })
                     .at(pat.span));
                 };
                 if sub_pats.len() != fields.len() {
-                    return Err(RuntimeError::new(ErrorKind::Other(format!(
-                        "tuple pattern has {} elements but value has {}",
-                        sub_pats.len(),
-                        fields.len()
-                    )))
+                    return Err(RuntimeError::new(ErrorKind::PatternTupleArity {
+                        expected: fields.len(),
+                        actual: sub_pats.len(),
+                    })
                     .at(pat.span));
                 }
                 let mut bound = Vec::new();
@@ -1243,14 +1259,17 @@ impl Interpreter {
                 }
                 Ok(bound)
             }
-            Pattern::Variant { name, .. } => Err(RuntimeError::new(ErrorKind::Other(format!(
-                "variant pattern '{}' is refutable; use match instead of let",
-                name.node
-            )))
+            Pattern::Variant { name, .. } => Err(RuntimeError::new(
+                ErrorKind::PatternRefutableInLet {
+                    kind: PatternKind::Variant,
+                },
+            )
             .at(name.span)),
-            Pattern::Literal(lit) => Err(RuntimeError::new(ErrorKind::Other(
-                "literal pattern is refutable; use match instead of let".to_string(),
-            ))
+            Pattern::Literal(lit) => Err(RuntimeError::new(
+                ErrorKind::PatternRefutableInLet {
+                    kind: PatternKind::Literal,
+                },
+            )
             .at(lit.span)),
         }
     }
