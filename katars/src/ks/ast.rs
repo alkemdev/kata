@@ -34,19 +34,19 @@ pub enum Stmt {
     FuncDef(FuncDef),
     /// `enum Name[T] { Variant(T), Unit }` — enum type definition.
     EnumDef {
-        name: String,
+        name: Spanned<String>,
         type_params: Vec<String>,
         variants: Vec<AstVariantDef>,
     },
     /// `kind Name[T] { field: Type, ... }` — product type definition.
     KindDef {
-        name: String,
+        name: Spanned<String>,
         type_params: Vec<String>,
         fields: Vec<AstFieldDef>,
     },
     /// `type Name[T] { method_sig* }` — abstract interface definition.
     InterfaceDef {
-        name: String,
+        name: Spanned<String>,
         type_params: Vec<String>,
         methods: Vec<MethodSig>,
     },
@@ -78,7 +78,7 @@ pub enum Stmt {
 /// A function parameter with optional type annotation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Param {
-    pub name: String,
+    pub name: Spanned<String>,
     /// Type annotation — a full expression AST (e.g., `Int`, `List[T]`).
     pub type_ann: Option<Spanned<Expr>>,
 }
@@ -86,7 +86,7 @@ pub struct Param {
 /// A single variant in an enum definition (AST level).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AstVariantDef {
-    pub name: String,
+    pub name: Spanned<String>,
     /// Field type annotations as full expression ASTs. Empty for unit variants.
     pub fields: Vec<Spanned<Expr>>,
 }
@@ -95,7 +95,7 @@ pub struct AstVariantDef {
 /// not a string — supports `x: Int`, `items: List[T]`, `key: Map[Str, V]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AstFieldDef {
-    pub name: String,
+    pub name: Spanned<String>,
     pub type_ann: Spanned<Expr>,
 }
 
@@ -103,7 +103,7 @@ pub struct AstFieldDef {
 /// Used by `Stmt::FuncDef` and `Stmt::Impl.methods`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuncDef {
-    pub name: String,
+    pub name: Spanned<String>,
     pub params: Vec<Param>,
     pub ret_type: Option<Spanned<Expr>>,
     pub body: Vec<Spanned<Stmt>>,
@@ -112,7 +112,7 @@ pub struct FuncDef {
 /// A method signature in an interface definition (no body).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodSig {
-    pub name: String,
+    pub name: Spanned<String>,
     pub params: Vec<Param>,
     pub ret_type: Option<Spanned<Expr>>,
 }

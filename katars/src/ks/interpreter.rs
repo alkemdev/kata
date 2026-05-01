@@ -728,7 +728,7 @@ impl Interpreter {
                 type_params,
                 variants,
             } => {
-                self.register_enum(name, type_params, variants)
+                self.register_enum(&name.node, type_params, variants)
                     .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
@@ -738,7 +738,7 @@ impl Interpreter {
                 type_params,
                 fields,
             } => {
-                self.register_struct(name, type_params, fields)
+                self.register_struct(&name.node, type_params, fields)
                     .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
@@ -748,7 +748,7 @@ impl Interpreter {
                 type_params,
                 methods,
             } => {
-                self.register_interface(name, type_params, methods)
+                self.register_interface(&name.node, type_params, methods)
                     .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
@@ -818,7 +818,7 @@ impl Interpreter {
                     body: body.clone(),
                     closure_scope: Some(captured),
                 }));
-                self.set(name.clone(), func);
+                self.set(name.node.clone(), func);
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -1992,7 +1992,7 @@ impl Interpreter {
                 .iter()
                 .map(|f| self.resolve_type_ann(&f.node, type_params))
                 .collect::<Result<Vec<_>, _>>()?;
-            variants.insert(v.name.clone(), VariantDef { fields });
+            variants.insert(v.name.node.clone(), VariantDef { fields });
         }
 
         let type_id = self
@@ -2014,7 +2014,7 @@ impl Interpreter {
         let mut fields = IndexMap::new();
         for f in ast_fields {
             let texpr = self.resolve_type_ann(&f.type_ann.node, type_params)?;
-            fields.insert(f.name.clone(), texpr);
+            fields.insert(f.name.node.clone(), texpr);
         }
 
         let type_id = self
@@ -2086,16 +2086,18 @@ impl Interpreter {
         })?;
 
         for sig in &iface.methods {
-            let func = method_table.get(&sig.name).ok_or_else(|| -> RuntimeError {
-                ErrorKind::ConformanceFailure {
-                    type_name: type_display.clone(),
-                    iface_name: iface_name.to_string(),
-                    detail: ConformanceError::MissingMethod {
-                        method: sig.name.clone(),
-                    },
-                }
-                .into()
-            })?;
+            let func = method_table
+                .get(&sig.name.node)
+                .ok_or_else(|| -> RuntimeError {
+                    ErrorKind::ConformanceFailure {
+                        type_name: type_display.clone(),
+                        iface_name: iface_name.to_string(),
+                        detail: ConformanceError::MissingMethod {
+                            method: sig.name.node.clone(),
+                        },
+                    }
+                    .into()
+                })?;
 
             if let Value::Func(f) = func {
                 if f.params.len() != sig.params.len() {
@@ -2103,7 +2105,7 @@ impl Interpreter {
                         type_name: type_display.clone(),
                         iface_name: iface_name.to_string(),
                         detail: ConformanceError::ParamCountMismatch {
-                            method: sig.name.clone(),
+                            method: sig.name.node.clone(),
                             expected: sig.params.len(),
                             actual: f.params.len(),
                         },
@@ -2228,7 +2230,7 @@ impl Interpreter {
 
             // Static methods (no self) are allowed — they're called on the type value.
             // Instance methods must have self as the first parameter.
-            let _is_static = params.is_empty() || params[0].name != SELF_PARAM;
+            let _is_static = params.is_empty() || params[0].name.node != SELF_PARAM;
 
             // Resolve params using type_params so generic annotations
             // (e.g., `val: T`) produce TypeExpr::Param(idx).
@@ -2250,7 +2252,7 @@ impl Interpreter {
             self.methods
                 .entry(type_id)
                 .or_insert_with(IndexMap::new)
-                .insert(name.clone(), func);
+                .insert(name.node.clone(), func);
         }
 
         // Remove `Self` so it doesn't leak into surrounding scope.
@@ -2960,7 +2962,7 @@ impl Interpreter {
                     .map(|ann| self.resolve_type_ann(&ann.node, type_params))
                     .transpose()?;
                 Ok(FuncParam {
-                    name: p.name.clone(),
+                    name: p.name.node.clone(),
                     type_ann,
                 })
             })

@@ -763,6 +763,7 @@ where
 
         // variant = IDENT '(' expr (',' expr)* ')' | IDENT
         let variant_def = select! { Token::Ident(name) => name }
+            .map_with(|name, ex| Spanned::new(name, span(&ex.span())))
             .then(
                 expr.clone()
                     .separated_by(just(Token::Comma))
@@ -785,7 +786,10 @@ where
 
         // enum_def = 'enum' IDENT type_params? '{' variant_list '}'
         let enum_def = just(Token::Enum)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span()))),
+            )
             .then(type_params.clone().or_not())
             .then(
                 variant_def
@@ -807,12 +811,16 @@ where
 
         // kind_def = 'kind' IDENT type_params? '{' field_list '}'
         let field_def = select! { Token::Ident(name) => name }
+            .map_with(|name, ex| Spanned::new(name, span(&ex.span())))
             .then_ignore(just(Token::Colon))
             .then(expr.clone())
             .map(|(name, type_ann)| AstFieldDef { name, type_ann });
 
         let kind_def = just(Token::Kind)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span()))),
+            )
             .then(type_params.clone().or_not())
             .then(
                 field_def
@@ -834,7 +842,8 @@ where
 
         // param = (IDENT | 'self') (':' expr)?
         let param_name = select! { Token::Ident(name) => name }
-            .or(just(Token::SelfValue).to("self".to_string()));
+            .or(just(Token::SelfValue).to("self".to_string()))
+            .map_with(|name, ex| Spanned::new(name, span(&ex.span())));
         let param = param_name
             .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
             .map(|(name, type_ann)| Param { name, type_ann });
@@ -845,7 +854,10 @@ where
         // interface_def = 'type' IDENT type_params? '{' method_sig* '}'
         // method_sig = 'func' IDENT '(' params ')' ret_ann?
         let method_sig = just(Token::Func)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span()))),
+            )
             .then(
                 param
                     .clone()
@@ -862,7 +874,10 @@ where
             });
 
         let interface_def = just(Token::Type)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span()))),
+            )
             .then(type_params.clone().or_not())
             .then(
                 method_sig
@@ -884,7 +899,10 @@ where
 
         // impl_block = 'impl' IDENT ('as' expr)? '{' func_def* '}'
         let impl_func_def = just(Token::Func)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span()))),
+            )
             .then(
                 param
                     .clone()
@@ -984,7 +1002,10 @@ where
             });
 
         let func_def = just(Token::Func)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(
+                select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span()))),
+            )
             .then(
                 param
                     .separated_by(just(Token::Comma))
