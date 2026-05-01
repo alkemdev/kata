@@ -7,8 +7,8 @@ use num_bigint::BigInt;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, Expr, FuncDef, InterpPart, Literal,
-    MatchArm, MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern,
+    AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, Expr, FuncDef, InterpPart, MatchArm,
+    MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -76,6 +76,67 @@ fn parse_int_literal(s: &str) -> Result<BigInt, String> {
     } else {
         s.parse::<BigInt>().map_err(|e| e.to_string())
     }
+}
+
+/// Compare a literal AST node to a runtime value for equality.
+/// Used by both `match` arm matching and (eventually) const folding.
+fn literal_matches(lit: &super::ast::Literal, val: &Value) -> bool {
+    use super::ast::Literal;
+    match lit {
+        Literal::Int(s) => {
+            if let Value::Int(n) = val {
+                if let Ok(lit_n) = parse_int_literal(s) {
+                    return **n == lit_n;
+                }
+            }
+            false
+        }
+        Literal::Float(s) => {
+            if let Value::Float(v) = val {
+                if let Ok(lit_f) = s.parse::<f64>() {
+                    return *v == lit_f;
+                }
+            }
+            false
+        }
+        Literal::Str(s) => {
+            if let Value::Str(v) = val {
+                return &**v == s.as_str();
+            }
+            false
+        }
+        Literal::Bool(b) => {
+            if let Value::Bool(v) = val {
+                return v == b;
+            }
+            false
+        }
+        Literal::Nil => matches!(val, Value::Nil),
+    }
+}
+
+// ── ResolvedPattern ──────────────────────────────────────────────────────────
+
+/// A pattern with all variant names replaced by `(TypeId, variant_idx)` handles.
+/// Produced by `resolve_pattern`; consumed by `match_resolved`. The matching
+/// phase compares `variant_idx` integers, never strings.
+#[derive(Debug, Clone)]
+enum ResolvedPattern {
+    /// `_` — matches anything, binds nothing.
+    Wildcard,
+    /// `x` — catch-all binding. Span preserved for diagnostics.
+    Binding(Spanned<String>),
+    /// `42`, `"hi"`, etc. — equality check against a Value.
+    /// Carries the AST literal (still a string for BigInt precision); the
+    /// comparison is done by `literal_matches` at match time.
+    Literal(Spanned<super::ast::Literal>),
+    /// `Val(...)` or `Non()` — variant match by index, not name.
+    Variant {
+        variant_idx: u32,
+        bindings: Vec<ResolvedPattern>,
+    },
+    /// `(p1, p2, ...)` — tuple match. Arity already verified at resolve time.
+    Tuple(Vec<ResolvedPattern>),
 }
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
@@ -1118,15 +1179,18 @@ impl Interpreter {
     ) -> Result<Flow, RuntimeError> {
         let val = eval!(self, subject, out);
 
-        // Validate every arm before any matching — catches typos/syntax mistakes
-        // in arms that wouldn't be reached by the first matching arm.
+        // Phase 1: resolve every arm against the subject's type. Catches typos,
+        // arity errors, and pattern/type mismatches up front — even in arms that
+        // would never be reached by the first matching arm.
         let subject_ty = val.type_id();
-        for arm in arms {
-            self.validate_pattern(&arm.pattern, subject_ty)?;
-        }
+        let resolved: Vec<ResolvedPattern> = arms
+            .iter()
+            .map(|arm| self.resolve_pattern(&arm.pattern, subject_ty))
+            .collect::<Result<_, RuntimeError>>()?;
 
-        for arm in arms {
-            if let Some(bindings) = self.match_pattern(&val, &arm.pattern.node) {
+        // Phase 2: handle-based structural matching against the resolved trees.
+        for (rp, arm) in resolved.iter().zip(arms.iter()) {
+            if let Some(bindings) = self.match_resolved(&val, rp) {
                 self.push_scope();
                 for (name, bound_val) in bindings {
                     self.set(name, bound_val);
@@ -1146,22 +1210,23 @@ impl Interpreter {
             .help("add a wildcard arm: _ -> ..."))
     }
 
-    /// Validate a pattern against an expected TypeId before any matching attempt.
-    /// Catches structural mistakes that would otherwise silently produce no-match
-    /// (typo'd variant names, arity errors, dual-purpose bindings, type mismatches).
-    /// Recurses into Variant and Tuple sub-patterns using field/element types from
-    /// the registry — every nesting depth is validated, not just the top level.
-    fn validate_pattern(
+    /// Resolve an AST pattern against an expected TypeId. Walks the pattern
+    /// once, validates against the registry (variant names, arity, type
+    /// compatibility, refutability constraints), and produces a ResolvedPattern
+    /// where every variant name has been replaced by its (TypeId, variant_idx)
+    /// handle. Matching against the resolved tree is pure structural recursion —
+    /// no string comparisons, no registry lookups in the hot path.
+    fn resolve_pattern(
         &self,
         pat: &Spanned<Pattern>,
         expected_ty: TypeId,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<ResolvedPattern, RuntimeError> {
         match &pat.node {
-            Pattern::Wildcard => Ok(()),
-            Pattern::Literal(_) => Ok(()), // type-compat check deferred
+            Pattern::Wildcard => Ok(ResolvedPattern::Wildcard),
+            Pattern::Literal(lit) => Ok(ResolvedPattern::Literal(lit.clone())),
             Pattern::Binding(name) => {
-                // Safety net: if the subject is an enum and the binding name matches
-                // a variant name, the user almost certainly forgot Name() syntax.
+                // Safety net: bare-ident name colliding with a variant of an
+                // enum subject is almost certainly a forgotten Name() syntax.
                 if let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) {
                     if variants.contains_key(&name.node) {
                         return Err(RuntimeError::new(ErrorKind::PatternAmbiguousBinding {
@@ -1171,7 +1236,7 @@ impl Interpreter {
                         .at(name.span));
                     }
                 }
-                Ok(())
+                Ok(ResolvedPattern::Binding(name.clone()))
             }
             Pattern::Variant { name, bindings } => {
                 let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) else {
@@ -1181,7 +1246,7 @@ impl Interpreter {
                     })
                     .at(pat.span));
                 };
-                let Some(vdef) = variants.get(&name.node) else {
+                let Some((variant_idx, _, vdef)) = variants.get_full(&name.node) else {
                     return Err(RuntimeError::new(ErrorKind::PatternUnknownVariant {
                         type_id: expected_ty,
                         variant_name: name.node.clone(),
@@ -1198,10 +1263,14 @@ impl Interpreter {
                     .at(pat.span));
                 }
                 let field_types: Vec<TypeId> = vdef.fields.clone();
+                let mut resolved_bindings = Vec::with_capacity(bindings.len());
                 for (sub, field_ty) in bindings.iter().zip(field_types.iter()) {
-                    self.validate_pattern(sub, *field_ty)?;
+                    resolved_bindings.push(self.resolve_pattern(sub, *field_ty)?);
                 }
-                Ok(())
+                Ok(ResolvedPattern::Variant {
+                    variant_idx: variant_idx as u32,
+                    bindings: resolved_bindings,
+                })
             }
             Pattern::Tuple(sub_pats) => {
                 let TypeDef::TupleInstance { type_args } = self.types.get(expected_ty) else {
@@ -1219,10 +1288,65 @@ impl Interpreter {
                     .at(pat.span));
                 }
                 let elt_types = type_args.clone();
+                let mut resolved_subs = Vec::with_capacity(sub_pats.len());
                 for (sub, elt_ty) in sub_pats.iter().zip(elt_types.iter()) {
-                    self.validate_pattern(sub, *elt_ty)?;
+                    resolved_subs.push(self.resolve_pattern(sub, *elt_ty)?);
                 }
-                Ok(())
+                Ok(ResolvedPattern::Tuple(resolved_subs))
+            }
+        }
+    }
+
+    /// Match a resolved pattern against a value. Pure structural recursion —
+    /// no string comparisons, no registry lookups. Variant matching compares
+    /// `variant_idx` (u32) directly against `Value::Enum::variant_idx`.
+    fn match_resolved(
+        &self,
+        val: &Value,
+        pat: &ResolvedPattern,
+    ) -> Option<Vec<(String, Value)>> {
+        match pat {
+            ResolvedPattern::Wildcard => Some(vec![]),
+            ResolvedPattern::Binding(name) => {
+                Some(vec![(name.node.clone(), val.clone())])
+            }
+            ResolvedPattern::Literal(lit) => {
+                if literal_matches(&lit.node, val) {
+                    Some(vec![])
+                } else {
+                    None
+                }
+            }
+            ResolvedPattern::Variant {
+                variant_idx,
+                bindings,
+            } => {
+                let Value::Enum {
+                    variant_idx: val_idx,
+                    fields,
+                    ..
+                } = val
+                else {
+                    return None;
+                };
+                if val_idx != variant_idx {
+                    return None;
+                }
+                let mut bound = Vec::new();
+                for (sub, field) in bindings.iter().zip(fields.iter()) {
+                    bound.extend(self.match_resolved(field, sub)?);
+                }
+                Some(bound)
+            }
+            ResolvedPattern::Tuple(sub_pats) => {
+                let Value::Tup { fields, .. } = val else {
+                    return None;
+                };
+                let mut bound = Vec::new();
+                for (sub, field) in sub_pats.iter().zip(fields.iter()) {
+                    bound.extend(self.match_resolved(field, sub)?);
+                }
+                Some(bound)
             }
         }
     }
@@ -1271,103 +1395,6 @@ impl Interpreter {
                 },
             )
             .at(lit.span)),
-        }
-    }
-
-    fn match_pattern(&self, val: &Value, pattern: &Pattern) -> Option<Vec<(String, Value)>> {
-        match pattern {
-            Pattern::Wildcard => Some(vec![]),
-
-            Pattern::Binding(name) => {
-                // Always a catch-all binding. The safety net (PatternAmbiguousBinding)
-                // is enforced by validate_match_arm before this code runs, so a
-                // Binding name that collides with a variant of an enum subject has
-                // already errored out. Here we just bind.
-                Some(vec![(name.node.clone(), val.clone())])
-            }
-
-            Pattern::Variant { name, bindings } => {
-                if let Value::Enum {
-                    type_id,
-                    variant_idx,
-                    fields,
-                } = val
-                {
-                    let variant_name = self.types.variant_name(*type_id, *variant_idx);
-                    if variant_name == name.node && bindings.len() == fields.len() {
-                        let mut bound = Vec::new();
-                        for (sub_pat, field_val) in bindings.iter().zip(fields.iter()) {
-                            match self.match_pattern(field_val, &sub_pat.node) {
-                                Some(sub_bindings) => bound.extend(sub_bindings),
-                                None => return None,
-                            }
-                        }
-                        return Some(bound);
-                    }
-                }
-                None
-            }
-
-            Pattern::Tuple(sub_pats) => {
-                if let Value::Tup { fields, .. } = val {
-                    if sub_pats.len() == fields.len() {
-                        let mut bound = Vec::new();
-                        for (sub_pat, field_val) in sub_pats.iter().zip(fields.iter()) {
-                            match self.match_pattern(field_val, &sub_pat.node) {
-                                Some(sub_bindings) => bound.extend(sub_bindings),
-                                None => return None,
-                            }
-                        }
-                        return Some(bound);
-                    }
-                }
-                None
-            }
-
-            Pattern::Literal(lit) => match &lit.node {
-                Literal::Int(s) => {
-                    if let Value::Int(n) = val {
-                        if let Ok(lit_n) = parse_int_literal(s) {
-                            if **n == lit_n {
-                                return Some(vec![]);
-                            }
-                        }
-                    }
-                    None
-                }
-                Literal::Float(s) => {
-                    if let Value::Float(v) = val {
-                        if let Ok(lit_f) = s.parse::<f64>() {
-                            if *v == lit_f {
-                                return Some(vec![]);
-                            }
-                        }
-                    }
-                    None
-                }
-                Literal::Str(s) => {
-                    if let Value::Str(v) = val {
-                        if &**v == s.as_str() {
-                            return Some(vec![]);
-                        }
-                    }
-                    None
-                }
-                Literal::Bool(b) => {
-                    if let Value::Bool(v) = val {
-                        if v == b {
-                            return Some(vec![]);
-                        }
-                    }
-                    None
-                }
-                Literal::Nil => {
-                    if matches!(val, Value::Nil) {
-                        return Some(vec![]);
-                    }
-                    None
-                }
-            },
         }
     }
 
