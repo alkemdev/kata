@@ -93,9 +93,9 @@ impl Map[@K, @V] {
     }
 
     func get(self, key: K): Opt[V] {
-        let result = self._find(key)
-        if result._1 {
-            let slot = self.slots[result._0]
+        let (idx, found) = self._find(key)
+        if found {
+            let slot = self.slots[idx]
             match slot {
                 Used(k, v) -> ret Opt[V].Val(v),
                 _ -> {},
@@ -108,9 +108,7 @@ impl Map[@K, @V] {
         if (self.count + 1) * 4 > self.cap * 3 {
             self._grow()
         }
-        let result = self._find(key)
-        let idx = result._0
-        let found = result._1
+        let (idx, found) = self._find(key)
         self.slots.set(idx, Slot[K, V].Used(key, val))
         if !found {
             self.count = self.count + 1
@@ -118,9 +116,9 @@ impl Map[@K, @V] {
     }
 
     func del(self, key: K): Bool {
-        let result = self._find(key)
-        if result._1 {
-            self.slots.set(result._0, Slot[K, V].Del)
+        let (idx, found) = self._find(key)
+        if found {
+            self.slots.set(idx, Slot[K, V].Del)
             self.count = self.count - 1
             ret true
         }
@@ -128,7 +126,8 @@ impl Map[@K, @V] {
     }
 
     func has(self, key: K): Bool {
-        ret self._find(key)._1
+        let (_, found) = self._find(key)
+        ret found
     }
 
     func len(self): Int {
@@ -138,9 +137,9 @@ impl Map[@K, @V] {
 
 impl Map[@K, @V] as GetItem[K, V] {
     func get_item(self, key: K): V {
-        let result = self._find(key)
-        if result._1 {
-            let slot = self.slots[result._0]
+        let (idx, found) = self._find(key)
+        if found {
+            let slot = self.slots[idx]
             match slot {
                 Used(k, v) -> ret v,
                 _ -> {},

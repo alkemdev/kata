@@ -111,6 +111,129 @@ where
     I: ValueInput<'tokens, Token = Token, Span = SimpleSpan>,
 {
     recursive(|stmt| {
+        // ── pattern parser (hoisted out of expr so let/for can use it) ───
+        //
+        // pattern    = IDENT '(' pattern (',' pattern)* ','? ')'    -- variant
+        //            | tup_pat                                       -- tuple
+        //            | '_'                                            -- wildcard
+        //            | literal                                        -- 42, "hello", true, false, nil
+        //            | IDENT                                          -- binding
+        // tup_pat    = '(' ')' | '(' pat ',' ')' | '(' pat (',' pat)+ ','? ')'
+
+        let pattern = recursive(|pat| {
+            // Variant: IDENT '(' pat (',' pat)* ','? ')'
+            let variant_with_bindings = select! { Token::Ident(name) => name }
+                .map_with(|name, ex| Spanned::new(name, span(&ex.span())))
+                .then(
+                    pat.clone()
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LParen), just(Token::RParen)),
+                )
+                .map_with(|(name, bindings), ex| {
+                    Spanned::new(Pattern::Variant { name, bindings }, span(&ex.span()))
+                });
+
+            // Tuple: same disambiguation as tup_or_group expressions.
+            // (p) is grouping (returns inner pattern); (p,) is 1-tuple; (p, q) is 2-tuple.
+            let tuple_pat = just(Token::LParen)
+                .ignore_then(
+                    pat.clone()
+                        .separated_by(just(Token::Comma))
+                        .collect::<Vec<_>>(),
+                )
+                .then(just(Token::Comma).or_not())
+                .then_ignore(just(Token::RParen))
+                .map_with(|(elements, trailing_comma), ex| {
+                    let s = span(&ex.span());
+                    if elements.len() == 1 && trailing_comma.is_none() {
+                        // (p) — grouping, return the inner pattern unchanged
+                        elements.into_iter().next().unwrap()
+                    } else {
+                        Spanned::new(Pattern::Tuple(elements), s)
+                    }
+                });
+
+            // Wildcard: _ (lexes as an identifier)
+            let wildcard = select! { Token::Ident(name) => name }
+                .filter(|n| n == "_")
+                .map_with(|_, ex| Spanned::new(Pattern::Wildcard, span(&ex.span())));
+
+            // Literal: 42, "hello", true, false, nil
+            let lit_int = select! { Token::Num(s) => s }.map_with(|s, ex| {
+                let s_pan = span(&ex.span());
+                Spanned::new(
+                    Pattern::Literal(Spanned::new(Literal::Int(s), s_pan)),
+                    s_pan,
+                )
+            });
+            let lit_str = select! { Token::Str(parts) => parts }
+                .try_map(|parts, _span| {
+                    // Only plain string literals (no interpolation) in patterns
+                    if parts.len() == 1 {
+                        if let super::lexer::StringPart::Lit(s) = &parts[0] {
+                            return Ok(s.clone());
+                        }
+                    }
+                    if parts.is_empty() {
+                        return Ok(String::new());
+                    }
+                    Err(Rich::custom(
+                        _span,
+                        "interpolated strings not allowed in match patterns",
+                    ))
+                })
+                .map_with(|s, ex| {
+                    let s_pan = span(&ex.span());
+                    Spanned::new(
+                        Pattern::Literal(Spanned::new(Literal::Str(s), s_pan)),
+                        s_pan,
+                    )
+                });
+            let lit_true = just(Token::True).map_with(|_, ex| {
+                let s_pan = span(&ex.span());
+                Spanned::new(
+                    Pattern::Literal(Spanned::new(Literal::Bool(true), s_pan)),
+                    s_pan,
+                )
+            });
+            let lit_false = just(Token::False).map_with(|_, ex| {
+                let s_pan = span(&ex.span());
+                Spanned::new(
+                    Pattern::Literal(Spanned::new(Literal::Bool(false), s_pan)),
+                    s_pan,
+                )
+            });
+            let lit_nil = just(Token::Nil).map_with(|_, ex| {
+                let s_pan = span(&ex.span());
+                Spanned::new(
+                    Pattern::Literal(Spanned::new(Literal::Nil, s_pan)),
+                    s_pan,
+                )
+            });
+
+            // Bare ident: unit variant or catch-all binding
+            let bare_ident = select! { Token::Ident(name) => name }
+                .filter(|n| n != "_")
+                .map_with(|name, ex| {
+                    // Could be unit variant or binding — resolved at runtime
+                    let s_pan = span(&ex.span());
+                    Spanned::new(Pattern::Binding(Spanned::new(name, s_pan)), s_pan)
+                });
+
+            // Priority: variant (IDENT before paren) > tuple (paren) > wildcard > literal > binding
+            variant_with_bindings
+                .or(tuple_pat)
+                .or(wildcard)
+                .or(lit_int)
+                .or(lit_str)
+                .or(lit_true)
+                .or(lit_false)
+                .or(lit_nil)
+                .or(bare_ident)
+        });
+
         // ── expression parser (uses `stmt` for `with` bodies) ────────────
 
         let expr = recursive(|expr| {
@@ -280,126 +403,6 @@ where
 
             // match_expr = 'match' expr '{' match_arm (',' match_arm)* ','? '}'
             // match_arm  = pattern '->' expr  |  pattern '->' '{' stmt* '}'
-            // pattern    = IDENT '(' pattern (',' pattern)* ','? ')'    -- variant
-            //            | tup_pat                                       -- tuple
-            //            | '_'                                            -- wildcard
-            //            | literal                                        -- 42, "hello", true, false, nil
-            //            | IDENT                                          -- binding
-            // tup_pat    = '(' ')' | '(' pat ',' ')' | '(' pat (',' pat)+ ','? ')'
-
-            let pattern = recursive(|pat| {
-                // Variant: IDENT '(' pat (',' pat)* ','? ')'
-                let variant_with_bindings = select! { Token::Ident(name) => name }
-                    .map_with(|name, ex| Spanned::new(name, span(&ex.span())))
-                    .then(
-                        pat.clone()
-                            .separated_by(just(Token::Comma))
-                            .allow_trailing()
-                            .collect::<Vec<_>>()
-                            .delimited_by(just(Token::LParen), just(Token::RParen)),
-                    )
-                    .map_with(|(name, bindings), ex| {
-                        Spanned::new(Pattern::Variant { name, bindings }, span(&ex.span()))
-                    });
-
-                // Tuple: same disambiguation as tup_or_group expressions.
-                // (p) is grouping (returns inner pattern); (p,) is 1-tuple; (p, q) is 2-tuple.
-                let tuple_pat = just(Token::LParen)
-                    .ignore_then(
-                        pat.clone()
-                            .separated_by(just(Token::Comma))
-                            .collect::<Vec<_>>(),
-                    )
-                    .then(just(Token::Comma).or_not())
-                    .then_ignore(just(Token::RParen))
-                    .map_with(|(elements, trailing_comma), ex| {
-                        let s = span(&ex.span());
-                        if elements.len() == 1 && trailing_comma.is_none() {
-                            // (p) — grouping, return the inner pattern unchanged
-                            elements.into_iter().next().unwrap()
-                        } else {
-                            Spanned::new(Pattern::Tuple(elements), s)
-                        }
-                    });
-
-                // Wildcard: _ (lexes as an identifier)
-                let wildcard = select! { Token::Ident(name) => name }
-                    .filter(|n| n == "_")
-                    .map_with(|_, ex| Spanned::new(Pattern::Wildcard, span(&ex.span())));
-
-                // Literal: 42, "hello", true, false, nil
-                let lit_int = select! { Token::Num(s) => s }.map_with(|s, ex| {
-                    let s_pan = span(&ex.span());
-                    Spanned::new(
-                        Pattern::Literal(Spanned::new(Literal::Int(s), s_pan)),
-                        s_pan,
-                    )
-                });
-                let lit_str = select! { Token::Str(parts) => parts }
-                    .try_map(|parts, _span| {
-                        // Only plain string literals (no interpolation) in patterns
-                        if parts.len() == 1 {
-                            if let super::lexer::StringPart::Lit(s) = &parts[0] {
-                                return Ok(s.clone());
-                            }
-                        }
-                        if parts.is_empty() {
-                            return Ok(String::new());
-                        }
-                        Err(Rich::custom(
-                            _span,
-                            "interpolated strings not allowed in match patterns",
-                        ))
-                    })
-                    .map_with(|s, ex| {
-                        let s_pan = span(&ex.span());
-                        Spanned::new(
-                            Pattern::Literal(Spanned::new(Literal::Str(s), s_pan)),
-                            s_pan,
-                        )
-                    });
-                let lit_true = just(Token::True).map_with(|_, ex| {
-                    let s_pan = span(&ex.span());
-                    Spanned::new(
-                        Pattern::Literal(Spanned::new(Literal::Bool(true), s_pan)),
-                        s_pan,
-                    )
-                });
-                let lit_false = just(Token::False).map_with(|_, ex| {
-                    let s_pan = span(&ex.span());
-                    Spanned::new(
-                        Pattern::Literal(Spanned::new(Literal::Bool(false), s_pan)),
-                        s_pan,
-                    )
-                });
-                let lit_nil = just(Token::Nil).map_with(|_, ex| {
-                    let s_pan = span(&ex.span());
-                    Spanned::new(
-                        Pattern::Literal(Spanned::new(Literal::Nil, s_pan)),
-                        s_pan,
-                    )
-                });
-
-                // Bare ident: unit variant or catch-all binding
-                let bare_ident = select! { Token::Ident(name) => name }
-                    .filter(|n| n != "_")
-                    .map_with(|name, ex| {
-                        // Could be unit variant or binding — resolved at runtime
-                        let s_pan = span(&ex.span());
-                        Spanned::new(Pattern::Binding(Spanned::new(name, s_pan)), s_pan)
-                    });
-
-                // Priority: variant (IDENT before paren) > tuple (paren) > wildcard > literal > binding
-                variant_with_bindings
-                    .or(tuple_pat)
-                    .or(wildcard)
-                    .or(lit_int)
-                    .or(lit_str)
-                    .or(lit_true)
-                    .or(lit_false)
-                    .or(lit_nil)
-                    .or(bare_ident)
-            });
 
             // Arm body: single expression (as a statement) or block
             let arm_body = stmt
@@ -410,6 +413,7 @@ where
                 .or(stmt.clone().map(|s| vec![s]));
 
             let match_arm = pattern
+                .clone()
                 .then_ignore(just(Token::Arrow))
                 .then(arm_body)
                 .map(|(pattern, body)| MatchArm { pattern, body });
@@ -500,14 +504,14 @@ where
                 });
 
             let for_expr = just(Token::For)
-                .ignore_then(select! { Token::Ident(name) => name })
+                .ignore_then(pattern.clone())
                 .then_ignore(just(Token::In))
                 .then(expr.clone())
                 .then(block.clone())
-                .map_with(|((binding, iter_expr), body), ex| {
+                .map_with(|((pattern, iter_expr), body), ex| {
                     Spanned::new(
                         Expr::For {
-                            binding,
+                            pattern,
                             iter_expr: Box::new(iter_expr),
                             body,
                         },
@@ -1008,12 +1012,12 @@ where
             });
 
         let let_stmt = just(Token::Let)
-            .ignore_then(select! { Token::Ident(name) => name })
+            .ignore_then(pattern.clone())
             .then_ignore(just(Token::Eq))
             .then(expr.clone())
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|(name, value), ex| {
-                Spanned::new(Stmt::Let { name, value }, span(&ex.span()))
+            .map_with(|(pattern, value), ex| {
+                Spanned::new(Stmt::Let { pattern, value }, span(&ex.span()))
             });
 
         let bail_stmt = just(Token::Bail)
@@ -1319,13 +1323,16 @@ mod tests {
         let prog = parse_ok("let x = 42");
         assert_eq!(prog.len(), 1);
         let Stmt::Let {
-            ref name,
+            ref pattern,
             ref value,
         } = prog[0].node
         else {
             panic!("expected Let, got {:?}", prog[0].node)
         };
-        assert_eq!(name, "x");
+        let Pattern::Binding(ref name) = pattern.node else {
+            panic!("expected Binding pattern, got {:?}", pattern.node)
+        };
+        assert_eq!(name.node, "x");
         assert!(matches!(value.node, Expr::Int(ref s) if s == "42"));
     }
 

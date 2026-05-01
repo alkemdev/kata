@@ -761,9 +761,12 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::Let { name, value } => match self.eval_expr(value, out)? {
+            Stmt::Let { pattern, value } => match self.eval_expr(value, out)? {
                 Flow::Next(val) => {
-                    self.set(name.clone(), val);
+                    let bindings = self.destructure_irrefutable(pattern, &val)?;
+                    for (name, v) in bindings {
+                        self.set(name, v);
+                    }
                     Ok(Flow::Next(Value::Nil))
                 }
                 flow @ (Flow::Return { .. } | Flow::Propagate { .. }) => Ok(flow),
@@ -1134,6 +1137,51 @@ impl Interpreter {
                 format!("this value: {}", val.display(&self.types)),
             )
             .help("add a wildcard arm: _ -> ..."))
+    }
+
+    /// Destructure an irrefutable pattern (Binding/Wildcard/Tuple) against a value,
+    /// returning the bindings to introduce. Refutable patterns (Variant/Literal) are
+    /// rejected with an error — those belong in `match` arms, not `let`/`for`.
+    fn destructure_irrefutable(
+        &self,
+        pat: &Spanned<Pattern>,
+        val: &Value,
+    ) -> Result<Vec<(String, Value)>, RuntimeError> {
+        match &pat.node {
+            Pattern::Binding(name) => Ok(vec![(name.node.clone(), val.clone())]),
+            Pattern::Wildcard => Ok(vec![]),
+            Pattern::Tuple(sub_pats) => {
+                let Value::Tup { fields, .. } = val else {
+                    return Err(RuntimeError::new(ErrorKind::Other(format!(
+                        "tuple pattern cannot match {} value",
+                        self.types.display_name(val.type_id())
+                    )))
+                    .at(pat.span));
+                };
+                if sub_pats.len() != fields.len() {
+                    return Err(RuntimeError::new(ErrorKind::Other(format!(
+                        "tuple pattern has {} elements but value has {}",
+                        sub_pats.len(),
+                        fields.len()
+                    )))
+                    .at(pat.span));
+                }
+                let mut bound = Vec::new();
+                for (sub, field) in sub_pats.iter().zip(fields.iter()) {
+                    bound.extend(self.destructure_irrefutable(sub, field)?);
+                }
+                Ok(bound)
+            }
+            Pattern::Variant { name, .. } => Err(RuntimeError::new(ErrorKind::Other(format!(
+                "variant pattern '{}' is refutable; use match instead of let",
+                name.node
+            )))
+            .at(name.span)),
+            Pattern::Literal(lit) => Err(RuntimeError::new(ErrorKind::Other(
+                "literal pattern is refutable; use match instead of let".to_string(),
+            ))
+            .at(lit.span)),
+        }
     }
 
     fn match_pattern(&self, val: &Value, pattern: &Pattern) -> Option<Vec<(String, Value)>> {
@@ -1645,7 +1693,7 @@ impl Interpreter {
             }
 
             Expr::For {
-                binding,
+                pattern,
                 iter_expr,
                 body,
             } => {
@@ -1700,9 +1748,15 @@ impl Interpreter {
                             .at(expr.span)
                     })?;
 
-                    // Bind loop variable and execute body.
+                    // Destructure the yielded value with the loop pattern, bind
+                    // the resulting variables in a fresh scope, and execute the body.
                     self.push_scope();
-                    self.set(binding.clone(), val);
+                    let bindings = self
+                        .destructure_irrefutable(pattern, &val)
+                        .map_err(|e| e.at(pattern.span))?;
+                    for (name, v) in bindings {
+                        self.set(name, v);
+                    }
 
                     let flow = self.exec_block(body, out)?;
                     if let Some(early) = self.dispatch_loop_flow(flow, out) {

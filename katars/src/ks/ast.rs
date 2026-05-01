@@ -24,8 +24,12 @@ pub type Program = Vec<Spanned<Stmt>>;
 pub enum Stmt {
     /// A bare expression used as a statement.
     Expr(Spanned<Expr>),
-    /// `let <name> = <expr>` — variable binding.
-    Let { name: String, value: Spanned<Expr> },
+    /// `let <pattern> = <expr>` — variable binding with optional destructure.
+    /// Only irrefutable patterns are allowed (Binding, Wildcard, Tuple).
+    Let {
+        pattern: Spanned<Pattern>,
+        value: Spanned<Expr>,
+    },
     /// `func name(params) { body }` — function definition.
     FuncDef(FuncDef),
     /// `enum Name[T] { Variant(T), Unit }` — enum type definition.
@@ -366,9 +370,11 @@ pub enum Expr {
         then_body: Vec<Spanned<Stmt>>,
         else_body: Option<Vec<Spanned<Stmt>>>,
     },
-    /// `for x in expr { body }` — iterate via the iterator protocol.
+    /// `for <pattern> in expr { body }` — iterate via the iterator protocol,
+    /// destructuring each yielded value via the pattern. Only irrefutable
+    /// patterns (Binding/Wildcard/Tuple) are allowed.
     For {
-        binding: String,
+        pattern: Spanned<Pattern>,
         iter_expr: Box<Spanned<Expr>>,
         body: Vec<Spanned<Stmt>>,
     },
