@@ -164,17 +164,42 @@ pub enum TypePattern {
 
 // ── Match patterns ───────────────────────────────────────────────────────────
 
+/// The set of values that can appear as a literal pattern.
+/// Narrower than `Expr` — only constants, no interpolation, no computation.
+/// Int/Float text is preserved as the raw lexed string for BigInt precision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Literal {
+    /// `42`, `-17`, `0xff` — raw lexed string, parsed at evaluation time.
+    Int(String),
+    /// `3.14`, `1e-9` — raw lexed string.
+    Float(String),
+    /// `"hello"` — plain string only (no interpolation in pattern position).
+    Str(String),
+    /// `true`, `false`.
+    Bool(bool),
+    /// `nil`.
+    Nil,
+}
+
 /// A pattern in a match arm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Pattern {
     /// Match a variant by name: `Val(x, y)` or `Non` (unit variant).
-    Variant { name: String, bindings: Vec<String> },
+    /// `name` carries its own span (just the ident, not the parens).
+    /// `bindings` is recursive — each field can be any sub-pattern.
+    Variant {
+        name: Spanned<String>,
+        bindings: Vec<Spanned<Pattern>>,
+    },
+    /// Match a tuple: `(p1, p2, ...)`. Element count = tuple arity. Recursive.
+    Tuple(Vec<Spanned<Pattern>>),
     /// Match a literal value: `42`, `"hello"`, `true`, `nil`.
-    Literal(Spanned<Expr>),
+    Literal(Spanned<Literal>),
     /// Wildcard: `_` — matches anything, no binding.
     Wildcard,
     /// Catch-all binding: `x` — matches anything, binds the whole value.
-    Binding(String),
+    /// `Spanned<String>` carries the binding's source span.
+    Binding(Spanned<String>),
 }
 
 /// A single arm in a match expression.

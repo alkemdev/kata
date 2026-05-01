@@ -9,7 +9,8 @@ use tracing::{debug, info};
 
 use super::ast::{
     AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, BinOp, Expr, FuncDef, InterpPart,
-    MatchArm, MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern, UnaryOp,
+    Literal, MatchArm, MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern,
+    UnaryOp,
 };
 use super::lexer::{BinPart, StringPart, Token};
 
@@ -279,13 +280,19 @@ where
 
             // match_expr = 'match' expr '{' match_arm (',' match_arm)* ','? '}'
             // match_arm  = pattern '->' expr  |  pattern '->' '{' stmt* '}'
-            // pattern    = IDENT '(' IDENT (',' IDENT)* ')' | '_' | literal | IDENT
+            // pattern    = IDENT '(' pattern (',' pattern)* ','? ')'    -- variant
+            //            | tup_pat                                       -- tuple
+            //            | '_'                                            -- wildcard
+            //            | literal                                        -- 42, "hello", true, false, nil
+            //            | IDENT                                          -- binding
+            // tup_pat    = '(' ')' | '(' pat ',' ')' | '(' pat (',' pat)+ ','? ')'
 
-            let pattern = {
-                // Variant with bindings: Val(x, y)
+            let pattern = recursive(|pat| {
+                // Variant: IDENT '(' pat (',' pat)* ','? ')'
                 let variant_with_bindings = select! { Token::Ident(name) => name }
+                    .map_with(|name, ex| Spanned::new(name, span(&ex.span())))
                     .then(
-                        select! { Token::Ident(name) => name }
+                        pat.clone()
                             .separated_by(just(Token::Comma))
                             .allow_trailing()
                             .collect::<Vec<_>>()
@@ -295,17 +302,37 @@ where
                         Spanned::new(Pattern::Variant { name, bindings }, span(&ex.span()))
                     });
 
-                // Wildcard: _
-                // We use Ident("_") since _ lexes as an identifier
+                // Tuple: same disambiguation as tup_or_group expressions.
+                // (p) is grouping (returns inner pattern); (p,) is 1-tuple; (p, q) is 2-tuple.
+                let tuple_pat = just(Token::LParen)
+                    .ignore_then(
+                        pat.clone()
+                            .separated_by(just(Token::Comma))
+                            .collect::<Vec<_>>(),
+                    )
+                    .then(just(Token::Comma).or_not())
+                    .then_ignore(just(Token::RParen))
+                    .map_with(|(elements, trailing_comma), ex| {
+                        let s = span(&ex.span());
+                        if elements.len() == 1 && trailing_comma.is_none() {
+                            // (p) — grouping, return the inner pattern unchanged
+                            elements.into_iter().next().unwrap()
+                        } else {
+                            Spanned::new(Pattern::Tuple(elements), s)
+                        }
+                    });
+
+                // Wildcard: _ (lexes as an identifier)
                 let wildcard = select! { Token::Ident(name) => name }
                     .filter(|n| n == "_")
                     .map_with(|_, ex| Spanned::new(Pattern::Wildcard, span(&ex.span())));
 
                 // Literal: 42, "hello", true, false, nil
                 let lit_int = select! { Token::Num(s) => s }.map_with(|s, ex| {
+                    let s_pan = span(&ex.span());
                     Spanned::new(
-                        Pattern::Literal(Spanned::new(Expr::Int(s), span(&ex.span()))),
-                        span(&ex.span()),
+                        Pattern::Literal(Spanned::new(Literal::Int(s), s_pan)),
+                        s_pan,
                     )
                 });
                 let lit_str = select! { Token::Str(parts) => parts }
@@ -325,27 +352,31 @@ where
                         ))
                     })
                     .map_with(|s, ex| {
+                        let s_pan = span(&ex.span());
                         Spanned::new(
-                            Pattern::Literal(Spanned::new(Expr::Str(s), span(&ex.span()))),
-                            span(&ex.span()),
+                            Pattern::Literal(Spanned::new(Literal::Str(s), s_pan)),
+                            s_pan,
                         )
                     });
                 let lit_true = just(Token::True).map_with(|_, ex| {
+                    let s_pan = span(&ex.span());
                     Spanned::new(
-                        Pattern::Literal(Spanned::new(Expr::Bool(true), span(&ex.span()))),
-                        span(&ex.span()),
+                        Pattern::Literal(Spanned::new(Literal::Bool(true), s_pan)),
+                        s_pan,
                     )
                 });
                 let lit_false = just(Token::False).map_with(|_, ex| {
+                    let s_pan = span(&ex.span());
                     Spanned::new(
-                        Pattern::Literal(Spanned::new(Expr::Bool(false), span(&ex.span()))),
-                        span(&ex.span()),
+                        Pattern::Literal(Spanned::new(Literal::Bool(false), s_pan)),
+                        s_pan,
                     )
                 });
                 let lit_nil = just(Token::Nil).map_with(|_, ex| {
+                    let s_pan = span(&ex.span());
                     Spanned::new(
-                        Pattern::Literal(Spanned::new(Expr::Nil, span(&ex.span()))),
-                        span(&ex.span()),
+                        Pattern::Literal(Spanned::new(Literal::Nil, s_pan)),
+                        s_pan,
                     )
                 });
 
@@ -354,10 +385,13 @@ where
                     .filter(|n| n != "_")
                     .map_with(|name, ex| {
                         // Could be unit variant or binding — resolved at runtime
-                        Spanned::new(Pattern::Binding(name), span(&ex.span()))
+                        let s_pan = span(&ex.span());
+                        Spanned::new(Pattern::Binding(Spanned::new(name, s_pan)), s_pan)
                     });
 
+                // Priority: variant (IDENT before paren) > tuple (paren) > wildcard > literal > binding
                 variant_with_bindings
+                    .or(tuple_pat)
                     .or(wildcard)
                     .or(lit_int)
                     .or(lit_str)
@@ -365,7 +399,7 @@ where
                     .or(lit_false)
                     .or(lit_nil)
                     .or(bare_ident)
-            };
+            });
 
             // Arm body: single expression (as a statement) or block
             let arm_body = stmt

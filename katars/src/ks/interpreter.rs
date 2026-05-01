@@ -7,8 +7,8 @@ use num_bigint::BigInt;
 use tracing::{debug, trace};
 
 use super::ast::{
-    AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, Expr, FuncDef, InterpPart, MatchArm,
-    MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern,
+    AssignTarget, AstFieldDef, AstVariantDef, BinInterpPart, Expr, FuncDef, InterpPart, Literal,
+    MatchArm, MethodSig, Param, Pattern, Program, Span, Spanned, Stmt, TypePattern,
 };
 use super::error::{
     AccessKind, ArityTarget, ConformanceError, ErrorKind, FlowMisuse, MethodDefError, NameKind,
@@ -18,14 +18,49 @@ use super::native::{self, NativeCtx, NativeFnRegistry};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncData, FuncParam, Value};
 
-// ── Protocol constants ──────────────────────────────────────────────────────
+// ── Protocol methods ────────────────────────────────────────────────────────
+
+/// Protocol method names — methods the interpreter calls on user types to
+/// implement language features (iteration, indexing, drop semantics).
+/// Kept as a typed enum rather than scattered string consts so the dispatch
+/// is type-checked and refactoring-safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    /// `.to_iter()` on iterables — returns an iterator value.
+    ToIter,
+    /// `.next()` on iterators — returns `Opt[T]`.
+    Next,
+    /// `.drop()` called when a value goes out of scope.
+    Drop,
+    /// `.get_item(key)` for `a[key]` reads.
+    GetItem,
+    /// `.set_item(key, val)` for `a[key] = val` writes.
+    SetItem,
+}
+
+impl Protocol {
+    /// The method name as it appears in source code.
+    pub fn method_name(self) -> &'static str {
+        match self {
+            Protocol::ToIter => "to_iter",
+            Protocol::Next => "next",
+            Protocol::Drop => "drop",
+            Protocol::GetItem => "get_item",
+            Protocol::SetItem => "set_item",
+        }
+    }
+}
+
+// ── Stdlib coupling ──────────────────────────────────────────────────────────
+//
+// Names from the standard library that the interpreter has hardcoded knowledge
+// of. These are pure stdlib coupling — the interpreter knows that `Drop` is
+// the conformance interface for the drop protocol, that `Val`/`Non` are the
+// variants of `Opt`, and that `self` is the receiver parameter name. Migrating
+// these to handles would mean caching TypeIds/variant indices at registry
+// initialization; out of scope for the protocol-enum cleanup.
 
 const SELF_PARAM: &str = "self";
-const METHOD_TO_ITER: &str = "to_iter";
-const METHOD_NEXT: &str = "next";
-const METHOD_DROP: &str = "drop";
-const METHOD_GET_ITEM: &str = "get_item";
-const METHOD_SET_ITEM: &str = "set_item";
 const VARIANT_VAL: &str = "Val";
 const VARIANT_NONE: &str = "Non";
 const INTERFACE_DROP: &str = "Drop";
@@ -486,7 +521,7 @@ impl Interpreter {
         if self.drop_types.contains(&tid) {
             self.dropping = true;
             // Best-effort: call drop, ignore errors (destructors shouldn't fail).
-            let _ = self.call_method(&value, METHOD_DROP, &[], out);
+            let _ = self.call_method(&value, Protocol::Drop.method_name(), &[], out);
             self.dropping = false;
         }
         // Recursively drop struct fields.
@@ -1114,13 +1149,13 @@ impl Interpreter {
                 } = val
                 {
                     let variant_name = self.types.variant_name(*type_id, *variant_idx);
-                    if variant_name == name {
+                    if variant_name == name.node {
                         return Some(vec![]); // Matched as unit variant
                     }
                     return None; // Enum value, but variant name doesn't match
                 }
                 // Non-enum: catch-all binding.
-                Some(vec![(name.clone(), val.clone())])
+                Some(vec![(name.node.clone(), val.clone())])
             }
 
             Pattern::Variant { name, bindings } => {
@@ -1131,20 +1166,38 @@ impl Interpreter {
                 } = val
                 {
                     let variant_name = self.types.variant_name(*type_id, *variant_idx);
-                    if variant_name == name {
-                        let bound: Vec<_> = bindings
-                            .iter()
-                            .zip(fields.iter())
-                            .map(|(n, v)| (n.clone(), v.clone()))
-                            .collect();
+                    if variant_name == name.node && bindings.len() == fields.len() {
+                        let mut bound = Vec::new();
+                        for (sub_pat, field_val) in bindings.iter().zip(fields.iter()) {
+                            match self.match_pattern(field_val, &sub_pat.node) {
+                                Some(sub_bindings) => bound.extend(sub_bindings),
+                                None => return None,
+                            }
+                        }
                         return Some(bound);
                     }
                 }
                 None
             }
 
-            Pattern::Literal(lit_expr) => match &lit_expr.node {
-                Expr::Int(s) => {
+            Pattern::Tuple(sub_pats) => {
+                if let Value::Tup { fields, .. } = val {
+                    if sub_pats.len() == fields.len() {
+                        let mut bound = Vec::new();
+                        for (sub_pat, field_val) in sub_pats.iter().zip(fields.iter()) {
+                            match self.match_pattern(field_val, &sub_pat.node) {
+                                Some(sub_bindings) => bound.extend(sub_bindings),
+                                None => return None,
+                            }
+                        }
+                        return Some(bound);
+                    }
+                }
+                None
+            }
+
+            Pattern::Literal(lit) => match &lit.node {
+                Literal::Int(s) => {
                     if let Value::Int(n) = val {
                         if let Ok(lit_n) = parse_int_literal(s) {
                             if **n == lit_n {
@@ -1154,7 +1207,17 @@ impl Interpreter {
                     }
                     None
                 }
-                Expr::Str(s) => {
+                Literal::Float(s) => {
+                    if let Value::Float(v) = val {
+                        if let Ok(lit_f) = s.parse::<f64>() {
+                            if *v == lit_f {
+                                return Some(vec![]);
+                            }
+                        }
+                    }
+                    None
+                }
+                Literal::Str(s) => {
                     if let Value::Str(v) = val {
                         if &**v == s.as_str() {
                             return Some(vec![]);
@@ -1162,7 +1225,7 @@ impl Interpreter {
                     }
                     None
                 }
-                Expr::Bool(b) => {
+                Literal::Bool(b) => {
                     if let Value::Bool(v) = val {
                         if v == b {
                             return Some(vec![]);
@@ -1170,13 +1233,12 @@ impl Interpreter {
                     }
                     None
                 }
-                Expr::Nil => {
+                Literal::Nil => {
                     if matches!(val, Value::Nil) {
                         return Some(vec![]);
                     }
                     None
                 }
-                _ => None,
             },
         }
     }
@@ -1592,7 +1654,7 @@ impl Interpreter {
 
                 // 2. Call .to_iter() on it.
                 let iter_val = self
-                    .call_method(&iterable, METHOD_TO_ITER, &[], out)
+                    .call_method(&iterable, Protocol::ToIter.method_name(), &[], out)
                     .map_err(|e: RuntimeError| e.at(expr.span))?;
 
                 // 3. Loop: call .next() on the iterator.
@@ -1600,7 +1662,7 @@ impl Interpreter {
                 let mut iterator = iter_val;
                 loop {
                     let bound = self
-                        .resolve_method(&iterator, METHOD_NEXT)
+                        .resolve_method(&iterator, Protocol::Next.method_name())
                         .map_err(|e: RuntimeError| e.at(expr.span))?;
                     let next_result = match self
                         .eval_call(bound, &[], &[], out)
@@ -2174,9 +2236,9 @@ impl Interpreter {
             })?
             .clone();
 
-        self.call_method(&receiver, METHOD_SET_ITEM, &call_args, out)
+        self.call_method(&receiver, Protocol::SetItem.method_name(), &call_args, out)
             .map_err(|e| {
-                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == METHOD_SET_ITEM) {
+                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == Protocol::SetItem.method_name()) {
                     RuntimeError::from(ErrorKind::NotIndexable {
                         type_id: receiver.type_id(),
                     })
@@ -2426,11 +2488,11 @@ impl Interpreter {
                     .map_err(RuntimeError::from)?;
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
-            other => match self.call_method(other, METHOD_GET_ITEM, args, out) {
+            other => match self.call_method(other, Protocol::GetItem.method_name(), args, out) {
                 Ok(val) => Ok(Flow::Next(val)),
                 Err(e) => {
                     // Convert "no method 'get_item'" → "not indexable".
-                    if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == METHOD_GET_ITEM)
+                    if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == Protocol::GetItem.method_name())
                     {
                         Err(RuntimeError::from(ErrorKind::NotIndexable {
                             type_id: other.type_id(),
