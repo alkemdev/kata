@@ -231,12 +231,26 @@ impl TypeRegistry {
         id
     }
 
-    /// Resolve a TypeExpr that must be concrete (non-generic context).
+    /// Resolve a TypeExpr that must already be concrete.
+    ///
+    /// Only called from the auto-instantiation path of non-generic
+    /// `register_enum` / `register_struct`. By construction a non-generic
+    /// type has zero type parameters, so its field/variant `TypeExpr`s
+    /// can't legally reference a `Param(_)` — there's nothing to bind to.
+    /// `Generic { .. }` here would mean the registration pipeline asked
+    /// us to auto-instantiate while still holding an unresolved generic
+    /// application, which is a structural bug, not a user-reachable
+    /// state. Both arms are `unreachable!` rather than `panic!` to
+    /// document the invariant.
     fn resolve_concrete(texpr: TypeExpr, context: &str) -> TypeId {
         match texpr {
             TypeExpr::Concrete(tid) => tid,
-            TypeExpr::Param(idx) => panic!("non-generic {context} has type param at index {idx}"),
-            TypeExpr::Generic { .. } => panic!("non-generic {context} has generic type expr"),
+            TypeExpr::Param(idx) => unreachable!(
+                "non-generic {context} has type param at index {idx} — registration pipeline bug",
+            ),
+            TypeExpr::Generic { .. } => unreachable!(
+                "non-generic {context} has unresolved generic type expr — registration pipeline bug",
+            ),
         }
     }
 
@@ -723,13 +737,28 @@ impl TypeRegistry {
     }
 
     /// Get the variant name by index for an instantiated enum.
+    ///
+    /// Callers always pass `type_id` from a `Value::Enum { type_id, .. }`
+    /// — those are produced only by enum construction, which goes through
+    /// an `EnumInstance`. Likewise, `variant_idx` is set when the value
+    /// is constructed against a known variants table, so the index is
+    /// always in range. Both `unreachable!` arms encode invariants the
+    /// interpreter maintains, not error cases user code can reach.
     pub fn variant_name(&self, type_id: TypeId, variant_idx: u32) -> &str {
         let TypeDef::EnumInstance { variants, .. } = self.get(type_id) else {
-            panic!("variant_name called on non-instance type");
+            unreachable!(
+                "variant_name called with non-instance type id {:?} — only Value::Enum should reach here",
+                type_id,
+            );
         };
         variants
             .get_index(variant_idx as usize)
-            .expect("variant index out of bounds")
+            .unwrap_or_else(|| {
+                unreachable!(
+                    "variant_idx {variant_idx} out of range for {} variants — Value::Enum invariant violated",
+                    variants.len(),
+                )
+            })
             .0
             .as_str()
     }

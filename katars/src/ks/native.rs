@@ -240,11 +240,20 @@ pub fn native_typeof(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runt
 // ── hash — generic value hashing ────────────────────────────────────
 
 /// Native `.hash()` method — works for any hashable Value, returns U64.
+/// Gates on `is_hashable` so the unreachable!() in `Value::hash` is truly
+/// unreachable from user code.
 fn native_value_hash(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+    let val = &args[0];
+    if !super::value::is_hashable(val) {
+        return Err(ErrorKind::Unhashable {
+            type_id: val.type_id(),
+        }
+        .into());
+    }
     let mut hasher = DefaultHasher::new();
-    args[0].hash(&mut hasher);
+    val.hash(&mut hasher);
     Ok(Value::U64(hasher.finish()))
 }
 
@@ -949,7 +958,11 @@ fn str_split(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError
 fn str_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
     let n: BigInt = s.trim().parse().map_err(|_| -> RuntimeError {
-        ErrorKind::Other(format!("cannot parse '{s}' as Int")).into()
+        ErrorKind::ParseError {
+            target_type: prim::INT,
+            input: s.to_string(),
+        }
+        .into()
     })?;
     Ok(Value::int(n))
 }
@@ -957,7 +970,11 @@ fn str_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErro
 fn str_to_float(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
     let n: f64 = s.trim().parse().map_err(|_| -> RuntimeError {
-        ErrorKind::Other(format!("cannot parse '{s}' as Float")).into()
+        ErrorKind::ParseError {
+            target_type: prim::FLOAT,
+            input: s.to_string(),
+        }
+        .into()
     })?;
     Ok(Value::Float(n))
 }
@@ -997,9 +1014,11 @@ fn bin_get_item(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeEr
     };
     let i = idx.to_usize().ok_or(ErrorKind::IntegerOverflow)?;
     if i >= b.len() {
-        return Err(
-            ErrorKind::Other(format!("Bin index out of bounds: {i}, len {}", b.len())).into(),
-        );
+        return Err(ErrorKind::IndexOutOfBounds {
+            index: i as i64,
+            len: b.len() as i64,
+        }
+        .into());
     }
     Ok(Value::Byte(b[i]))
 }
@@ -1028,9 +1047,11 @@ fn bin_from_raw(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErr
                 .into())
             }
             None => {
-                return Err(
-                    ErrorKind::Other(format!("bin_from_raw: index {i} out of bounds")).into(),
-                )
+                return Err(ErrorKind::IndexOutOfBounds {
+                    index: i as i64,
+                    len: alloc.len() as i64,
+                }
+                .into())
             }
         }
     }

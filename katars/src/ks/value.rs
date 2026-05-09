@@ -491,10 +491,17 @@ impl Hash for Value {
                     v.hash(state);
                 }
             }
-            // Unhashable types — delegate to numeric or panic.
+            // Numerics (U8..U128, I8..I128, etc.) — handled by helper.
+            // Anything else here is unhashable; callers MUST check
+            // `is_hashable` before invoking. The native `.hash()` entry
+            // point and any internal hashing path is gated on it, so by
+            // contract we never reach the `unreachable!()` arm.
             other => {
                 if !super::numeric::hash_numeric(other, state) {
-                    panic!("unhashable type: {:?}", std::mem::discriminant(other));
+                    unreachable!(
+                        "Value::hash on unhashable variant {:?} — caller did not check is_hashable",
+                        std::mem::discriminant(other),
+                    );
                 }
             }
         }
@@ -502,6 +509,11 @@ impl Hash for Value {
 }
 
 /// Returns true if this value can be used as a hash map key.
+///
+/// Recurses through compound values (Enum, Rec, Tup) — they're hashable
+/// only if every contained field is. This matches what `Value::hash`
+/// actually does, so callers checking `is_hashable` first are guaranteed
+/// to never trigger the `unreachable!()` defensive case in `Value::hash`.
 pub fn is_hashable(v: &Value) -> bool {
     match v {
         Value::Nil
@@ -513,10 +525,10 @@ pub fn is_hashable(v: &Value) -> bool {
         | Value::Byte(_)
         | Value::Char(_)
         | Value::Type(_)
-        | Value::RawPtr(_)
-        | Value::Enum { .. }
-        | Value::Rec { .. }
-        | Value::Tup { .. } => true,
+        | Value::RawPtr(_) => true,
+        Value::Enum { fields, .. }
+        | Value::Rec { fields, .. }
+        | Value::Tup { fields, .. } => fields.iter().all(is_hashable),
         Value::Func(_)
         | Value::BoundMethod { .. }
         | Value::VariantConstructor { .. }

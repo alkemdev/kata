@@ -167,8 +167,25 @@ pub enum ErrorKind {
         type_id: TypeId,
         idx: u32,
     },
+    /// Attempted to hash a value whose type isn't hashable, or a compound
+    /// value (tuple/record/enum) containing an unhashable field.
+    /// Examples: `func_value.hash()`, `(some_func, 5).hash()`.
+    Unhashable {
+        type_id: TypeId,
+    },
+    /// `Str.to_int()` / `Str.to_float()` etc. failed to parse the input.
+    /// `target_type` is the destination prim (Int, Float, …); `input` is
+    /// the offending string (truncated to a reasonable length at render).
+    ParseError {
+        target_type: TypeId,
+        input: String,
+    },
 
-    /// Migration bridge — wraps bare String errors not yet converted.
+    /// Escape hatch for errors from external systems where a structured
+    /// variant would be busy-work — `print()` IO failures, base64 decode
+    /// errors from a third-party crate, etc. **Do not** use this for
+    /// kata-internal errors that have a clean home; add a structured
+    /// variant instead.
     Other(String),
 }
 
@@ -445,6 +462,24 @@ impl ErrorKind {
                 format!(
                     "cannot apply tuple index .{idx} to {} (positional indexing requires a tuple)",
                     types.display_name(*type_id),
+                )
+            }
+            ErrorKind::Unhashable { type_id } => {
+                format!(
+                    "value of type {} is not hashable",
+                    types.display_name(*type_id),
+                )
+            }
+            ErrorKind::ParseError { target_type, input } => {
+                let preview = if input.chars().count() > 32 {
+                    let head: String = input.chars().take(29).collect();
+                    format!("{head}…")
+                } else {
+                    input.clone()
+                };
+                format!(
+                    "cannot parse '{preview}' as {}",
+                    types.display_name(*target_type),
                 )
             }
             ErrorKind::Other(msg) => msg.clone(),
