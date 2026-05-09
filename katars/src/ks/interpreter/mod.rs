@@ -16,11 +16,13 @@ mod call;
 mod expr;
 mod imports;
 mod match_;
+mod method_id;
 mod registration;
 mod stmt;
 mod types_protocol;
 mod types_resolve;
 
+pub use method_id::{MethodId, MethodInterner, ProtocolMethods};
 pub use types_protocol::{Flow, Protocol};
 
 // ── Interface storage ────────────────────────────────────────────
@@ -44,8 +46,14 @@ pub struct Interpreter {
     call_stack: Vec<super::scope::Frame>,
     /// Frozen closure scope — base for lookup after call_stack is exhausted.
     closure_scope: Option<Arc<super::scope::Scope>>,
-    /// Method tables: TypeId → method_name → Func value.
-    methods: HashMap<TypeId, IndexMap<String, Value>>,
+    /// Method tables: TypeId → MethodId → Func value. Method names are
+    /// interned in `method_interner`; lookup is a u32-keyed hash hit.
+    methods: HashMap<TypeId, IndexMap<MethodId, Value>>,
+    /// Bidirectional method-name ⇄ id table. Populated at registration
+    /// time; used in lookup mode (read-only) on the dispatch hot path.
+    method_interner: MethodInterner,
+    /// Pre-interned `MethodId`s for the language-level protocols.
+    protocol_methods: ProtocolMethods,
     /// Interface definitions: name → method signatures.
     interfaces: IndexMap<String, InterfaceDef>,
     /// Temporary: holds mutated `self` after a method call for copy-out.
@@ -116,11 +124,18 @@ impl Interpreter {
         std_modules.insert("dsa.arr".into(), include_str!("../../../../std/dsa/arr.ks"));
         std_modules.insert("dsa.map".into(), include_str!("../../../../std/dsa/map.ks"));
 
+        // Pre-intern protocol method names so runtime dispatch never
+        // re-interns them.
+        let mut method_interner = MethodInterner::new();
+        let protocol_methods = ProtocolMethods::new(&mut method_interner);
+
         let mut interp = Self {
             types,
             call_stack: vec![super::scope::Frame::new()],
             closure_scope: None,
             methods: HashMap::new(),
+            method_interner,
+            protocol_methods,
             interfaces: IndexMap::new(),
             last_method_self: None,
             std_modules,
@@ -158,80 +173,51 @@ impl Interpreter {
         interp.set("ops".into(), Value::Module(boot.ops_module));
         interp.set("mem".into(), Value::Module(boot.mem_module));
 
-        // Native methods for prim types.
-        for (name, fn_id) in &boot.int_methods.methods {
-            interp
-                .methods
-                .entry(prim::INT)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-        for (name, fn_id) in &boot.float_methods.methods {
-            interp
-                .methods
-                .entry(prim::FLOAT)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-        for (name, fn_id) in &boot.bool_methods.methods {
-            interp
-                .methods
-                .entry(prim::BOOL)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-        for (name, fn_id) in &boot.byte_methods.methods {
-            interp
-                .methods
-                .entry(prim::BYTE)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-        for (name, fn_id) in &boot.char_methods.methods {
-            interp
-                .methods
-                .entry(prim::CHAR)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-        for (name, fn_id) in &boot.str_methods.methods {
-            interp
-                .methods
-                .entry(prim::STR)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-        for (name, fn_id) in &boot.bin_methods.methods {
-            interp
-                .methods
-                .entry(prim::BIN)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
+        // Native methods for prim types. Each name is interned through
+        // `method_interner` so the methods table is keyed by `MethodId`.
+        let prim_method_groups: [(TypeId, &super::native::PrimMethods); 8] = [
+            (prim::INT, &boot.int_methods),
+            (prim::FLOAT, &boot.float_methods),
+            (prim::BOOL, &boot.bool_methods),
+            (prim::BYTE, &boot.byte_methods),
+            (prim::CHAR, &boot.char_methods),
+            (prim::STR, &boot.str_methods),
+            (prim::BIN, &boot.bin_methods),
+            (prim::TUPLE, &boot.tup_methods),
+        ];
+        for (tid, methods) in prim_method_groups {
+            interp.register_native_methods(tid, methods);
         }
 
-        for (name, fn_id) in &boot.tup_methods.methods {
-            interp
-                .methods
-                .entry(prim::TUPLE)
-                .or_insert_with(IndexMap::new)
-                .insert(name.to_string(), Value::NativeFn(*fn_id));
-        }
-
-        // Fixed-width numeric types.
+        // Fixed-width numeric types (U8…U128, I8…I128, etc.).
         for (name, tid) in super::numeric::type_entries() {
             interp.set((*name).into(), Value::Type(*tid));
         }
         for (tid, methods) in &boot.numeric_methods {
-            for (name, fn_id) in &methods.methods {
-                interp
-                    .methods
-                    .entry(*tid)
-                    .or_insert_with(IndexMap::new)
-                    .insert(name.to_string(), Value::NativeFn(*fn_id));
-            }
+            interp.register_native_methods(*tid, methods);
         }
 
         interp
+    }
+
+    /// Register a batch of native methods on a type. Interns each name in
+    /// `method_interner` and inserts the resulting `MethodId → Value` pair
+    /// into the methods table for `type_id`.
+    fn register_native_methods(
+        &mut self,
+        type_id: TypeId,
+        methods: &super::native::PrimMethods,
+    ) {
+        // Pre-intern in a separate pass so we don't double-borrow `self`.
+        let interned: Vec<(MethodId, Value)> = methods
+            .methods
+            .iter()
+            .map(|(name, fn_id)| (self.method_interner.intern(name), Value::NativeFn(*fn_id)))
+            .collect();
+        let table = self.methods.entry(type_id).or_insert_with(IndexMap::new);
+        for (mid, val) in interned {
+            table.insert(mid, val);
+        }
     }
 
     /// Access the type registry (for formatting error messages, etc.).
@@ -343,14 +329,19 @@ impl Interpreter {
     }
 
     /// Collect method names for a type (including base-type fallback).
+    /// Names are recovered from the interner for display.
     fn collect_methods(&self, type_id: TypeId, names: &mut Vec<String>) {
         if let Some(methods) = self.methods.get(&type_id) {
-            names.extend(methods.keys().cloned());
+            for &mid in methods.keys() {
+                names.push(self.method_interner.name(mid).to_string());
+            }
         }
         let base = self.types.base_type(type_id);
         if base != type_id {
             if let Some(methods) = self.methods.get(&base) {
-                names.extend(methods.keys().cloned());
+                for &mid in methods.keys() {
+                    names.push(self.method_interner.name(mid).to_string());
+                }
             }
         }
     }

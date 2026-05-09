@@ -128,8 +128,14 @@ impl Interpreter {
         })?;
 
         for sig in &iface.methods {
-            let func = method_table
-                .get(&sig.name.node)
+            // Conformance check: the type must have a method matching each
+            // of the interface's signatures. Names are looked up through
+            // the interner — if a name was never registered, no method by
+            // that name exists, so conformance fails.
+            let func = self
+                .method_interner
+                .lookup(&sig.name.node)
+                .and_then(|mid| method_table.get(&mid))
                 .ok_or_else(|| -> RuntimeError {
                     ErrorKind::ConformanceFailure {
                         type_name: type_display.clone(),
@@ -291,10 +297,11 @@ impl Interpreter {
                 closure_scope: Some(captured),
             }));
 
+            let method_id = self.method_interner.intern(&name.node);
             self.methods
                 .entry(type_id)
                 .or_insert_with(IndexMap::new)
-                .insert(name.node.clone(), func);
+                .insert(method_id, func);
         }
 
         // Remove `Self` so it doesn't leak into surrounding scope.

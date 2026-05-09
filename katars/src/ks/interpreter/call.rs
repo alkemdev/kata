@@ -22,15 +22,24 @@ impl Interpreter {
 
     /// Look up a method by name. Falls back from instance to base type
     /// (e.g., Buf[Int] → Buf) so generic methods work.
+    ///
+    /// Resolves the name to a `MethodId` via the interner; if the name
+    /// was never registered as a method anywhere, the lookup short-
+    /// circuits to `None` without touching the methods table.
     pub(super) fn lookup_method(&self, type_id: TypeId, name: &str) -> Option<Value> {
+        let method_id = self.method_interner.lookup(name)?;
         // Try exact type first.
-        if let Some(method) = self.methods.get(&type_id).and_then(|t| t.get(name)) {
+        if let Some(method) = self.methods.get(&type_id).and_then(|t| t.get(&method_id)) {
             return Some(method.clone());
         }
         // Fall back to base type for instances.
         let base = self.types.base_type(type_id);
         if base != type_id {
-            return self.methods.get(&base).and_then(|t| t.get(name)).cloned();
+            return self
+                .methods
+                .get(&base)
+                .and_then(|t| t.get(&method_id))
+                .cloned();
         }
         None
     }
