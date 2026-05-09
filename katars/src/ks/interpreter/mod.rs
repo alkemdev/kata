@@ -18,169 +18,14 @@ use super::native::{self, NativeCtx, NativeFnRegistry};
 use super::types::{prim, TypeDef, TypeExpr, TypeId, TypeRegistry, VariantDef};
 use super::value::{FuncData, FuncParam, Value};
 
-// ── Protocol methods ────────────────────────────────────────────────────────
+// Submodules.
+mod match_;
+mod types_protocol;
 
-/// Protocol method names — methods the interpreter calls on user types to
-/// implement language features (iteration, indexing, drop semantics).
-/// Kept as a typed enum rather than scattered string consts so the dispatch
-/// is type-checked and refactoring-safe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Protocol {
-    /// `.to_iter()` on iterables — returns an iterator value.
-    ToIter,
-    /// `.next()` on iterators — returns `Opt[T]`.
-    Next,
-    /// `.drop()` called when a value goes out of scope.
-    Drop,
-    /// `.get_item(key)` for `a[key]` reads.
-    GetItem,
-    /// `.set_item(key, val)` for `a[key] = val` writes.
-    SetItem,
-}
-
-impl Protocol {
-    /// The method name as it appears in source code.
-    pub fn method_name(self) -> &'static str {
-        match self {
-            Protocol::ToIter => "to_iter",
-            Protocol::Next => "next",
-            Protocol::Drop => "drop",
-            Protocol::GetItem => "get_item",
-            Protocol::SetItem => "set_item",
-        }
-    }
-}
-
-// ── Stdlib coupling ──────────────────────────────────────────────────────────
-//
-// Names from the standard library that the interpreter has hardcoded knowledge
-// of. These are pure stdlib coupling — the interpreter knows that `Drop` is
-// the conformance interface for the drop protocol, that `Val`/`Non` are the
-// variants of `Opt`, and that `self` is the receiver parameter name. Migrating
-// these to handles would mean caching TypeIds/variant indices at registry
-// initialization; out of scope for the protocol-enum cleanup.
-
-const SELF_PARAM: &str = "self";
-const VARIANT_VAL: &str = "Val";
-const VARIANT_NONE: &str = "Non";
-const INTERFACE_DROP: &str = "Drop";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Parse an integer literal string, handling decimal, hex (0x), and binary (0b).
-fn parse_int_literal(s: &str) -> Result<BigInt, String> {
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        BigInt::parse_bytes(hex.as_bytes(), 16).ok_or_else(|| format!("invalid hex literal: {s}"))
-    } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-        BigInt::parse_bytes(bin.as_bytes(), 2).ok_or_else(|| format!("invalid binary literal: {s}"))
-    } else {
-        s.parse::<BigInt>().map_err(|e| e.to_string())
-    }
-}
-
-/// Compare a literal AST node to a runtime value for equality.
-/// Used by both `match` arm matching and (eventually) const folding.
-fn literal_matches(lit: &super::ast::Literal, val: &Value) -> bool {
-    use super::ast::Literal;
-    match lit {
-        Literal::Int(s) => {
-            if let Value::Int(n) = val {
-                if let Ok(lit_n) = parse_int_literal(s) {
-                    return **n == lit_n;
-                }
-            }
-            false
-        }
-        Literal::Float(s) => {
-            if let Value::Float(v) = val {
-                if let Ok(lit_f) = s.parse::<f64>() {
-                    return *v == lit_f;
-                }
-            }
-            false
-        }
-        Literal::Str(s) => {
-            if let Value::Str(v) = val {
-                return &**v == s.as_str();
-            }
-            false
-        }
-        Literal::Bool(b) => {
-            if let Value::Bool(v) = val {
-                return v == b;
-            }
-            false
-        }
-        Literal::Nil => matches!(val, Value::Nil),
-    }
-}
-
-// ── ResolvedPattern ──────────────────────────────────────────────────────────
-
-/// A pattern with all variant names replaced by `(TypeId, variant_idx)` handles.
-/// Produced by `resolve_pattern`; consumed by `match_resolved`. The matching
-/// phase compares `variant_idx` integers, never strings.
-#[derive(Debug, Clone)]
-enum ResolvedPattern {
-    /// `_` — matches anything, binds nothing.
-    Wildcard,
-    /// `x` — catch-all binding. Span preserved for diagnostics.
-    Binding(Spanned<String>),
-    /// `42`, `"hi"`, etc. — equality check against a Value.
-    /// Carries the AST literal (still a string for BigInt precision); the
-    /// comparison is done by `literal_matches` at match time.
-    Literal(Spanned<super::ast::Literal>),
-    /// `Val(...)` or `Non()` — variant match by index, not name.
-    Variant {
-        variant_idx: u32,
-        bindings: Vec<ResolvedPattern>,
-    },
-    /// `(p1, p2, ...)` — tuple match. Arity already verified at resolve time.
-    Tuple(Vec<ResolvedPattern>),
-}
-
-// ── Flow ─────────────────────────────────────────────────────────────────────
-
-/// Outcome of executing a statement or block.
-#[derive(Debug)]
-pub enum Flow {
-    /// Statement completed normally. Carries the value for expression-statements.
-    Next(Value),
-    /// Explicit `ret` statement. Span is the `ret` keyword.
-    Return { value: Value, span: Span },
-    /// `?` operator propagation — unwrap failed, propagating Non/Err upward.
-    /// Distinct from Return: different error messages, potentially different
-    /// future semantics (e.g., caught by different constructs).
-    Propagate { value: Value, span: Span },
-    /// A `bail` was hit; exit the current loop. Span is the `bail` keyword.
-    Bail(Span),
-    /// A `cont` was hit; skip to the next loop iteration. Span is the keyword.
-    Cont(Span),
-}
-
-/// Evaluate a sub-expression and extract its value.
-///
-/// Propagates non-normal flows (`Return`, `Break`, `Continue`) instead of
-/// collapsing them, so the `?` operator's early-return works correctly
-/// in all expression contexts.
-macro_rules! eval {
-    ($self:expr, $expr:expr, $out:expr) => {
-        match $self.eval_expr($expr, $out)? {
-            Flow::Next(v) => v,
-            flow @ (Flow::Return { .. } | Flow::Propagate { .. }) => return Ok(flow),
-            Flow::Bail(span) => {
-                return Err(
-                    RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::BailOutsideLoop)).at(span),
-                )
-            }
-            Flow::Cont(span) => {
-                return Err(
-                    RuntimeError::new(ErrorKind::FlowMisuse(FlowMisuse::ContOutsideLoop)).at(span),
-                )
-            }
-        }
-    };
-}
+pub use types_protocol::{Flow, Protocol};
+use types_protocol::{
+    eval, parse_int_literal, INTERFACE_DROP, SELF_PARAM, VARIANT_NONE, VARIANT_VAL,
+};
 
 // ── Interface storage ────────────────────────────────────────────
 
@@ -239,37 +84,37 @@ impl Interpreter {
 
         let mut std_modules = HashMap::new();
         // core and sub-modules
-        std_modules.insert("core".into(), include_str!("../../../std/core/mod.ks"));
-        std_modules.insert("core.opt".into(), include_str!("../../../std/core/opt.ks"));
-        std_modules.insert("core.res".into(), include_str!("../../../std/core/res.ks"));
+        std_modules.insert("core".into(), include_str!("../../../../std/core/mod.ks"));
+        std_modules.insert("core.opt".into(), include_str!("../../../../std/core/opt.ks"));
+        std_modules.insert("core.res".into(), include_str!("../../../../std/core/res.ks"));
         std_modules.insert(
             "core.iter".into(),
-            include_str!("../../../std/core/iter.ks"),
+            include_str!("../../../../std/core/iter.ks"),
         );
         std_modules.insert(
             "core.lifecycle".into(),
-            include_str!("../../../std/core/lifecycle.ks"),
+            include_str!("../../../../std/core/lifecycle.ks"),
         );
         std_modules.insert(
             "core.indexing".into(),
-            include_str!("../../../std/core/indexing.ks"),
+            include_str!("../../../../std/core/indexing.ks"),
         );
         std_modules.insert(
             "core.conv".into(),
-            include_str!("../../../std/core/conv.ks"),
+            include_str!("../../../../std/core/conv.ks"),
         );
         // mem and sub-modules
-        std_modules.insert("mem".into(), include_str!("../../../std/mem/mod.ks"));
+        std_modules.insert("mem".into(), include_str!("../../../../std/mem/mod.ks"));
         std_modules.insert(
             "mem.allocator".into(),
-            include_str!("../../../std/mem/allocator.ks"),
+            include_str!("../../../../std/mem/allocator.ks"),
         );
-        std_modules.insert("mem.ptr".into(), include_str!("../../../std/mem/ptr.ks"));
-        std_modules.insert("mem.buf".into(), include_str!("../../../std/mem/buf.ks"));
+        std_modules.insert("mem.ptr".into(), include_str!("../../../../std/mem/ptr.ks"));
+        std_modules.insert("mem.buf".into(), include_str!("../../../../std/mem/buf.ks"));
         // dsa and sub-modules
-        std_modules.insert("dsa".into(), include_str!("../../../std/dsa/mod.ks"));
-        std_modules.insert("dsa.arr".into(), include_str!("../../../std/dsa/arr.ks"));
-        std_modules.insert("dsa.map".into(), include_str!("../../../std/dsa/map.ks"));
+        std_modules.insert("dsa".into(), include_str!("../../../../std/dsa/mod.ks"));
+        std_modules.insert("dsa.arr".into(), include_str!("../../../../std/dsa/arr.ks"));
+        std_modules.insert("dsa.map".into(), include_str!("../../../../std/dsa/map.ks"));
 
         let mut interp = Self {
             types,
@@ -1133,279 +978,6 @@ impl Interpreter {
         Ok(Flow::Next(arr_val))
     }
 
-    // ── Match expressions ────────────────────────────────────────────────
-
-    fn eval_match(
-        &mut self,
-        keyword_span: Span,
-        subject: &Spanned<Expr>,
-        arms: &[MatchArm],
-        out: &mut impl Write,
-    ) -> Result<Flow, RuntimeError> {
-        let val = eval!(self, subject, out);
-
-        // Phase 1: resolve every arm against the subject's type. Catches typos,
-        // arity errors, and pattern/type mismatches up front — even in arms that
-        // would never be reached by the first matching arm.
-        let subject_ty = val.type_id();
-        let resolved: Vec<ResolvedPattern> = arms
-            .iter()
-            .map(|arm| {
-                self.check_unique_bindings(&arm.pattern)?;
-                self.resolve_pattern(&arm.pattern, subject_ty)
-            })
-            .collect::<Result<_, RuntimeError>>()?;
-
-        // Phase 2: handle-based structural matching against the resolved trees.
-        for (rp, arm) in resolved.iter().zip(arms.iter()) {
-            if let Some(bindings) = self.match_resolved(&val, rp) {
-                self.push_scope();
-                for (name, bound_val) in bindings {
-                    self.set(name, bound_val);
-                }
-                let result = self.exec_block(&arm.body, out);
-                self.pop_scope(out);
-                return result;
-            }
-        }
-
-        Err(RuntimeError::new(ErrorKind::NoMatchArm)
-            .at(keyword_span)
-            .label(
-                subject.span,
-                format!("this value: {}", val.display(&self.types)),
-            )
-            .help("add a wildcard arm: _ -> ..."))
-    }
-
-    /// Resolve an AST pattern against an expected TypeId. Walks the pattern
-    /// once, validates against the registry (variant names, arity, type
-    /// compatibility, refutability constraints), and produces a ResolvedPattern
-    /// where every variant name has been replaced by its (TypeId, variant_idx)
-    /// handle. Matching against the resolved tree is pure structural recursion —
-    /// no string comparisons, no registry lookups in the hot path.
-    fn resolve_pattern(
-        &self,
-        pat: &Spanned<Pattern>,
-        expected_ty: TypeId,
-    ) -> Result<ResolvedPattern, RuntimeError> {
-        match &pat.node {
-            Pattern::Wildcard => Ok(ResolvedPattern::Wildcard),
-            Pattern::Literal(lit) => Ok(ResolvedPattern::Literal(lit.clone())),
-            Pattern::Binding(name) => {
-                // Safety net: bare-ident name colliding with a variant of an
-                // enum subject is almost certainly a forgotten Name() syntax.
-                if let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) {
-                    if variants.contains_key(&name.node) {
-                        return Err(RuntimeError::new(ErrorKind::PatternAmbiguousBinding {
-                            binding_name: name.node.clone(),
-                            type_id: expected_ty,
-                        })
-                        .at(name.span));
-                    }
-                }
-                Ok(ResolvedPattern::Binding(name.clone()))
-            }
-            Pattern::Variant { name, bindings } => {
-                let TypeDef::EnumInstance { variants, .. } = self.types.get(expected_ty) else {
-                    return Err(RuntimeError::new(ErrorKind::PatternTypeMismatch {
-                        pattern_kind: PatternKind::Variant,
-                        subject_type: expected_ty,
-                    })
-                    .at(pat.span));
-                };
-                let Some((variant_idx, _, vdef)) = variants.get_full(&name.node) else {
-                    return Err(RuntimeError::new(ErrorKind::PatternUnknownVariant {
-                        type_id: expected_ty,
-                        variant_name: name.node.clone(),
-                    })
-                    .at(name.span));
-                };
-                if bindings.len() != vdef.fields.len() {
-                    return Err(RuntimeError::new(ErrorKind::PatternVariantArity {
-                        type_id: expected_ty,
-                        variant_name: name.node.clone(),
-                        expected: vdef.fields.len(),
-                        actual: bindings.len(),
-                    })
-                    .at(pat.span));
-                }
-                let field_types: Vec<TypeId> = vdef.fields.clone();
-                let mut resolved_bindings = Vec::with_capacity(bindings.len());
-                for (sub, field_ty) in bindings.iter().zip(field_types.iter()) {
-                    resolved_bindings.push(self.resolve_pattern(sub, *field_ty)?);
-                }
-                Ok(ResolvedPattern::Variant {
-                    variant_idx: variant_idx as u32,
-                    bindings: resolved_bindings,
-                })
-            }
-            Pattern::Tuple(sub_pats) => {
-                let TypeDef::TupleInstance { type_args } = self.types.get(expected_ty) else {
-                    return Err(RuntimeError::new(ErrorKind::PatternTypeMismatch {
-                        pattern_kind: PatternKind::Tuple,
-                        subject_type: expected_ty,
-                    })
-                    .at(pat.span));
-                };
-                if sub_pats.len() != type_args.len() {
-                    return Err(RuntimeError::new(ErrorKind::PatternTupleArity {
-                        expected: type_args.len(),
-                        actual: sub_pats.len(),
-                    })
-                    .at(pat.span));
-                }
-                let elt_types = type_args.clone();
-                let mut resolved_subs = Vec::with_capacity(sub_pats.len());
-                for (sub, elt_ty) in sub_pats.iter().zip(elt_types.iter()) {
-                    resolved_subs.push(self.resolve_pattern(sub, *elt_ty)?);
-                }
-                Ok(ResolvedPattern::Tuple(resolved_subs))
-            }
-        }
-    }
-
-    /// Match a resolved pattern against a value. Pure structural recursion —
-    /// no string comparisons, no registry lookups. Variant matching compares
-    /// `variant_idx` (u32) directly against `Value::Enum::variant_idx`.
-    fn match_resolved(
-        &self,
-        val: &Value,
-        pat: &ResolvedPattern,
-    ) -> Option<Vec<(String, Value)>> {
-        match pat {
-            ResolvedPattern::Wildcard => Some(vec![]),
-            ResolvedPattern::Binding(name) => {
-                Some(vec![(name.node.clone(), val.clone())])
-            }
-            ResolvedPattern::Literal(lit) => {
-                if literal_matches(&lit.node, val) {
-                    Some(vec![])
-                } else {
-                    None
-                }
-            }
-            ResolvedPattern::Variant {
-                variant_idx,
-                bindings,
-            } => {
-                let Value::Enum {
-                    variant_idx: val_idx,
-                    fields,
-                    ..
-                } = val
-                else {
-                    return None;
-                };
-                if val_idx != variant_idx {
-                    return None;
-                }
-                let mut bound = Vec::new();
-                for (sub, field) in bindings.iter().zip(fields.iter()) {
-                    bound.extend(self.match_resolved(field, sub)?);
-                }
-                Some(bound)
-            }
-            ResolvedPattern::Tuple(sub_pats) => {
-                let Value::Tup { fields, .. } = val else {
-                    return None;
-                };
-                let mut bound = Vec::new();
-                for (sub, field) in sub_pats.iter().zip(fields.iter()) {
-                    bound.extend(self.match_resolved(field, sub)?);
-                }
-                Some(bound)
-            }
-        }
-    }
-
-    /// Walk a pattern and ensure no binding name repeats. Pure structural —
-    /// no registry lookups. Wildcards never participate.
-    fn check_unique_bindings(&self, pat: &Spanned<Pattern>) -> Result<(), RuntimeError> {
-        let mut seen: Vec<(String, Span)> = Vec::new();
-        Self::collect_bindings(pat, &mut seen)?;
-        Ok(())
-    }
-
-    fn collect_bindings(
-        pat: &Spanned<Pattern>,
-        seen: &mut Vec<(String, Span)>,
-    ) -> Result<(), RuntimeError> {
-        match &pat.node {
-            Pattern::Wildcard | Pattern::Literal(_) => Ok(()),
-            Pattern::Binding(name) => {
-                if let Some((_, first_span)) = seen.iter().find(|(n, _)| n == &name.node) {
-                    return Err(RuntimeError::new(ErrorKind::PatternRepeatedBinding {
-                        name: name.node.clone(),
-                        first_span: *first_span,
-                        repeat_span: name.span,
-                    })
-                    .at(name.span));
-                }
-                seen.push((name.node.clone(), name.span));
-                Ok(())
-            }
-            Pattern::Variant { bindings, .. } => {
-                for sub in bindings {
-                    Self::collect_bindings(sub, seen)?;
-                }
-                Ok(())
-            }
-            Pattern::Tuple(sub_pats) => {
-                for sub in sub_pats {
-                    Self::collect_bindings(sub, seen)?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    /// Destructure an irrefutable pattern (Binding/Wildcard/Tuple) against a value,
-    /// returning the bindings to introduce. Refutable patterns (Variant/Literal) are
-    /// rejected with an error — those belong in `match` arms, not `let`/`for`.
-    fn destructure_irrefutable(
-        &self,
-        pat: &Spanned<Pattern>,
-        val: &Value,
-    ) -> Result<Vec<(String, Value)>, RuntimeError> {
-        match &pat.node {
-            Pattern::Binding(name) => Ok(vec![(name.node.clone(), val.clone())]),
-            Pattern::Wildcard => Ok(vec![]),
-            Pattern::Tuple(sub_pats) => {
-                let Value::Tup { fields, .. } = val else {
-                    return Err(RuntimeError::new(ErrorKind::PatternTypeMismatch {
-                        pattern_kind: PatternKind::Tuple,
-                        subject_type: val.type_id(),
-                    })
-                    .at(pat.span));
-                };
-                if sub_pats.len() != fields.len() {
-                    return Err(RuntimeError::new(ErrorKind::PatternTupleArity {
-                        expected: fields.len(),
-                        actual: sub_pats.len(),
-                    })
-                    .at(pat.span));
-                }
-                let mut bound = Vec::new();
-                for (sub, field) in sub_pats.iter().zip(fields.iter()) {
-                    bound.extend(self.destructure_irrefutable(sub, field)?);
-                }
-                Ok(bound)
-            }
-            Pattern::Variant { name, .. } => Err(RuntimeError::new(
-                ErrorKind::PatternRefutableInLet {
-                    kind: PatternKind::Variant,
-                },
-            )
-            .at(name.span)),
-            Pattern::Literal(lit) => Err(RuntimeError::new(
-                ErrorKind::PatternRefutableInLet {
-                    kind: PatternKind::Literal,
-                },
-            )
-            .at(lit.span)),
-        }
-    }
 
     // ── Block execution ──────────────────────────────────────────────────
 
