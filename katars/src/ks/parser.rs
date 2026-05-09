@@ -624,7 +624,7 @@ where
                 Ident(String),
                 Num(String),
             }
-            let attr = just(Token::Dot)
+            let dot_postfix = just(Token::Dot)
                 .ignore_then(
                     select! {
                         Token::Ident(name) => DotPart::Ident(name),
@@ -688,7 +688,12 @@ where
             let ques_op = just(Token::Ques).map_with(|_, ex| Postfix::Ques(span(&ex.span()).1));
             let bang_op = just(Token::Bang).map_with(|_, ex| Postfix::Bang(span(&ex.span()).1));
 
-            let postfix = attr.or(item).or(call).or(construct).or(ques_op).or(bang_op);
+            let postfix = dot_postfix
+                .or(item)
+                .or(call)
+                .or(construct)
+                .or(ques_op)
+                .or(bang_op);
 
             let postfix_chain = atom.foldl(postfix.repeated(), |lhs, op| {
                 let s = (lhs.span.0, op.end()); // full span: lhs start to postfix end
