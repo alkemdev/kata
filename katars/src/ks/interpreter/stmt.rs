@@ -18,7 +18,7 @@ use crate::ks::error::{ErrorKind, FlowMisuse, RuntimeError};
 use crate::ks::types::TypeExpr;
 use crate::ks::value::{FuncData, FuncParam, Value};
 
-use super::types_protocol::{eval, Flow, INTERFACE_DROP};
+use super::types_protocol::{eval, Flow};
 use super::Interpreter;
 
 impl Interpreter {
@@ -95,7 +95,9 @@ impl Interpreter {
                 if let Some(iface_expr) = as_type {
                     self.check_conformance(type_id, &iface_expr.node)
                         .map_err(|e| e.at(iface_expr.span))?;
-                    // Track lifecycle protocol implementations.
+                    // Resolve the interface to a TypeId once; the rest of
+                    // the bookkeeping (conformance set, drop-type set)
+                    // works on handles, not strings.
                     let iface_name = match &iface_expr.node {
                         Expr::Name(n) => Some(n.as_str()),
                         Expr::Item { object, .. } => {
@@ -110,11 +112,10 @@ impl Interpreter {
                     if let Some(name) = iface_name {
                         let iface_id =
                             self.resolve_type(name).map_err(|e| e.at(iface_expr.span))?;
-                        // Record conformance for dynamic dispatch.
                         let type_base = self.types.base_type(type_id);
                         let iface_base = self.types.base_type(iface_id);
                         self.conformances.insert((type_base, iface_base));
-                        if name == INTERFACE_DROP {
+                        if Some(iface_id) == self.drop_interface_id() {
                             self.drop_types.insert(type_id);
                         }
                     }

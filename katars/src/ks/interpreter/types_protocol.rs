@@ -45,17 +45,21 @@ impl Protocol {
 
 // ── Stdlib coupling ──────────────────────────────────────────────────────────
 //
-// Names from the standard library that the interpreter has hardcoded
-// knowledge of. The interpreter knows that `Drop` is the conformance
-// interface for the drop protocol, that `Val`/`Non` are the variants of
-// `Opt`, and that `self` is the receiver parameter name. Migrating these
-// to handles would mean caching TypeIds/variant indices at registry init;
-// out of scope for now.
+// `self` is the receiver parameter name — an AST-level naming convention
+// that the parser produces. It stays as a string because that's where it
+// lives. The other stdlib-coupling names that used to be here
+// (`Val`/`Non`/`Drop`) are now resolved to handles (variant_idx, TypeId)
+// at registry-init time and looked up by index everywhere else.
+//
+// `Val`/`Non`/`Err` indices come back from `TryShape` on each `?`/`!` /
+// `for` use; the registry's `try_shape` does the lookup once and caches
+// nothing — but the result is a u32 compared against `variant_idx`, so
+// the dispatch path itself is string-free.
+//
+// The Drop interface TypeId is cached on `Interpreter::drop_interface_id`
+// after prelude execution; conformance checks compare TypeIds.
 
 pub(super) const SELF_PARAM: &str = "self";
-pub(super) const VARIANT_VAL: &str = "Val";
-pub(super) const VARIANT_NONE: &str = "Non";
-pub(super) const INTERFACE_DROP: &str = "Drop";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

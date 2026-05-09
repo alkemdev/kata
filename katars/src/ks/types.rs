@@ -125,12 +125,24 @@ pub enum TypeExpr {
 }
 
 /// Classification of an enum for the `?` operator.
+///
+/// Carries the variant indices directly so callers can compare against
+/// `variant_idx: u32` without a registry lookup or string compare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TryShape {
     /// Opt-like: 2-variant enum with Val(T) + Non.
-    OptLike,
+    OptLike { val_idx: u32, none_idx: u32 },
     /// Res-like: 2-variant enum with Val(T) + Err(E).
-    ResLike,
+    ResLike { val_idx: u32, err_idx: u32 },
+}
+
+impl TryShape {
+    /// Variant index for the "success" arm (Val on both shapes).
+    pub fn val_idx(self) -> u32 {
+        match self {
+            TryShape::OptLike { val_idx, .. } | TryShape::ResLike { val_idx, .. } => val_idx,
+        }
+    }
 }
 
 /// A variant in an instantiated enum. All fields are concrete.
@@ -718,19 +730,29 @@ impl TypeRegistry {
 
     /// Classify an enum for the `?` operator.
     /// 2-variant enum with Val+Non → OptLike, Val+Err → ResLike.
+    /// Returns the variant indices baked in so the caller can compare
+    /// `variant_idx == shape.val_idx()` etc. with no further string work.
     pub fn try_shape(&self, type_id: TypeId) -> Option<TryShape> {
         let TypeDef::EnumInstance { variants, .. } = self.get(type_id) else {
             return None;
         };
-        let has_val = variants.get("Val").map_or(false, |v| v.fields.len() == 1);
-        if variants.len() == 2 && has_val {
-            if variants.contains_key("Non") {
-                Some(TryShape::OptLike)
-            } else if variants.contains_key("Err") {
-                Some(TryShape::ResLike)
-            } else {
-                None
-            }
+        if variants.len() != 2 {
+            return None;
+        }
+        let (val_idx, _, val_def) = variants.get_full("Val")?;
+        if val_def.fields.len() != 1 {
+            return None;
+        }
+        if let Some((none_idx, _, _)) = variants.get_full("Non") {
+            Some(TryShape::OptLike {
+                val_idx: val_idx as u32,
+                none_idx: none_idx as u32,
+            })
+        } else if let Some((err_idx, _, _)) = variants.get_full("Err") {
+            Some(TryShape::ResLike {
+                val_idx: val_idx as u32,
+                err_idx: err_idx as u32,
+            })
         } else {
             None
         }

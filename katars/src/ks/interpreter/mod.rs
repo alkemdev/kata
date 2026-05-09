@@ -52,6 +52,10 @@ pub struct Interpreter {
     last_method_self: Option<Value>,
     /// TypeIds that implement the Drop protocol.
     drop_types: HashSet<TypeId>,
+    /// Cached TypeId for the `Drop` interface (resolved once after the
+    /// prelude registers it). `None` until then. Used to recognize
+    /// `impl K as Drop { … }` blocks by handle, not by string name.
+    drop_interface_id: Option<TypeId>,
     /// Suppress drop dispatch during drop execution (prevents infinite recursion).
     dropping: bool,
     /// True inside `unsafe { ... }` blocks. Gates native functions that require unsafe.
@@ -122,6 +126,7 @@ impl Interpreter {
             std_modules,
             loaded_modules: HashMap::new(),
             drop_types: HashSet::new(),
+            drop_interface_id: None,
             dropping: false,
             in_unsafe: false,
             allocations: Vec::new(),
@@ -230,6 +235,17 @@ impl Interpreter {
     }
 
     /// Access the type registry (for formatting error messages, etc.).
+    /// Cached TypeId for the `Drop` interface — looked up the first time
+    /// it's needed (after the prelude registers it) and reused thereafter.
+    /// Returns `None` if `Drop` isn't registered (impossible in normal
+    /// runs, possible in unit tests that skip the prelude).
+    pub(super) fn drop_interface_id(&mut self) -> Option<TypeId> {
+        if self.drop_interface_id.is_none() {
+            self.drop_interface_id = self.types.lookup("Drop");
+        }
+        self.drop_interface_id
+    }
+
     pub fn type_registry(&self) -> &TypeRegistry {
         &self.types
     }

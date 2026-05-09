@@ -23,7 +23,7 @@ use crate::ks::native::{self, NativeCtx};
 use crate::ks::types::TypeId;
 use crate::ks::value::Value;
 
-use super::types_protocol::{eval, parse_int_literal, Flow, Protocol, VARIANT_NONE, VARIANT_VAL};
+use super::types_protocol::{eval, parse_int_literal, Flow, Protocol};
 use super::Interpreter;
 
 impl Interpreter {
@@ -222,14 +222,13 @@ impl Interpreter {
                     ..
                 } = val
                 {
-                    if self.types.try_shape(type_id).is_some() {
-                        let variant_name = self.types.variant_name(type_id, variant_idx);
-                        if variant_name == VARIANT_VAL {
+                    if let Some(shape) = self.types.try_shape(type_id) {
+                        if variant_idx == shape.val_idx() {
                             if let Some(inner_val) = fields.first() {
                                 return Ok(Flow::Next(inner_val.clone()));
                             }
                         } else {
-                            // "Non" (Opt) or "Err" (Res) — propagate upward
+                            // Non (Opt) or Err (Res) — propagate upward.
                             return Ok(Flow::Propagate {
                                 value: val,
                                 span: expr.span,
@@ -249,17 +248,20 @@ impl Interpreter {
                     ..
                 } = val
                 {
-                    if self.types.try_shape(type_id).is_some() {
-                        let variant_name = self.types.variant_name(type_id, variant_idx);
-                        if variant_name == VARIANT_VAL {
+                    if let Some(shape) = self.types.try_shape(type_id) {
+                        if variant_idx == shape.val_idx() {
                             if let Some(inner_val) = fields.first() {
                                 return Ok(Flow::Next(inner_val.clone()));
                             }
                         } else {
-                            // "Non" (Opt) or "Err" (Res) — panic
+                            // Non (Opt) or Err (Res) — panic with a message
+                            // formatted from the variant name. The lookup
+                            // here is one hash hit and only fires on the
+                            // failure path, not the hot path.
+                            let variant = self.types.variant_name(type_id, variant_idx).to_string();
                             return Err(RuntimeError::new(ErrorKind::UnwrapFailed {
                                 type_id,
-                                variant: variant_name.to_string(),
+                                variant,
                             })
                             .at(expr.span));
                         }
@@ -524,7 +526,18 @@ impl Interpreter {
                         .at(expr.span));
                     };
 
-                    if self.types.variant_name(*opt_tid, *variant_idx) == VARIANT_NONE {
+                    // The .next() return type must be Opt-shaped; compare by
+                    // variant index rather than name so the hot loop path is
+                    // a u32 compare, not a string lookup.
+                    let Some(crate::ks::types::TryShape::OptLike { none_idx, .. }) =
+                        self.types.try_shape(*opt_tid)
+                    else {
+                        return Err(RuntimeError::new(ErrorKind::IteratorProtocol(
+                            "iterator .next() must return an Opt value",
+                        ))
+                        .at(expr.span));
+                    };
+                    if *variant_idx == none_idx {
                         break;
                     }
 
