@@ -20,19 +20,17 @@ use super::Interpreter;
 impl Interpreter {
     // ── Method helpers ────────────────────────────────────────────────
 
-    /// Look up a method by name. Falls back from instance to base type
-    /// (e.g., Buf[Int] → Buf) so generic methods work.
-    ///
-    /// Resolves the name to a `MethodId` via the interner; if the name
-    /// was never registered as a method anywhere, the lookup short-
-    /// circuits to `None` without touching the methods table.
-    pub(super) fn lookup_method(&self, type_id: TypeId, name: &str) -> Option<Value> {
-        let method_id = self.method_interner.lookup(name)?;
-        // Try exact type first.
+    /// Look up a method by `MethodId`. Falls back from instance to base
+    /// type (e.g., Buf[Int] → Buf) so generic methods work. This is the
+    /// handle-based dispatch primitive — no string compares.
+    pub(super) fn lookup_method_by_id(
+        &self,
+        type_id: TypeId,
+        method_id: super::MethodId,
+    ) -> Option<Value> {
         if let Some(method) = self.methods.get(&type_id).and_then(|t| t.get(&method_id)) {
             return Some(method.clone());
         }
-        // Fall back to base type for instances.
         let base = self.types.base_type(type_id);
         if base != type_id {
             return self
@@ -42,6 +40,14 @@ impl Interpreter {
                 .cloned();
         }
         None
+    }
+
+    /// Look up a method by source-level name. Resolves to a `MethodId`
+    /// via the interner; if no method by this name was ever registered,
+    /// the lookup short-circuits to `None`.
+    pub(super) fn lookup_method(&self, type_id: TypeId, name: &str) -> Option<Value> {
+        let method_id = self.method_interner.lookup(name)?;
+        self.lookup_method_by_id(type_id, method_id)
     }
 
     /// Wrap a Func value as a BoundMethod with the given receiver.
@@ -62,6 +68,27 @@ impl Interpreter {
         })
     }
 
+    /// Look up and bind a method by `MethodId`. Handle-based, no string
+    /// lookups except for the error message on failure.
+    pub(super) fn resolve_method_by_id(
+        &self,
+        receiver: &Value,
+        method_id: super::MethodId,
+    ) -> Result<Value, RuntimeError> {
+        let tid = receiver.type_id();
+        let func = self
+            .lookup_method_by_id(tid, method_id)
+            .ok_or_else(|| -> RuntimeError {
+                ErrorKind::NoAttr {
+                    type_id: tid,
+                    attr: self.method_interner.name(method_id).to_string(),
+                    access: AccessKind::Method,
+                }
+                .into()
+            })?;
+        self.bind_method(receiver.clone(), func, "")
+    }
+
     /// Look up and bind a method, ready to call.
     pub(super) fn resolve_method(
         &self,
@@ -80,6 +107,24 @@ impl Interpreter {
                 .into()
             })?;
         self.bind_method(receiver.clone(), func, name)
+    }
+
+    /// Call a method on a value by `MethodId`. Used for protocol dispatch
+    /// (the receiver's `MethodId` is pre-cached on `Interpreter`).
+    pub(super) fn call_method_by_id(
+        &mut self,
+        receiver: &Value,
+        method_id: super::MethodId,
+        args: &[Value],
+        out: &mut impl Write,
+    ) -> Result<Value, RuntimeError> {
+        let bound = self.resolve_method_by_id(receiver, method_id)?;
+        match self.eval_call(bound, args, &[], out)? {
+            Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. } => {
+                Ok(v)
+            }
+            _ => Err(ErrorKind::InternalError("method returned abnormal flow").into()),
+        }
     }
 
     /// Call a method on a value by name (no copy-out — caller handles that).

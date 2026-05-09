@@ -23,7 +23,7 @@ use crate::ks::native::{self, NativeCtx};
 use crate::ks::types::TypeId;
 use crate::ks::value::Value;
 
-use super::types_protocol::{eval, parse_int_literal, Flow, Protocol};
+use super::types_protocol::{eval, parse_int_literal, Flow};
 use super::Interpreter;
 
 impl Interpreter {
@@ -493,14 +493,16 @@ impl Interpreter {
             } => {
                 self.check_unique_bindings(pattern)?;
                 let iterable = eval!(self, iter_expr, out);
+                let to_iter_id = self.protocol_methods.to_iter;
+                let next_id = self.protocol_methods.next;
                 let iter_val = self
-                    .call_method(&iterable, Protocol::ToIter.method_name(), &[], out)
+                    .call_method_by_id(&iterable, to_iter_id, &[], out)
                     .map_err(|e: RuntimeError| e.at(expr.span))?;
 
                 let mut iterator = iter_val;
                 loop {
                     let bound = self
-                        .resolve_method(&iterator, Protocol::Next.method_name())
+                        .resolve_method_by_id(&iterator, next_id)
                         .map_err(|e: RuntimeError| e.at(expr.span))?;
                     let next_result = match self
                         .eval_call(bound, &[], &[], out)

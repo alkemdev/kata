@@ -430,7 +430,8 @@ impl Interpreter {
         if self.drop_types.contains(&tid) {
             self.dropping = true;
             // Best-effort: call drop, ignore errors (destructors shouldn't fail).
-            let _ = self.call_method(&value, Protocol::Drop.method_name(), &[], out);
+            let drop_id = self.protocol_methods.drop;
+            let _ = self.call_method_by_id(&value, drop_id, &[], out);
             self.dropping = false;
         }
         // Recursively drop struct fields.

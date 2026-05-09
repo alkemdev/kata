@@ -118,9 +118,11 @@ impl Interpreter {
             })?
             .clone();
 
-        self.call_method(&receiver, Protocol::SetItem.method_name(), &call_args, out)
+        let set_item_id = self.protocol_methods.set_item;
+        let set_item_name = Protocol::SetItem.method_name();
+        self.call_method_by_id(&receiver, set_item_id, &call_args, out)
             .map_err(|e| {
-                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == Protocol::SetItem.method_name()) {
+                if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == set_item_name) {
                     RuntimeError::from(ErrorKind::NotIndexable {
                         type_id: receiver.type_id(),
                     })
@@ -292,25 +294,29 @@ impl Interpreter {
                     .map_err(RuntimeError::from)?;
                 Ok(Flow::Next(Value::Type(instance_id)))
             }
-            other => match self.call_method(other, Protocol::GetItem.method_name(), args, out) {
-                Ok(val) => Ok(Flow::Next(val)),
-                Err(e) => {
-                    // Convert "no method 'get_item'" → "not indexable".
-                    if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == Protocol::GetItem.method_name())
-                    {
-                        Err(RuntimeError::from(ErrorKind::NotIndexable {
-                            type_id: other.type_id(),
-                        }))
-                    } else {
-                        // Strip internal spans so the user's expression span wins.
-                        Err(RuntimeError {
-                            span: None,
-                            labels: Vec::new(),
-                            ..e
-                        })
+            other => {
+                let get_item_id = self.protocol_methods.get_item;
+                let get_item_name = Protocol::GetItem.method_name();
+                match self.call_method_by_id(other, get_item_id, args, out) {
+                    Ok(val) => Ok(Flow::Next(val)),
+                    Err(e) => {
+                        // Convert "no method 'get_item'" → "not indexable".
+                        if matches!(e.kind, ErrorKind::NoAttr { ref attr, .. } if attr == get_item_name)
+                        {
+                            Err(RuntimeError::from(ErrorKind::NotIndexable {
+                                type_id: other.type_id(),
+                            }))
+                        } else {
+                            // Strip internal spans so the user's expression span wins.
+                            Err(RuntimeError {
+                                span: None,
+                                labels: Vec::new(),
+                                ..e
+                            })
+                        }
                     }
                 }
-            },
+            }
         }
     }
 }
