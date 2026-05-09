@@ -53,7 +53,10 @@ use super::lexer::{BinPart, StringPart, Token};
 //              | '&&' | '||'
 //   unary      = ('-' | '!') unary | postfix
 //   postfix    = atom ('.' IDENT | '.' NUM | '[' args ']' | '(' args ')' | '{' field_init* '}' | '?' | '!')*
-//                                  -- '.' NUM is positional tuple field access (`t.0`, `t.0.1`)
+//                                  -- '.' NUM is positional tuple field access (`t.0`, `t.0.1`).
+//                                  -- The lexer doesn't fuse N.M into one Num — that's a parser
+//                                  -- decision, made in atom position (float literal merge) vs
+//                                  -- postfix position (consecutive tuple indices).
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
 //   atom       = ident | str | num | 'true' | 'false' | 'nil' | tup_or_group | arr_lit
@@ -162,25 +165,39 @@ where
                 .filter(|n| n == "_")
                 .map_with(|_, ex| Spanned::new(Pattern::Wildcard, span(&ex.span())));
 
-            // Literal: -?Num | "hello" | true | false | nil
-            // Number literals support an optional unary minus directly in the
-            // literal so `-42` is `Literal::Int("-42")`, not UnaryOp(Neg, 42).
-            // Distinguishes Int (no '.') from Float (has '.') based on lexed text.
+            // Literal: '-'? NUM ('.' NUM)? | "hello" | true | false | nil
+            // Sign is absorbed into the literal so `-42` is
+            // `Literal::Int("-42")`, not UnaryOp(Neg, 42). The lexer no
+            // longer fuses N.M into a single Num — we merge here so float
+            // patterns (`3.14 -> ...`) work the same as float expressions.
             let lit_num = just(Token::Minus)
                 .or_not()
                 .then(select! { Token::Num(s) => s })
-                .map_with(|(neg, s), ex| {
-                    let s_pan = span(&ex.span());
-                    let text = if neg.is_some() { format!("-{s}") } else { s };
-                    let lit = if text.contains('.') {
-                        Literal::Float(text)
-                    } else {
-                        Literal::Int(text)
+                .then(
+                    just(Token::Dot)
+                        .ignore_then(select! { Token::Num(f) => f })
+                        .or_not(),
+                )
+                .try_map(|((neg, int_part), frac_part), span| {
+                    let prefix = if neg.is_some() { "-" } else { "" };
+                    let lit = match frac_part {
+                        Some(frac) => {
+                            let decimal = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+                            if !decimal(&int_part) || !decimal(&frac) {
+                                return Err(Rich::custom(
+                                    span,
+                                    format!("invalid float literal '{int_part}.{frac}'"),
+                                ));
+                            }
+                            Literal::Float(format!("{prefix}{int_part}.{frac}"))
+                        }
+                        None => Literal::Int(format!("{prefix}{int_part}")),
                     };
-                    Spanned::new(
-                        Pattern::Literal(Spanned::new(lit, s_pan)),
-                        s_pan,
-                    )
+                    Ok(lit)
+                })
+                .map_with(|lit, ex| {
+                    let s_pan = span(&ex.span());
+                    Spanned::new(Pattern::Literal(Spanned::new(lit, s_pan)), s_pan)
                 });
             let lit_str = select! { Token::Str(parts) => parts }
                 .try_map(|parts, _span| {
@@ -331,13 +348,32 @@ where
                     }
                 },
             );
-            let num_lit = select! { Token::Num(n) => {
-                if n.contains('.') {
-                    Expr::Float(n)
-                } else {
-                    Expr::Int(n)
-                }
-            }};
+            // `42`, `0xff`, `0b101` — pure integer (any base).
+            // `3.14` — `Num Dot Num` merged into a float here at atom
+            // position. The lexer doesn't know whether a `.` is a decimal
+            // point or a postfix; the parser does, because here we're
+            // committing to a literal at the start of an atom. Both halves
+            // must be plain decimal — hex/binary literals don't have a
+            // fractional form.
+            let num_lit = select! { Token::Num(n) => n }
+                .then(
+                    just(Token::Dot)
+                        .ignore_then(select! { Token::Num(f) => f })
+                        .or_not(),
+                )
+                .try_map(|(int_part, frac_part), span| match frac_part {
+                    Some(frac) => {
+                        let decimal = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+                        if !decimal(&int_part) || !decimal(&frac) {
+                            return Err(Rich::custom(
+                                span,
+                                format!("invalid float literal '{int_part}.{frac}'"),
+                            ));
+                        }
+                        Ok(Expr::Float(format!("{int_part}.{frac}")))
+                    }
+                    None => Ok(Expr::Int(int_part)),
+                });
             let bool_lit = select! {
                 Token::True  => Expr::Bool(true),
                 Token::False => Expr::Bool(false),
@@ -553,12 +589,10 @@ where
 
             // Each postfix carries (data, end_position) so the foldl can
             // compute the full span from lhs.start to postfix.end.
-            // `TupIdx` carries a Vec because a single Num token like "0.1"
-            // (lexer fuses these) expands into two consecutive index ops.
             #[derive(Clone)]
             enum Postfix {
                 Attr(String, Span, usize), // name, name_span, end
-                TupIdx(Vec<(u32, Span)>, usize), // (idx, idx_span)+, end
+                TupIdx(u32, Span, usize),  // idx, idx_span, end
                 Item(Vec<Spanned<Expr>>, usize),
                 Call(Vec<Spanned<Expr>>, Span, usize), // args, args_span, end
                 Construct(Vec<(String, Spanned<Expr>)>, Span, usize), // fields, brace_span, end
@@ -570,7 +604,7 @@ where
                 fn end(&self) -> usize {
                     match self {
                         Postfix::Attr(_, _, e)
-                        | Postfix::TupIdx(_, e)
+                        | Postfix::TupIdx(_, _, e)
                         | Postfix::Item(_, e)
                         | Postfix::Call(_, _, e)
                         | Postfix::Construct(_, _, e)
@@ -581,9 +615,10 @@ where
             }
 
             // After `.`: either an identifier (attribute / method) or a Num
-            // (tuple positional index). We parse them as two select arms inside
-            // a single ignore_then so chumsky doesn't have to backtrack across
-            // the consumed Dot.
+            // (tuple positional index). One Num → one TupIdx — no string
+            // splitting, because the lexer no longer fuses `N.M` into a
+            // single token. `t.0.1` is now `Ident Dot Num Dot Num`, and we
+            // pick up `.Num` twice in the postfix chain.
             #[derive(Clone)]
             enum DotPart {
                 Ident(String),
@@ -600,43 +635,17 @@ where
                 .try_map(|(part, sp), full_span| match part {
                     DotPart::Ident(name) => Ok(Postfix::Attr(name, sp, sp.1)),
                     DotPart::Num(text) => {
-                        // Reject non-decimal forms — tuple field indices
-                        // must be plain decimal integers.
-                        if text.starts_with("0x")
-                            || text.starts_with("0X")
-                            || text.starts_with("0b")
-                            || text.starts_with("0B")
-                        {
-                            return Err(Rich::custom(
+                        // Tuple field indices are plain decimal — reject
+                        // hex/binary forms and any non-digit content.
+                        let idx: u32 = text.parse().map_err(|_| {
+                            Rich::custom(
                                 full_span,
-                                format!("tuple field index must be a decimal integer, got '{text}'"),
-                            ));
-                        }
-                        // The lexer fuses "0.1" into one Num. Split on '.' so
-                        // `t.0.1` becomes two consecutive TupIdx ops.
-                        let mut parts = Vec::new();
-                        if let Some((a, b)) = text.split_once('.') {
-                            let ia: u32 = a.parse().map_err(|_| {
-                                Rich::custom(full_span, format!("invalid tuple field index '{a}'"))
-                            })?;
-                            let ib: u32 = b.parse().map_err(|_| {
-                                Rich::custom(full_span, format!("invalid tuple field index '{b}'"))
-                            })?;
-                            // Split the Num span at the decimal point. ASCII digits,
-                            // so byte offsets equal char counts.
-                            let dot_pos = sp.0 + a.len();
-                            parts.push((ia, (sp.0, dot_pos)));
-                            parts.push((ib, (dot_pos + 1, sp.1)));
-                        } else {
-                            let i: u32 = text.parse().map_err(|_| {
-                                Rich::custom(
-                                    full_span,
-                                    format!("invalid tuple field index '{text}'"),
-                                )
-                            })?;
-                            parts.push((i, sp));
-                        }
-                        Ok(Postfix::TupIdx(parts, sp.1))
+                                format!(
+                                    "tuple field index must be a decimal integer, got '{text}'"
+                                ),
+                            )
+                        })?;
+                        Ok(Postfix::TupIdx(idx, sp, sp.1))
                     }
                 });
 
@@ -692,24 +701,14 @@ where
                         },
                         s,
                     ),
-                    Postfix::TupIdx(indices, _) => {
-                        // `t.0.1` (lexer-fused as one Num) expands into two
-                        // nested TupIdx ops; build them left-associatively.
-                        let start = lhs.span.0;
-                        let mut acc = lhs;
-                        for (idx, idx_span) in indices {
-                            let span = (start, idx_span.1);
-                            acc = Spanned::new(
-                                Expr::TupIdx {
-                                    object: Box::new(acc),
-                                    idx,
-                                    idx_span,
-                                },
-                                span,
-                            );
-                        }
-                        acc
-                    }
+                    Postfix::TupIdx(idx, idx_span, _) => Spanned::new(
+                        Expr::TupIdx {
+                            object: Box::new(lhs),
+                            idx,
+                            idx_span,
+                        },
+                        s,
+                    ),
                     Postfix::Item(args, _) => Spanned::new(
                         Expr::Item {
                             object: Box::new(lhs),

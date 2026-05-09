@@ -67,9 +67,14 @@ pub enum Token {
     #[token("b'", lex_bin_single)]
     BinStr(Vec<BinPart>),
 
-    /// An integer or decimal number (stored as raw text for lossless round-trip).
-    /// Supports decimal, hex (0x), and binary (0b) prefixes.
-    #[regex(r"0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+(\.[0-9]+)?", |lex| lex.slice().to_string())]
+    /// An integer literal (stored as raw text for lossless round-trip).
+    /// Supports decimal, hex (0x), and binary (0b) prefixes. Floats are
+    /// **not** lexed here — the parser merges adjacent `Num Dot Num` into a
+    /// float in atom position. Doing it this way means `t.0.1` (tuple
+    /// indexing) and `3.14` (float literal) lex identically; the dot is just
+    /// a dot and only the surrounding grammar context decides what to do
+    /// with it. Avoids the lexer guessing at semantics it doesn't have.
+    #[regex(r"0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+", |lex| lex.slice().to_string())]
     Num(String),
 
     // ── keywords ─────────────────────────────────────────────────────────
@@ -774,8 +779,15 @@ mod tests {
     }
 
     #[test]
-    fn lex_float() {
-        assert_eq!(one("3.14"), Token::Num("3.14".into()));
+    fn lex_float_is_three_tokens() {
+        // The lexer no longer fuses N.M into a single Num — that's a parser
+        // concern. `3.14` is `Num("3") Dot Num("14")`; the parser merges
+        // adjacent Num/Dot/Num at atom position into a float and treats it
+        // as tuple indexing in postfix position.
+        assert_eq!(
+            tokens("3.14"),
+            vec![Token::Num("3".into()), Token::Dot, Token::Num("14".into())]
+        );
     }
 
     // ── keywords vs identifiers ───────────────────────────────────────────────
@@ -910,7 +922,7 @@ mod tests {
     fn display_ident_and_literals() {
         assert_eq!(Token::Ident("foo".into()).to_string(), "foo");
         assert_eq!(str_tok("hi").to_string(), "\"hi\"");
-        assert_eq!(Token::Num("3.14".into()).to_string(), "3.14");
+        assert_eq!(Token::Num("314".into()).to_string(), "314");
     }
 
     // ── escape sequences ──────────────────────────────────────────────────────
