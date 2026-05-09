@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ast::{BinOp, UnaryOp};
 use super::error::{ArityTarget, ErrorKind, RuntimeError};
-use super::types::{prim, TypeRegistry};
+use super::types::{prim, TypeId, TypeRegistry};
 use super::value::Value;
 
 // ── IDs ──────────────────────────────────────────────────────────────────────
@@ -67,8 +67,12 @@ pub struct NativeFnEntry {
 
 /// Runtime context passed to native functions. Provides controlled access
 /// to interpreter internals without exposing the full Interpreter.
+///
+/// `types` is `&mut` because some native helpers (`build_arr`) need to
+/// instantiate generic types on demand — that mutates the registry's
+/// instance cache. Callers that only read the registry don't notice.
 pub struct NativeCtx<'a> {
-    pub types: &'a TypeRegistry,
+    pub types: &'a mut TypeRegistry,
     pub allocations: &'a mut Vec<Option<Vec<Value>>>,
     pub intern: &'a mut super::intern::InternTables,
     pub out: &'a mut dyn Write,
@@ -110,6 +114,71 @@ impl<'a> NativeCtx<'a> {
     /// Intern a byte vector and return a Bin value.
     pub fn intern_bin(&mut self, bytes: Vec<u8>) -> Value {
         Value::Bin(self.intern.intern_bin(bytes))
+    }
+
+    /// Build an `Arr[T]` value from a vector of element values, all of type
+    /// `elem_tid`. Allocates, instantiates `Ptr[T]` / `Buf[T]` / `Arr[T]` if
+    /// not already in the registry, and assembles the layered struct.
+    ///
+    /// Caller must ensure every element's type matches `elem_tid` — this
+    /// helper trusts the input. (`eval_arr_lit` does the type-check; native
+    /// callers like `str_split` produce a uniform type by construction.)
+    pub fn build_arr(
+        &mut self,
+        elem_tid: TypeId,
+        vals: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        use num_bigint::BigInt;
+        use std::sync::Arc;
+
+        let len = vals.len();
+        let cap = len.max(1);
+
+        // Allocate a slot in the heap-like allocations vector and write
+        // the elements in.
+        let alloc_id = self.allocations.len() as u32;
+        let mut backing = Vec::with_capacity(cap);
+        backing.extend(vals);
+        // Pad up to `cap` so reads beyond `len` (which Arr's bounds checks
+        // forbid anyway) don't trip allocator invariants.
+        while backing.len() < cap {
+            backing.push(Value::Nil);
+        }
+        self.allocations.push(Some(backing));
+
+        // Build the Ptr[T] → Buf[T] → Arr[T] stack.
+        let ptr_base = self
+            .types
+            .lookup("Ptr")
+            .ok_or_else(|| ErrorKind::InternalError("Ptr type not found — is mem loaded?"))?;
+        let buf_base = self
+            .types
+            .lookup("Buf")
+            .ok_or_else(|| ErrorKind::InternalError("Buf type not found — is mem loaded?"))?;
+        let arr_base = self
+            .types
+            .lookup("Arr")
+            .ok_or_else(|| ErrorKind::InternalError("Arr type not found — is dsa loaded?"))?;
+
+        let ptr_tid = self.types.instantiate_struct(ptr_base, vec![elem_tid])?;
+        let buf_tid = self.types.instantiate_struct(buf_base, vec![elem_tid])?;
+        let arr_tid = self.types.instantiate_struct(arr_base, vec![elem_tid])?;
+
+        // Field order matches std/mem and std/dsa declarations:
+        //   Ptr { raw }   Buf { ptr, cap }   Arr { buf, len }
+        let ptr_val = Value::Rec {
+            type_id: ptr_tid,
+            fields: Arc::from(vec![Value::RawPtr(alloc_id)]),
+        };
+        let buf_val = Value::Rec {
+            type_id: buf_tid,
+            fields: Arc::from(vec![ptr_val, Value::int(BigInt::from(cap))]),
+        };
+        let arr_val = Value::Rec {
+            type_id: arr_tid,
+            fields: Arc::from(vec![buf_val, Value::int(BigInt::from(len))]),
+        };
+        Ok(arr_val)
     }
 }
 
@@ -944,15 +1013,18 @@ fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErro
     Ok(Value::Str(Arc::from(result)))
 }
 
-fn str_split(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = expect_str(args, 0)?;
-    let delim = expect_str(args, 1)?;
-    // Returns an Arr-style display for now — actually we need to return a proper array.
-    // For now, return a comma-joined string of parts. TODO: return Arr[Str] when we can
-    // construct arrays from native code.
-    let parts: Vec<&str> = s.split(delim).collect();
-    let joined = parts.join("\n");
-    Ok(Value::Str(Arc::from(joined)))
+fn str_split(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    // Borrow each argument independently — `expect_str` returns `&str`
+    // tied to `args`, and we don't want both borrows live simultaneously
+    // when we call `ctx.build_arr` later.
+    let parts: Vec<Value> = {
+        let s = expect_str(args, 0)?;
+        let delim = expect_str(args, 1)?;
+        s.split(delim)
+            .map(|p| Value::Str(Arc::from(p)))
+            .collect()
+    };
+    ctx.build_arr(prim::STR, parts)
 }
 
 fn str_to_int(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {

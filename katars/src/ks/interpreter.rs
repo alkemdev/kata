@@ -1120,52 +1120,16 @@ impl Interpreter {
             }
         }
 
-        // Allocate: mem.alloc(len) → RawPtr
-        let cap = vals.len();
-        let alloc_id = self.allocations.len() as u32;
-        self.allocations.push(Some(Vec::with_capacity(cap)));
-
-        // Write elements into the allocation.
-        {
-            let alloc = self.allocations.last_mut().unwrap().as_mut().unwrap();
-            for val in &vals {
-                alloc.push(val.clone());
-            }
-        }
-
-        // Build the Ptr[T] → Buf[T] → Arr[T] stack.
-        // We need the type registry to instantiate Ptr[T], Buf[T], Arr[T].
-        let ptr_base = self
-            .types
-            .lookup("Ptr")
-            .ok_or_else(|| ErrorKind::InternalError("Ptr type not found — is mem loaded?"))?;
-        let buf_base = self
-            .types
-            .lookup("Buf")
-            .ok_or_else(|| ErrorKind::InternalError("Buf type not found — is mem loaded?"))?;
-        let arr_base = self
-            .types
-            .lookup("Arr")
-            .ok_or_else(|| ErrorKind::InternalError("Arr type not found — is dsa loaded?"))?;
-
-        let ptr_tid = self.types.instantiate_struct(ptr_base, vec![elem_tid])?;
-        let buf_tid = self.types.instantiate_struct(buf_base, vec![elem_tid])?;
-        let arr_tid = self.types.instantiate_struct(arr_base, vec![elem_tid])?;
-
-        // Fields must match declaration order: Ptr { raw }, Buf { ptr, cap }, Arr { buf, len }
-        let ptr_val = Value::Rec {
-            type_id: ptr_tid,
-            fields: Arc::from(vec![Value::RawPtr(alloc_id)]),
+        // Build the Arr[T] value via the shared NativeCtx helper. Type
+        // checks are already done above; the helper trusts uniform types.
+        let mut ctx = NativeCtx {
+            types: &mut self.types,
+            allocations: &mut self.allocations,
+            intern: &mut self.intern,
+            out,
+            in_unsafe: self.in_unsafe,
         };
-        let buf_val = Value::Rec {
-            type_id: buf_tid,
-            fields: Arc::from(vec![ptr_val, Value::int(BigInt::from(cap))]),
-        };
-        let arr_val = Value::Rec {
-            type_id: arr_tid,
-            fields: Arc::from(vec![buf_val, Value::int(BigInt::from(vals.len()))]),
-        };
-
+        let arr_val = ctx.build_arr(elem_tid, vals)?;
         Ok(Flow::Next(arr_val))
     }
 
@@ -2899,7 +2863,7 @@ impl Interpreter {
                         fa
                     };
                     let mut ctx = NativeCtx {
-                        types: &self.types,
+                        types: &mut self.types,
                         allocations: &mut self.allocations,
                         intern: &mut self.intern,
                         out,
@@ -2921,7 +2885,7 @@ impl Interpreter {
                 }
                 let handler = entry.handler;
                 let mut ctx = NativeCtx {
-                    types: &self.types,
+                    types: &mut self.types,
                     allocations: &mut self.allocations,
                     intern: &mut self.intern,
                     out,
