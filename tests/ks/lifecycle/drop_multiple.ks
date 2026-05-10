@@ -1,4 +1,6 @@
-# Multiple droppable values in the same scope
+# Multiple droppable values in the same scope drop in LIFO order:
+# values declared later are dropped first, so anything they built on
+# top of is still alive while their drop runs.
 kind Resource { id: Int }
 
 impl Resource as Drop {

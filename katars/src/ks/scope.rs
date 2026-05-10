@@ -101,6 +101,14 @@ impl Frame {
         self.bindings.into_iter().map(|(k, s)| (k, s.get()))
     }
 
+    /// Reverse-order drain — yields bindings newest-first. Used for LIFO Drop
+    /// dispatch on scope exit so values declared later release their resources
+    /// before values they were built on top of.
+    pub fn drain_lifo(self) -> impl Iterator<Item = (String, Value)> {
+        let pairs: Vec<(String, Value)> = self.drain().collect();
+        pairs.into_iter().rev()
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.bindings.keys()
     }

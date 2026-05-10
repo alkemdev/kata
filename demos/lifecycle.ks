@@ -51,12 +51,12 @@ with r = R { id: 7 } {
 }
 print("  after with")
 
-# ── 2. Drop ordering: insertion order, not LIFO ─────────────────
+# ── 2. Drop ordering: LIFO (newest-first) ───────────────────────
 #
-# Many Rust readers expect LIFO (newest-first) drop on scope exit.
-# KataScript drops in *insertion order* — the order names were bound
-# in the frame. The actual ordering surfaces on multiple sibling
-# bindings:
+# Sibling bindings drop in reverse declaration order, matching Rust
+# and C++. A value declared later is dropped first, so anything it
+# depends on (declared earlier in the same scope) is still alive
+# while its drop runs.
 
 print("\n── 2. Drop ordering ──")
 
@@ -67,7 +67,7 @@ func three() {
     print("  all three created (a, b, c)")
 }
 three()
-# Expect: drop R100, drop R200, drop R300 — FIFO (insertion order).
+# Expect: drop R300, drop R200, drop R100 — LIFO.
 
 # ── 3. Reassignment drops the old value eagerly ─────────────────
 #

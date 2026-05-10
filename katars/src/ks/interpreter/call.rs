@@ -466,7 +466,7 @@ impl Interpreter {
         // Drop locals in the callee frame.
         let callee_frame = self.call_stack.pop().unwrap_or_default();
         if !self.dropping {
-            for (_name, value) in callee_frame.drain() {
+            for (_name, value) in callee_frame.drain_lifo() {
                 self.drop_value(value, out);
             }
         }

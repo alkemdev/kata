@@ -437,7 +437,7 @@ impl Interpreter {
         debug_assert!(self.call_stack.len() > 1, "cannot pop the global frame");
         let frame = self.call_stack.pop().unwrap();
         if !self.dropping {
-            for (_name, value) in frame.drain() {
+            for (_name, value) in frame.drain_lifo() {
                 self.drop_value(value, out);
             }
         }
