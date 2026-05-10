@@ -75,6 +75,7 @@ impl Interpreter {
             allocations: &mut self.allocations,
             intern: &mut self.intern,
             out,
+            natives: &self.native_registry,
             in_unsafe: self.in_unsafe,
         };
         let arr_val = ctx.build_arr(elem_tid, vals)?;
@@ -128,7 +129,7 @@ impl Interpreter {
                                 | Flow::Bail(_)
                                 | Flow::Cont(_)) => return Ok(flow),
                             };
-                            result.push_str(&val.display(&self.types));
+                            result.push_str(&val.display_with(&self.fmt_ctx()));
                         }
                     }
                 }
@@ -153,7 +154,7 @@ impl Interpreter {
                                 | Flow::Bail(_)
                                 | Flow::Cont(_)) => return Ok(flow),
                             };
-                            result.extend_from_slice(val.display(&self.types).as_bytes());
+                            result.extend_from_slice(val.display_with(&self.fmt_ctx()).as_bytes());
                         }
                     }
                 }

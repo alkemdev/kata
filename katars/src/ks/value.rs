@@ -6,7 +6,7 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::ast::{Spanned, Stmt};
-use super::native::{ModuleId, NativeFnId};
+use super::native::{ModuleId, NativeFnId, NativeFnRegistry};
 use super::types::{prim, TypeExpr, TypeId, TypeRegistry};
 
 // ── Serde helpers for Rc<[u8]> ──────────────────────────────────────────────
@@ -187,15 +187,6 @@ fn format_params(params: &[FuncParam], types: &TypeRegistry) -> String {
         .join(", ")
 }
 
-/// Format a slice of param references (for bound methods that skip self).
-fn format_param_refs(params: &[&FuncParam], types: &TypeRegistry) -> String {
-    params
-        .iter()
-        .map(|p| format_one_param(&p.name, p.type_ann.as_ref(), types))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn format_one_param(name: &str, type_ann: Option<&TypeExpr>, types: &TypeRegistry) -> String {
     match type_ann {
         Some(texpr) => format!("{name}: {}", types.display_texpr(texpr)),
@@ -238,6 +229,62 @@ fn format_ret_resolved(
     match ret_type {
         Some(texpr) => format!(": {}", types.display_texpr_resolved(texpr, type_args)),
         None => String::new(),
+    }
+}
+
+/// Format a float with a guaranteed visual decimal point so it doesn't
+/// collide with the integer printing (`3.0` not `3`). Mirrors Rust's
+/// `{:?}` for finite floats; preserves IEEE special values verbatim.
+fn format_float(n: f64) -> String {
+    if n.is_nan() {
+        "NaN".to_string()
+    } else if n.is_infinite() {
+        if n.is_sign_negative() {
+            "-inf".to_string()
+        } else {
+            "inf".to_string()
+        }
+    } else {
+        // `{:?}` adds `.0` for whole-number floats; `{}` does not.
+        format!("{n:?}")
+    }
+}
+
+/// Same idea for `f32`. Uses Rust's `f32` Debug formatter, which preserves
+/// the trailing `.0` for whole-valued floats.
+fn format_float_f32(n: f32) -> String {
+    if n.is_nan() {
+        "NaN".to_string()
+    } else if n.is_infinite() {
+        if n.is_sign_negative() {
+            "-inf".to_string()
+        } else {
+            "inf".to_string()
+        }
+    } else {
+        format!("{n:?}")
+    }
+}
+
+/// Same idea for `f16` (rendered via its f64 promotion).
+fn format_float_f16(n: half::f16) -> String {
+    let promoted: f64 = n.to_f64();
+    format_float(promoted)
+}
+
+/// Bundle of registries needed for fully-qualified value display. Matches
+/// the `format_with(&TypeRegistry)` pattern used in `error.rs` but extends
+/// it so `NativeFn`/`Module` values can recover their human-readable names
+/// instead of leaking opaque handle IDs (`NativeFnId(0)`, `ModuleId(8)`).
+#[derive(Copy, Clone)]
+pub struct FmtCtx<'a> {
+    pub types: &'a TypeRegistry,
+    pub natives: &'a NativeFnRegistry,
+}
+
+impl<'a> FmtCtx<'a> {
+    pub fn new(types: &'a TypeRegistry, natives: &'a NativeFnRegistry) -> Self {
+        Self { types, natives }
     }
 }
 
@@ -301,21 +348,25 @@ impl Value {
         Value::Type(self.type_id())
     }
 
-    /// Unwrap AsType wrappers to get the concrete value.
-    pub fn concrete(&self) -> &Value {
-        match self {
-            Value::AsType { inner, .. } => inner.concrete(),
-            other => other,
-        }
+    /// Format with both type and native registries — recovers
+    /// `NativeFn`/`Module` names. This is the path `print` uses; without a
+    /// native registry, those values would leak opaque `NativeFnId(0)` /
+    /// `ModuleId(8)` handles instead of human-readable names.
+    pub fn display_full(&self, types: &TypeRegistry, natives: &NativeFnRegistry) -> String {
+        self.display_with(&FmtCtx::new(types, natives))
     }
 
-    /// Format this value for display, using the type registry for enum names.
-    pub fn display(&self, types: &TypeRegistry) -> String {
+    /// Core display routine — every other display entry point delegates here.
+    pub fn display_with(&self, ctx: &FmtCtx<'_>) -> String {
+        let types = ctx.types;
         match self {
             Value::Nil => "nil".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
-            Value::Float(n) => format!("{n}"),
+            Value::Float(n) => format_float(*n),
+            Value::F16(n) => format_float_f16(*n),
+            Value::F32(n) => format_float_f32(*n),
+            Value::F64(n) => format_float(*n),
             Value::Str(s) => s.to_string(),
             Value::Bin(b) => format_bin(b),
             Value::Func(f) => {
@@ -332,7 +383,7 @@ impl Value {
                 if fields.is_empty() {
                     variant_name.to_string()
                 } else {
-                    let inner: Vec<String> = fields.iter().map(|v| v.display(types)).collect();
+                    let inner: Vec<String> = fields.iter().map(|v| v.display_with(ctx)).collect();
                     format!("{variant_name}({})", inner.join(", "))
                 }
             }
@@ -345,7 +396,7 @@ impl Value {
                         let inner: Vec<String> = names
                             .iter()
                             .zip(fields.iter())
-                            .map(|(k, v)| format!("{k}: {}", v.display(types)))
+                            .map(|(k, v)| format!("{k}: {}", v.display_with(ctx)))
                             .collect();
                         format!("{type_name} {{ {} }}", inner.join(", "))
                     }
@@ -354,7 +405,7 @@ impl Value {
                 }
             }
             Value::Tup { fields, .. } => {
-                let inner: Vec<String> = fields.iter().map(|v| v.display(types)).collect();
+                let inner: Vec<String> = fields.iter().map(|v| v.display_with(ctx)).collect();
                 format!("({})", inner.join(", "))
             }
             Value::Type(tid) => types.display_name(*tid),
@@ -381,8 +432,8 @@ impl Value {
                     "func(?)".to_string()
                 }
             }
-            Value::Module(id) => format!("<module {id}>"),
-            Value::NativeFn(id) => format!("<native-fn {id}>"),
+            Value::Module(id) => format!("<module {}>", ctx.natives.get_module(*id).name),
+            Value::NativeFn(id) => format!("<native-fn {}>", ctx.natives.fn_name(*id)),
             Value::RawPtr(id) => format!("<rawptr:{id}>"),
             Value::Byte(b) => format!("0x{b:02x}"),
             Value::Char(c) => c.to_string(),
@@ -392,7 +443,7 @@ impl Value {
             } => {
                 format!(
                     "{} as {}",
-                    inner.display(types),
+                    inner.display_with(ctx),
                     types.display_name(*interface_id)
                 )
             }
@@ -408,7 +459,11 @@ impl PartialEq for Value {
             (Value::Nil, Value::Nil) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => Arc::ptr_eq(a, b) || a == b,
-            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+            // IEEE semantics: -0.0 == 0.0, NaN != NaN. Reflexivity for `Eq` is
+            // technically violated by NaN, but no path stores `Value` in a
+            // `HashMap` key, and `Value::eq` matches the language-level `==`
+            // that user code observes — so the violation is unobservable.
+            (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Bin(a), Value::Bin(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
@@ -467,7 +522,14 @@ impl Hash for Value {
             Value::Nil => {}
             Value::Bool(b) => b.hash(state),
             Value::Int(n) => n.to_signed_bytes_le().hash(state),
-            Value::Float(f) => f.to_bits().hash(state),
+            // IEEE `==` treats `0.0` and `-0.0` as equal. Normalize the
+            // sign bit before hashing so the `Hash`/`Eq` contract holds:
+            // `a == b` ⇒ `hash(a) == hash(b)`. (NaN hashes to its bit
+            // pattern, but `Eq`-reflexivity is anyway broken there.)
+            Value::Float(f) => {
+                let bits = if *f == 0.0 { 0u64 } else { f.to_bits() };
+                bits.hash(state);
+            }
             Value::Str(s) => s.hash(state),
             Value::Bin(b) => b.as_ref().hash(state),
             Value::Byte(b) => b.hash(state),
@@ -546,7 +608,7 @@ impl fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
+            Value::Float(n) => write!(f, "{}", format_float(*n)),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bin(b) => write!(f, "{}", format_bin(b)),
             Value::Func(fd) => {

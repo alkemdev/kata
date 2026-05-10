@@ -1,1 +1,1 @@
-integer out of representable range
+integer overflow: U8 255 + 1 cannot be represented

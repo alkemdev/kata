@@ -20,14 +20,6 @@ use super::Protocol;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MethodId(u32);
 
-impl MethodId {
-    /// Raw integer for debug/diagnostic use only — never compare across
-    /// different `MethodInterner` instances.
-    pub fn raw(self) -> u32 {
-        self.0
-    }
-}
-
 /// Bidirectional name ⇄ id table.
 #[derive(Debug, Default)]
 pub struct MethodInterner {
@@ -82,17 +74,6 @@ impl ProtocolMethods {
             drop: interner.intern(Protocol::Drop.method_name()),
             get_item: interner.intern(Protocol::GetItem.method_name()),
             set_item: interner.intern(Protocol::SetItem.method_name()),
-        }
-    }
-
-    /// Lookup the cached `MethodId` for a `Protocol`.
-    pub fn id(&self, p: Protocol) -> MethodId {
-        match p {
-            Protocol::ToIter => self.to_iter,
-            Protocol::Next => self.next,
-            Protocol::Drop => self.drop,
-            Protocol::GetItem => self.get_item,
-            Protocol::SetItem => self.set_item,
         }
     }
 }

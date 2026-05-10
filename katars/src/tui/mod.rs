@@ -154,24 +154,24 @@ impl reedline::Validator for KataValidator {
 struct KataPrompt;
 
 impl Prompt for KataPrompt {
-    fn render_prompt_left(&self) -> Cow<str> {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
         Cow::Owned("λ ".cyan().bold().to_string())
     }
 
-    fn render_prompt_right(&self) -> Cow<str> {
+    fn render_prompt_right(&self) -> Cow<'_, str> {
         Cow::Borrowed("")
     }
 
-    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<str> {
+    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
         // Must match menu marker width (both empty) to prevent text shift on Tab.
         Cow::Borrowed("")
     }
 
-    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
         Cow::Owned("· ".dimmed().to_string())
     }
 
-    fn render_prompt_history_search_indicator(&self, search: PromptHistorySearch) -> Cow<str> {
+    fn render_prompt_history_search_indicator(&self, search: PromptHistorySearch) -> Cow<'_, str> {
         let prefix = match search.status {
             PromptHistorySearchStatus::Passing => "search",
             PromptHistorySearchStatus::Failing => "search (not found)",

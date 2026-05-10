@@ -14,6 +14,8 @@ use num_bigint::BigInt;
 pub struct InternTables {
     strings: HashSet<Arc<str>>,
     bins: HashSet<Arc<[u8]>>,
+    // Public API: scaffold for BigInt interning, mirrors `strings` / `bins`.
+    #[allow(dead_code)]
     ints: HashSet<Arc<BigInt>>,
     // Future: tups: HashSet<Arc<[Value]>>
 }
@@ -56,6 +58,8 @@ impl InternTables {
 
     // ── Integers ──────────────────────────────────────────────
 
+    // Public API: scaffold for BigInt interning, mirrors `intern_str` / `make_str`.
+    #[allow(dead_code)]
     /// Intern a BigInt — deduplicates identical values.
     pub fn intern_int(&mut self, n: BigInt) -> Arc<BigInt> {
         if let Some(existing) = self.ints.get(&n) {
@@ -67,6 +71,8 @@ impl InternTables {
         }
     }
 
+    // Public API: scaffold for BigInt interning, mirrors `intern_str` / `make_str`.
+    #[allow(dead_code)]
     /// Wrap a BigInt in Arc (no dedup).
     pub fn make_int(n: BigInt) -> Arc<BigInt> {
         Arc::new(n)

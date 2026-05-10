@@ -115,61 +115,90 @@ macro_rules! numeric_nonzero {
     };
 }
 
+/// Build an `IntegerOverflow` ErrorKind for a binary arithmetic op.
+fn arith_overflow<T: std::fmt::Display>(
+    type_name: &'static str,
+    op: &'static str,
+    lhs: &T,
+    rhs: &T,
+) -> ErrorKind {
+    ErrorKind::IntegerOverflow {
+        type_name: type_name.to_string(),
+        op,
+        lhs: format!("{lhs}"),
+        rhs: format!("{rhs}"),
+    }
+}
+
+/// Build an `IntegerOverflow` ErrorKind for a unary op (no rhs).
+fn arith_overflow_unary<T: std::fmt::Display>(
+    type_name: &'static str,
+    op: &'static str,
+    lhs: &T,
+) -> ErrorKind {
+    ErrorKind::IntegerOverflow {
+        type_name: type_name.to_string(),
+        op,
+        lhs: format!("{lhs}"),
+        rhs: String::new(),
+    }
+}
+
 macro_rules! numeric_add {
-    (float, $V:ident, $a:expr, $b:expr) => {
+    (float, $name:literal, $V:ident, $a:expr, $b:expr) => {
         Ok(Value::$V(*$a + *$b))
     };
-    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+    ($int_kind:ident, $name:literal, $V:ident, $a:expr, $b:expr) => {
         $a.checked_add(*$b)
             .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
+            .ok_or_else(|| arith_overflow($name, "+", $a, $b))
     };
 }
 
 macro_rules! numeric_sub {
-    (float, $V:ident, $a:expr, $b:expr) => {
+    (float, $name:literal, $V:ident, $a:expr, $b:expr) => {
         Ok(Value::$V(*$a - *$b))
     };
-    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+    ($int_kind:ident, $name:literal, $V:ident, $a:expr, $b:expr) => {
         $a.checked_sub(*$b)
             .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
+            .ok_or_else(|| arith_overflow($name, "-", $a, $b))
     };
 }
 
 macro_rules! numeric_mul {
-    (float, $V:ident, $a:expr, $b:expr) => {
+    (float, $name:literal, $V:ident, $a:expr, $b:expr) => {
         Ok(Value::$V(*$a * *$b))
     };
-    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+    ($int_kind:ident, $name:literal, $V:ident, $a:expr, $b:expr) => {
         $a.checked_mul(*$b)
             .map(Value::$V)
-            .ok_or(ErrorKind::IntegerOverflow)
+            .ok_or_else(|| arith_overflow($name, "*", $a, $b))
     };
 }
 
 macro_rules! numeric_div {
-    (float, $V:ident, $a:expr, $b:expr) => {
+    (float, $name:literal, $V:ident, $a:expr, $b:expr) => {
         if NumericFloat::is_zero($b) {
             Err(ErrorKind::DivisionByZero)
         } else {
             Ok(Value::$V(*$a / *$b))
         }
     };
-    ($int_kind:ident, $V:ident, $a:expr, $b:expr) => {
+    ($int_kind:ident, $name:literal, $V:ident, $a:expr, $b:expr) => {
         if *$b == 0 {
             Err(ErrorKind::DivisionByZero)
         } else {
             $a.checked_div(*$b)
                 .map(Value::$V)
-                .ok_or(ErrorKind::IntegerOverflow)
+                .ok_or_else(|| arith_overflow($name, "/", $a, $b))
         }
     };
 }
 
 /// True modulo: result sign follows the divisor (right operand).
 macro_rules! numeric_mod {
-    (float, $V:ident, $a:expr, $b:expr) => {{
+    (float, $name:literal, $V:ident, $a:expr, $b:expr) => {{
         if NumericFloat::is_zero($b) {
             Err(ErrorKind::DivisionByZero)
         } else {
@@ -184,17 +213,17 @@ macro_rules! numeric_mod {
             Ok(Value::$V(result))
         }
     }};
-    (unsigned, $V:ident, $a:expr, $b:expr) => {
+    (unsigned, $name:literal, $V:ident, $a:expr, $b:expr) => {
         // Unsigned: remainder == modulo, no sign adjustment needed.
         if *$b == 0 {
             Err(ErrorKind::DivisionByZero)
         } else {
             $a.checked_rem(*$b)
                 .map(Value::$V)
-                .ok_or(ErrorKind::IntegerOverflow)
+                .ok_or_else(|| arith_overflow($name, "%", $a, $b))
         }
     };
-    (signed, $V:ident, $a:expr, $b:expr) => {{
+    (signed, $name:literal, $V:ident, $a:expr, $b:expr) => {{
         if *$b == 0 {
             Err(ErrorKind::DivisionByZero)
         } else {
@@ -207,25 +236,25 @@ macro_rules! numeric_mod {
                     };
                     Ok(Value::$V(result))
                 }
-                None => Err(ErrorKind::IntegerOverflow),
+                None => Err(arith_overflow($name, "%", $a, $b)),
             }
         }
     }};
 }
 
 macro_rules! numeric_neg {
-    (unsigned, $V:ident, $a:expr) => {{
+    (unsigned, $name:literal, $V:ident, $a:expr) => {{
         let _ = $a;
         None
     }};
-    (signed,  $V:ident, $a:expr) => {
+    (signed, $name:literal, $V:ident, $a:expr) => {
         Some(
             $a.checked_neg()
                 .map(Value::$V)
-                .ok_or(ErrorKind::IntegerOverflow),
+                .ok_or_else(|| arith_overflow_unary($name, "neg", $a)),
         )
     };
-    (float, $V:ident, $a:expr) => {
+    (float, $name:literal, $V:ident, $a:expr) => {
         Some(Ok(Value::$V(-*$a)))
     };
 }
@@ -258,11 +287,11 @@ macro_rules! construct_dispatch {
 }
 
 macro_rules! bootstrap_dispatch {
-    (float, $reg:expr, $result:expr, $prim:expr, $V:ident) => {
+    (float, $reg:expr, $result:expr, $prim:expr, $V:ident, $name:literal) => {
         register_float_methods!($reg, $result, $prim, $V)
     };
-    ($int_kind:ident, $reg:expr, $result:expr, $prim:expr, $V:ident) => {
-        register_int_methods!($reg, $result, $prim, $V)
+    ($int_kind:ident, $reg:expr, $result:expr, $prim:expr, $V:ident, $name:literal) => {
+        register_int_methods!($reg, $result, $prim, $V, $name)
     };
 }
 
@@ -331,11 +360,11 @@ macro_rules! define_numeric_prims {
             match (left, right) {
                 $(
                     (Value::$V(a), Value::$V(b)) => Some(match op {
-                        BinOp::Add => numeric_add!($kind, $V, a, b),
-                        BinOp::Sub => numeric_sub!($kind, $V, a, b),
-                        BinOp::Mul => numeric_mul!($kind, $V, a, b),
-                        BinOp::Div => numeric_div!($kind, $V, a, b),
-                        BinOp::Mod => numeric_mod!($kind, $V, a, b),
+                        BinOp::Add => numeric_add!($kind, $name, $V, a, b),
+                        BinOp::Sub => numeric_sub!($kind, $name, $V, a, b),
+                        BinOp::Mul => numeric_mul!($kind, $name, $V, a, b),
+                        BinOp::Div => numeric_div!($kind, $name, $V, a, b),
+                        BinOp::Mod => numeric_mod!($kind, $name, $V, a, b),
                         BinOp::Eq  => Ok(Value::Bool(a == b)),
                         BinOp::Ne  => Ok(Value::Bool(a != b)),
                         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
@@ -359,7 +388,7 @@ macro_rules! define_numeric_prims {
         pub fn try_unaryop(op: UnaryOp, operand: &Value) -> Option<Result<Value, ErrorKind>> {
             match op {
                 UnaryOp::Neg => match operand {
-                    $( Value::$V(a) => numeric_neg!($kind, $V, a), )*
+                    $( Value::$V(a) => numeric_neg!($kind, $name, $V, a), )*
                     _ => None,
                 },
                 UnaryOp::Not => None,
@@ -396,7 +425,7 @@ macro_rules! define_numeric_prims {
 
         pub fn bootstrap_methods_impl(reg: &mut NativeFnRegistry) -> Vec<(TypeId, PrimMethods)> {
             let mut result = Vec::new();
-            $( bootstrap_dispatch!($kind, reg, result, prim::$C, $V); )*
+            $( bootstrap_dispatch!($kind, reg, result, prim::$C, $V, $name); )*
             result
         }
     };
@@ -444,14 +473,19 @@ fn construct_int<T: TryFrom<i128> + TryFrom<u128>>(
 
 /// Construct a float from a Float or Int.
 fn construct_float<T: NumericFloat>(
-    _name: &'static str,
+    name: &'static str,
     arg: &Value,
     wrap: fn(T) -> Value,
 ) -> Result<Value, ErrorKind> {
     match arg {
         Value::Float(f) => Ok(wrap(T::from_f64(*f))),
         Value::Int(n) => {
-            let f = n.to_f64().ok_or(ErrorKind::IntegerOverflow)?;
+            let f = n.to_f64().ok_or_else(|| ErrorKind::IntegerOverflow {
+                type_name: name.to_string(),
+                op: "convert",
+                lhs: format!("{n}"),
+                rhs: String::new(),
+            })?;
             Ok(wrap(T::from_f64(f)))
         }
         _ => Err(ErrorKind::TypeMismatch {
@@ -493,7 +527,7 @@ macro_rules! method_unary {
 
 /// Register a shift method: `self.shl(Int) -> Self`.
 macro_rules! method_shift {
-    ($reg:expr, $m:expr, $V:ident, $name:literal, $method:ident) => {
+    ($reg:expr, $m:expr, $V:ident, $type_name:literal, $name:literal, $method:ident) => {
         $m.push((
             $name,
             $reg.register(
@@ -507,7 +541,12 @@ macro_rules! method_shift {
                         }
                         .into());
                     };
-                    let shift = b.to_u32().ok_or(ErrorKind::IntegerOverflow)?;
+                    let shift = b.to_u32().ok_or_else(|| ErrorKind::IntegerOverflow {
+                        type_name: $type_name.to_string(),
+                        op: $name,
+                        lhs: format!("{a}"),
+                        rhs: format!("{b}"),
+                    })?;
                     Ok(Value::$V(a.$method(shift)))
                 },
             ),
@@ -516,7 +555,7 @@ macro_rules! method_shift {
 }
 
 macro_rules! register_int_methods {
-    ($reg:expr, $result:expr, $prim:expr, $V:ident) => {{
+    ($reg:expr, $result:expr, $prim:expr, $V:ident, $type_name:literal) => {{
         let mut m = Vec::new();
         m.push(("to_int", $reg.register("to_int", false,
             |_: &mut NativeCtx, args: &[Value]| -> Result<Value, super::error::RuntimeError> {
@@ -530,8 +569,8 @@ macro_rules! register_int_methods {
         method_binop!($reg, m, $prim, $V, "ior",  |);
         method_binop!($reg, m, $prim, $V, "xor",  ^);
         method_unary!($reg, m, $prim, $V, "inv",  !);
-        method_shift!($reg, m, $V, "shl", wrapping_shl);
-        method_shift!($reg, m, $V, "shr", wrapping_shr);
+        method_shift!($reg, m, $V, $type_name, "shl", wrapping_shl);
+        method_shift!($reg, m, $V, $type_name, "shr", wrapping_shr);
         $result.push(($prim, PrimMethods { methods: m }));
     }};
 }

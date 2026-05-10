@@ -236,6 +236,11 @@ impl Interpreter {
         &self.types
     }
 
+    /// Convenience: build a fully-populated `FmtCtx` for value display.
+    pub fn fmt_ctx(&self) -> super::value::FmtCtx<'_> {
+        super::value::FmtCtx::new(&self.types, &self.native_registry)
+    }
+
     /// Intern a byte sequence, returning a shared `Bin` value.
     pub fn intern_bin(&mut self, bytes: Vec<u8>) -> Value {
         Value::Bin(self.intern.intern_bin(bytes))

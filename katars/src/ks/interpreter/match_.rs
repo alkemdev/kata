@@ -74,7 +74,7 @@ impl Interpreter {
             .at(keyword_span)
             .label(
                 subject.span,
-                format!("this value: {}", val.display(self.type_registry())),
+                format!("this value: {}", val.display_with(&self.fmt_ctx())),
             )
             .help("add a wildcard arm: _ -> ..."))
     }

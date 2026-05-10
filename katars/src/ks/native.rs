@@ -7,7 +7,6 @@
 //! At call time, `Value::NativeFn(NativeFnId)` is looked up by ID
 //! and dispatched — no string matching.
 
-use std::collections::HashSet;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -76,6 +75,10 @@ pub struct NativeCtx<'a> {
     pub allocations: &'a mut Vec<Option<Vec<Value>>>,
     pub intern: &'a mut super::intern::InternTables,
     pub out: &'a mut dyn Write,
+    /// Read-only access to the native registry — needed by `print` to render
+    /// `NativeFn`/`Module` values with their human-readable names rather
+    /// than opaque `NativeFnId(0)` / `ModuleId(8)` handles.
+    pub natives: &'a NativeFnRegistry,
     /// Available for native fns that need to know if they're in an unsafe context.
     /// Currently checked at the dispatch level before the handler is called.
     #[allow(dead_code)]
@@ -101,7 +104,7 @@ impl<'a> NativeCtx<'a> {
         match args.get(pos) {
             Some(Value::Int(n)) => n
                 .to_usize()
-                .ok_or_else(|| RuntimeError::from(ErrorKind::IntegerOverflow)),
+                .ok_or_else(|| RuntimeError::from(ErrorKind::IntegerOutOfRange)),
             Some(other) => Err(ErrorKind::TypeMismatch {
                 expected: prim::INT,
                 actual: other.type_id(),
@@ -275,7 +278,10 @@ impl NativeFnRegistry {
 // ── Top-level builtins ──────────────────────────────────────────────
 
 pub fn native_print(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
-    let parts: Vec<String> = args.iter().map(|v| v.display(ctx.types)).collect();
+    let parts: Vec<String> = args
+        .iter()
+        .map(|v| v.display_full(ctx.types, ctx.natives))
+        .collect();
     writeln!(ctx.out, "{}", parts.join(" ")).map_err(|e| ErrorKind::Other(e.to_string()))?;
     Ok(Value::Nil)
 }
@@ -285,7 +291,7 @@ pub fn native_panic(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, Runtim
         "panic".to_string()
     } else {
         args.iter()
-            .map(|v| v.display(ctx.types))
+            .map(|v| v.display_full(ctx.types, ctx.natives))
             .collect::<Vec<_>>()
             .join(" ")
     };
@@ -558,7 +564,7 @@ pub fn eval_unaryop(op: UnaryOp, operand: &Value) -> Result<Value, ErrorKind> {
 /// Convert a BigInt to f64 for mixed-type arithmetic. Errors if the
 /// integer is too large to represent as a float (avoids silent data loss).
 fn int_to_f64(n: &BigInt) -> Result<f64, ErrorKind> {
-    n.to_f64().ok_or(ErrorKind::IntegerOverflow)
+    n.to_f64().ok_or(ErrorKind::IntegerOutOfRange)
 }
 
 fn op_add(left: &Value, right: &Value) -> Result<Value, ErrorKind> {
@@ -805,10 +811,12 @@ fn byte_shl(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError>
         }
         .into());
     };
-    let shift: u32 = n
-        .as_ref()
-        .try_into()
-        .map_err(|_| ErrorKind::IntegerOverflow)?;
+    let shift: u32 = n.as_ref().try_into().map_err(|_| ErrorKind::IntegerOverflow {
+        type_name: "Byte".to_string(),
+        op: "shl",
+        lhs: format!("{b}"),
+        rhs: format!("{n}"),
+    })?;
     Ok(Value::Byte(b.wrapping_shl(shift)))
 }
 
@@ -827,10 +835,12 @@ fn byte_shr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError>
         }
         .into());
     };
-    let shift: u32 = n
-        .as_ref()
-        .try_into()
-        .map_err(|_| ErrorKind::IntegerOverflow)?;
+    let shift: u32 = n.as_ref().try_into().map_err(|_| ErrorKind::IntegerOverflow {
+        type_name: "Byte".to_string(),
+        op: "shr",
+        lhs: format!("{b}"),
+        rhs: format!("{n}"),
+    })?;
     Ok(Value::Byte(b.wrapping_shr(shift)))
 }
 
@@ -987,7 +997,7 @@ fn str_replace(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErr
 fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
     let s = expect_str(args, 0)?;
     let start = match args.get(1) {
-        Some(Value::Int(n)) => n.to_usize().ok_or(ErrorKind::IntegerOverflow)?,
+        Some(Value::Int(n)) => n.to_usize().ok_or(ErrorKind::IntegerOutOfRange)?,
         Some(other) => {
             return Err(ErrorKind::TypeMismatch {
                 expected: prim::INT,
@@ -998,7 +1008,7 @@ fn str_substr(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeErro
         None => return Err(ErrorKind::InternalError("missing argument").into()),
     };
     let len = match args.get(2) {
-        Some(Value::Int(n)) => n.to_usize().ok_or(ErrorKind::IntegerOverflow)?,
+        Some(Value::Int(n)) => n.to_usize().ok_or(ErrorKind::IntegerOutOfRange)?,
         Some(other) => {
             return Err(ErrorKind::TypeMismatch {
                 expected: prim::INT,
@@ -1084,7 +1094,7 @@ fn bin_get_item(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeEr
         }
         .into());
     };
-    let i = idx.to_usize().ok_or(ErrorKind::IntegerOverflow)?;
+    let i = idx.to_usize().ok_or(ErrorKind::IntegerOutOfRange)?;
     if i >= b.len() {
         return Err(ErrorKind::IndexOutOfBounds {
             index: i as i64,

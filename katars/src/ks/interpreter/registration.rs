@@ -15,7 +15,7 @@ use crate::ks::ast::{
     AstFieldDef, AstVariantDef, Expr, FuncDef, MethodSig, Spanned, TypePattern,
 };
 use crate::ks::error::{ConformanceError, ErrorKind, NameKind, RuntimeError};
-use crate::ks::types::{TypeExpr, TypeId, VariantDef};
+use crate::ks::types::{TypeId, VariantDef};
 use crate::ks::value::{FuncData, Value};
 
 use super::types_protocol::SELF_PARAM;

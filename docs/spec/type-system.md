@@ -40,33 +40,46 @@ All values are objects with methods, including primitives (like Ruby/Smalltalk).
 Runtime-handled, irreducible. The evaluator matches on these directly.
 
 **Numerics:**
-- `Int` — arbitrary precision (GMP/Python-style bigint)
-- Fixed-width signed: `I8`, `I16`, `I32`, `I64`, `I128`, `I256`
-- Fixed-width unsigned: `U8`, `U16`, `U32`, `U64`, `U128`, `U256`
-- `Float` — arbitrary precision, MPFR-like (deferred/TODO)
-- Fixed-width floats: `F16`, `F32`, `F64`, `F128`
-- Tests use `F64` until `Float` is ready
+- `Int` — arbitrary precision (BigInt)
+- Fixed-width signed: `I8`, `I16`, `I32`, `I64`, `I128`
+- Fixed-width unsigned: `U8`, `U16`, `U32`, `U64`, `U128`
+- Pointer-sized: `Usz`, `Isz`
+- `Float` — f64 — IEEE 754 double precision. Arbitrary-precision Float is deferred indefinitely (no current proposal).
+- Fixed-width floats: `F16`, `F32`, `F64`
 
 **String/byte:**
 - `Str` — immutable string. Internal encoding is NOT guaranteed to callers.
-- `Bin` — binary blob, exact byte sequences.
-- Bridge: `Str.to_utf8() -> Bin`
+- `Bin` — interned binary blob (Arc<[u8]>, pointer-equality fast path), exact byte sequences.
+- `Byte` — single unsigned 8-bit value (bits, not a number — no arithmetic).
+- `Char` — Unicode scalar value (codepoint).
+- Bridge: `Str.to_bin() -> Bin` (via `ToBin` protocol)
 
 **Other:**
 - `Nil` — unit/absence
 - `Bool` — `true`/`false`
 - `Func` — first-class function value
+- `Type` — types are first-class values
+- `RawPtr` — opaque handle to runtime-managed storage (cannot be forged from KS)
 
 ### Layer 2: Builtin types
 
 Shipped with the language, live in global scope. Written in KataScript itself — the runtime provides only intrinsics that can't be expressed in KS. See `docs/phil/stdlib.md`.
 
-- `List[T]` — ordered, growable sequence
-- `Map[K, V]` — key-value mapping
+Implemented:
+- `Opt[T]` — explicit presence/absence (`std/core/opt.ks`)
+- `Res[T, E]` — success/failure (`std/core/res.ks`)
+- `Arr[T]` — ordered, growable sequence (`std/dsa/arr.ks`)
+- `Map[K, V]` — key-value mapping via open addressing (`std/dsa/map.ks`)
+- `Ptr[T]`, `Buf[T]` — typed pointer / typed buffer over RawPtr (`std/mem/`)
+- `Allocator` — abstract interface for memory allocation (`std/mem/allocator.ks`)
+- Iterator protocols: `Iter[T]`, `ToIter[T]` (`std/core/iter.ks`)
+- Lifecycle protocols: `Drop`, `Copy`, `Dupe` (`std/core/lifecycle.ks`)
+- Indexing protocols: `GetItem`, `SetItem` (`std/core/indexing.ks`)
+- Conversion protocols: `ToBin` (`std/core/conv.ks`)
+
+Not yet implemented:
 - `Set[T]` — unordered unique collection
 - `Range` — numeric range (for iteration, slicing)
-- `Opt[T]` — explicit presence/absence (see [prop: nil-option](nil-option.md))
-- `Res[T, E]` — success/failure (see [prop: error-handling](error-handling.md))
 
 ### Type taxonomy (Phase 2–3)
 
@@ -81,7 +94,7 @@ Conformance is declared via `impl`:
 
 This fits the 4-char keyword family: `func`/`kind`/`enum`/`type`/`impl`/`with`.
 
-`kind` and `enum` are implemented. `type` (abstract interfaces) and `impl` are in progress.
+`kind`, `enum`, `type` (abstract interfaces), and `impl` (including `impl K as T` conformance and the `@` binding sigil for generic vs specialized impls) are all implemented.
 
 ### Naming conventions
 
@@ -103,9 +116,9 @@ The two-layer split maps cleanly onto implementation phases:
 - Phase 3: add builtin types, platonic typing via `kind`
 - Phase 4: self-host builtins in KataScript
 
-`I256` and `U256` are unusual but motivated by crypto/blockchain use cases and the principle that if you're going to have fixed-width integers, the cost of including 256-bit is near zero.
+Fixed-width numerics (`U8`..`U128`, `I8`..`I128`, `Usz`, `Isz`, `F16`, `F32`, `F64`) are implemented as direct `Value` enum variants. `I256`, `U256`, and `F128` were considered but are not implemented — there is no current proposal.
 
-`Float` (arbitrary precision) is deferred because MPFR bindings are heavy and the use case is niche. `F64` covers 99% of float needs.
+Arbitrary-precision `Float` is deferred indefinitely. `f64` covers 99% of float needs and there is no current proposal for an arbitrary-precision alternative.
 
 The `Str`/`Bin` split avoids the Python 2 unicode disaster. `Str` is text (encoding opaque), `Bin` is bytes. The bridge is explicit.
 
@@ -118,9 +131,9 @@ Open sub-questions:
 ## Decision
 **Chosen: Option B — two-layer architecture (prim + builtin).**
 
-Prim types (`Nil`, `Bool`, `Int`, `Float`, `Str`, `Bin`, `Func`, `Type`) are runtime-handled via `Value` enum variants. Builtin types (`Opt[T]`, `Res[T,E]`) live in the prelude and are defined using the language's own `enum`/`kind`/`type` keywords. User-defined types use `kind` (product), `enum` (sum), and `type` (abstract interface), with conformance via `impl Kind as Type { ... }`.
+Prim types (`Nil`, `Bool`, `Int`, `Float`, `Str`, `Bin`, `Func`, `Type`, `RawPtr`, `Byte`, `Char`, fixed-width `U8`..`U128`/`I8`..`I128`/`Usz`/`Isz`/`F16`/`F32`/`F64`) are runtime-handled via `Value` enum variants. Builtin types (`Opt[T]`, `Res[T,E]`, `Arr[T]`, `Map[K,V]`, `Ptr[T]`, `Buf[T]`, and the `Iter`/`Drop`/`Copy`/`Dupe`/`GetItem`/`SetItem`/`ToBin` protocols) live in `std/` and are defined using the language's own `enum`/`kind`/`type` keywords. User-defined types use `kind` (product), `enum` (sum), and `type` (abstract interface), with conformance via `impl Kind as Type { ... }`.
 
-`Int` is arbitrary-precision (BigInt). `Float` is f64. Fixed-width numerics (`I8`..`U256`, `F16`..`F128`) are deferred until there's a concrete use case. `TypeId` handles (not strings) identify types in a central `TypeRegistry`.
+`Int` is arbitrary-precision (BigInt). `Float` is f64 (IEEE 754 double); arbitrary-precision Float is deferred indefinitely. Fixed-width numerics (`I8`..`I128`, `U8`..`U128`, `Usz`, `Isz`, `F16`, `F32`, `F64`) are implemented as distinct prim variants. `TypeId` handles (not strings) identify types in a central `TypeRegistry`.
 
 The open sub-questions (coercion rules, nil vs Option, error handling, prim method sets) remain open as separate proposals.
 

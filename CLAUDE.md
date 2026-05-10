@@ -7,24 +7,25 @@ kata is a personal programming language workbench: a KataScript interpreter (`ka
 ## Language status
 
 - **Literals**: Int (BigInt), Float (f64), Str, Bool, Nil, Bin, Byte, Char, RawPtr, U8..U128, I8..I128, Usz, Isz, F16, F32, F64
-- **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation). Escapes: `\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\xNN` (hex byte), `\uNNNN` (Unicode BMP), `\UNNNNNNNN` (full Unicode)
+- **Strings**: double-quoted (`"..."`) with escape sequences + `{expr}` interpolation; single-quoted (`'...'`) with escapes only (no interpolation). Escapes: `\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\{`/`\}` (in interpolated strings), `\xNN` (hex byte), `\uNNNN` (Unicode BMP), `\UNNNNNNNN` (full Unicode). Number literals: decimal, `0x` hex, `0b` binary
 - **Byte strings**: `b"..."` (interpolation) and `b'...'` (literal) produce interned `Bin` values. `\xNN` produces a single raw byte. Display: `b'hello\xff\n'`
+- **Tuples**: `(a, b, c)` literals, `t.0` / `t.0.1` positional access (TupIdx, distinct from attr); type is `Tup[T1, T2, ...]`; `()` is the empty tuple, `(x,)` is a 1-tuple; tuple patterns destructure in `let`/`for`/`match`
 - **Variables**: let (binding), assignment (reassignment), lexical scoping, shadowing
-- **Functions**: func, typed params, return type annotation, ret, closures
-- **Operators**: +, -, *, /, eq, ne, lt, gt, le, ge, unary -, !, string concat — all via ops module
-- **Types**: enum (generics), struct (kind keyword, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in core
+- **Functions**: func, typed params, return type annotation, ret. Lexical closures via slot-based capture (`Arc<Mutex<Value>>`) — closures share mutable references with the enclosing scope, mutation flows both ways. FuncDef hoisting enables forward references and mutual recursion within a block
+- **Operators**: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, unary `-`, `!` — all dispatch through the `ops` module (method names: add, sub, mul, div, mod, eq, ne, lt, gt, le, ge, neg, not). String concatenation via `+` (ops.add)
+- **Types**: enum (generics), kind (product type, generics, field access/assignment), types as values, typeof, Opt[T]/Res[T,E] in core
 - **Methods**: impl blocks with `@` binding sigil (`impl Foo[@T]` generic, `impl Foo[Int]` specialized), method dispatch with base-type fallback, mutable self (copy-in copy-out), `self`/`Self` keywords, static methods (no self)
-- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe/ToBin in core
+- **Interfaces**: type (abstract interface), impl K as T (conformance), Iter[T]/ToIter[T]/Drop/Copy/Dupe/ToBin/Hash/GetItem[K,V]/SetItem[K,V] in core
 - **Control flow**: if/elif/else (expression), while, for (iterator protocol), bail, cont, && || (short-circuit)
 - **Blocks**: with (scoped bindings), unsafe (gates mem intrinsics)
 - **Memory**: RawPtr (opaque prim), Ptr[T], Buf[T], Arr[T] — layered stack with Allocator interface. Bin interning (Arc<[u8]>, pointer-equality fast path)
-- **Modules**: import mem (scoped), import mem.{Ptr, Buf} (selective). Top-level modules: core, mem, dsa. Prelude auto-loads core + Arr/ArrIter from dsa
+- **Modules**: import mem (scoped), import mem.{Ptr, Buf} (selective). Top-level modules: core, mem, dsa. Prelude auto-loads core + Arr/ArrIter/Slot/Map/MapIter from dsa
 - **Lifecycle**: Drop protocol (auto-called on scope exit), Self type in impl blocks
 - **Error handling**: Res[T,E] + postfix `?` (unwrap or propagate) + postfix `!` (unwrap or panic), Res methods (unwrap, unwrap_or, is_val, is_err)
 - **Pattern matching**: match expression with variant/literal/wildcard/binding/tuple patterns (recursive); negative number literals; let/for destructuring (irrefutable patterns); repeat-binding check
-- **Collections**: array literals `[1, 2, 3]`, `a[i]`/`a[i] = v` indexing via GetItem/SetItem protocols
+- **Collections**: array literals `[1, 2, 3]`, `Map[K, V].new()` for hash maps; `a[i]`/`a[i] = v` indexing via GetItem/SetItem protocols
 - **String methods**: len (codepoints), contains, starts_with, ends_with, trim, trim_start, trim_end, to_upper, to_lower, replace, substr (codepoint-indexed), split, to_int, to_float, to_bin — all native
-- **Not yet**: maps, const
+- **Not yet**: const
 
 ## Project layout
 

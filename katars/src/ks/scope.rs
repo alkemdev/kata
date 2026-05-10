@@ -83,14 +83,6 @@ impl Frame {
         old.map(|s| s.get())
     }
 
-    /// Bind a name to an existing slot. Used to wire up the function-self-
-    /// reference: place a placeholder slot before capturing the scope, then
-    /// `Slot::set` the real function into the same slot afterwards. Other
-    /// code paths shouldn't normally need this — prefer `set`.
-    pub fn bind_slot(&mut self, name: String, slot: Slot) {
-        self.bindings.insert(name, slot);
-    }
-
     /// Assignment-style write: writes through the existing slot if present.
     /// Returns `Some(old_value)` if the binding existed, `None` otherwise.
     pub fn write(&self, name: &str, value: Value) -> Option<Value> {
@@ -103,10 +95,6 @@ impl Frame {
 
     pub fn contains(&self, name: &str) -> bool {
         self.bindings.contains_key(name)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Slot)> {
-        self.bindings.iter()
     }
 
     pub fn drain(self) -> impl Iterator<Item = (String, Value)> {
@@ -143,15 +131,6 @@ impl Scope {
             return Some(s);
         }
         self.parent.as_ref().and_then(|p| p.lookup_slot(name))
-    }
-
-    /// Collect all visible names (for REPL completion).
-    pub fn visible_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.frame.keys().cloned().collect();
-        if let Some(ref parent) = self.parent {
-            names.extend(parent.visible_names());
-        }
-        names
     }
 }
 
@@ -205,45 +184,6 @@ mod tests {
         assert_eq!(inner_scope.lookup("y"), Some(str_val("only_outer")));
         // Not found anywhere
         assert!(inner_scope.lookup("z").is_none());
-    }
-
-    #[test]
-    fn scope_visible_names() {
-        let mut outer = Frame::new();
-        outer.set("a".into(), Value::Nil);
-        outer.set("b".into(), Value::Nil);
-
-        let mut inner = Frame::new();
-        inner.set("c".into(), Value::Nil);
-
-        let outer_scope = Arc::new(Scope {
-            frame: outer,
-            parent: None,
-        });
-        let inner_scope = Scope {
-            frame: inner,
-            parent: Some(outer_scope),
-        };
-
-        let names = inner_scope.visible_names();
-        assert!(names.contains(&"a".to_string()));
-        assert!(names.contains(&"b".to_string()));
-        assert!(names.contains(&"c".to_string()));
-    }
-
-    #[test]
-    fn slot_sharing_propagates_writes() {
-        // Two frames hold the same slot — write through one, read through other.
-        let mut f1 = Frame::new();
-        f1.set("x".into(), str_val("v1"));
-        let slot = f1.get_slot("x").unwrap().clone();
-
-        let mut f2 = Frame::new();
-        f2.bind_slot("x".into(), slot);
-
-        // Mutate via f2's interface; f1 should see the new value.
-        f2.write("x", str_val("v2"));
-        assert_eq!(f1.get("x"), Some(str_val("v2")));
     }
 
     #[test]

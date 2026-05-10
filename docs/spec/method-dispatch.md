@@ -132,8 +132,13 @@ Option 2 is cleanest — the interpreter registers methods for prim types the sa
 
 **Method table location:** Where does the method table live?
 - In `TypeRegistry` — natural home, but currently `TypeDef` is pure data. Adding methods means `TypeDef` holds `Value`s, which creates a dependency cycle (`Value` → `TypeId` → `TypeDef` → `Value`).
-- In `Interpreter` — a separate `HashMap<TypeId, HashMap<String, Value>>`. Avoids the cycle. Methods are runtime state, not type definitions.
+- In `Interpreter` — a separate per-type method table. Avoids the cycle. Methods are runtime state, not type definitions.
 - The interpreter approach is simpler and avoids coupling type definitions to runtime values.
+
+**Method-name keying:** What identifies a method in the table?
+- Strings (`HashMap<String, Value>`) — direct, but every dispatch hashes a `&str` and pays a comparison on hash collision. The hot path (every `for` body iteration calls `.next()`, every scope exit may call `.drop()`) burns time on identical string compares.
+- Interned handles (`HashMap<MethodId, Value>` where `MethodId(u32)` is an index into a names table) — names are hashed once at registration time, lookups are u32-keyed. Source-level method names like `"to_iter"` and `"next"` round-trip through a `MethodInterner` so diagnostics can still recover the human name.
+- Handle-based keying is what we want: the registration cost is paid once, and the runtime dispatch path becomes a u32 hash hit with no string work.
 
 **Open sub-questions:**
 - Static methods? `Point.origin()` vs `origin()` — syntactic preference only in a dynamic language.
@@ -146,14 +151,53 @@ Option 2 is cleanest — the interpreter registers methods for prim types the sa
 
 Methods are defined in `impl Type { func method(self, ...) { ... } }` blocks. `self` is an explicit first parameter. Multiple `impl` blocks per type are allowed. Dispatch looks up the method in a per-`TypeId` method table stored in the `Interpreter` (not `TypeRegistry`, avoiding the `Value` ↔ `TypeDef` dependency cycle).
 
+The methods table is keyed by an interned `MethodId(u32)` handle, not by `String`. The shape is `HashMap<TypeId, IndexMap<MethodId, Value>>` (see `katars/src/ks/interpreter/mod.rs:51`). At registration time, each method name is interned through a `MethodInterner` (`katars/src/ks/interpreter/method_id.rs:33`); at lookup time, a `&str` is resolved to a `MethodId` via `MethodInterner::lookup` (read-only — never inserts), and the table is queried by handle. The hot path is `Interpreter::lookup_method_by_id` (`katars/src/ks/interpreter/call.rs:26`), with `lookup_method` (line 48) as the name-keyed convenience wrapper that delegates after one interner lookup.
+
 Mutation uses copy-in copy-out semantics: the interpreter snapshots `self` before the call, executes the body, then writes the final `self` value back to the receiver variable. This only works for simple `var.method()` receivers (not nested attribute chains).
 
 Conformance: `impl Kind as Type { ... }` declares that `Kind` satisfies an abstract `Type` interface. The interpreter checks that all required methods exist with matching parameter counts.
 
 UFCS (Option D) was deferred — it's tractable as a future extension but adds dispatch complexity that isn't needed yet.
 
+## Mechanism: MethodInterner / ProtocolMethods
+
+`MethodInterner` (`katars/src/ks/interpreter/method_id.rs`) is a bidirectional name ⇄ handle table:
+- `intern(&mut self, name: &str) -> MethodId` — insert-or-fetch; called from registration paths.
+- `lookup(&self, name: &str) -> Option<MethodId>` — read-only; called from the dispatch hot path.
+- `name(&self, id: MethodId) -> &str` — recover the source name for diagnostics (e.g., the `NoAttr` error message in `resolve_method_by_id`, `katars/src/ks/interpreter/call.rs:84`).
+
+`ProtocolMethods` (`katars/src/ks/interpreter/method_id.rs:69`) holds the `MethodId`s of the language-level protocol methods (`to_iter`, `next`, `drop`, `get_item`, `set_item`). It is constructed once in `Interpreter::new` (`katars/src/ks/interpreter/mod.rs:130`) by interning each `Protocol::method_name()`, and is the single source of truth from then on. The runtime never re-interns these names; it reaches for the cached handle:
+
+```rust
+// for-loop iteration, expr.rs:496
+let to_iter_id = self.protocol_methods.to_iter;
+let next_id = self.protocol_methods.next;
+let iter_val = self.call_method_by_id(&iterable, to_iter_id, &[], out)?;
+// ...
+let bound = self.resolve_method_by_id(&iterator, next_id)?;
+```
+
+```rust
+// drop dispatch on scope exit, mod.rs:449
+let drop_id = self.protocol_methods.drop;
+let _ = self.call_method_by_id(&value, drop_id, &[], out);
+```
+
+```rust
+// indexed write a[k] = v, access.rs:119
+let set_item_id = self.protocol_methods.set_item;
+self.call_method_by_id(&receiver, set_item_id, &call_args, out)
+```
+
+Each of these sites used to do a `String` (or `&'static str`) lookup against a string-keyed table. They now go through `call_method_by_id` / `resolve_method_by_id`, which take a `MethodId` directly and skip the interner entirely on the hot path.
+
+User-defined methods register through `Interpreter::register_impl_methods` (`katars/src/ks/interpreter/registration.rs:262`), which interns each method name once and inserts the resulting `MethodId → Value::Func` pair into the type's `IndexMap`. Native prim-type methods follow the same pattern via `register_native_methods` (`katars/src/ks/interpreter/mod.rs:206`). `IndexMap` is used (not `HashMap`) so iteration order matches registration order — which is what REPL completion relies on (`collect_methods`, `mod.rs:333`).
+
 ## References
-- `katars/src/ks/interpreter.rs` — `register_impl`, `resolve_method`, `call_func_body` (copy-in copy-out)
+- `katars/src/ks/interpreter/method_id.rs` — `MethodId`, `MethodInterner`, `ProtocolMethods`
+- `katars/src/ks/interpreter/call.rs` — `lookup_method_by_id`, `resolve_method_by_id`, `call_method_by_id`, `call_func_body` (copy-in copy-out)
+- `katars/src/ks/interpreter/registration.rs` — `register_impl_methods` (intern at registration)
+- `katars/src/ks/interpreter/types_protocol.rs` — `Protocol` enum + `method_name()`
 - [spec: type-system](type-system.md) — `type` for abstract interfaces, `kind` for concrete product types
 - [prop: operator-overloading](../../plan/prop/operator-overloading.md) — operator dispatch as a special case of method dispatch
 - [spec: iteration](iteration.md) — iteration protocol needs `.to_iter()`, `.next()`

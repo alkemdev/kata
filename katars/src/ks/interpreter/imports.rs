@@ -131,20 +131,25 @@ impl Interpreter {
                 .into()
             })?;
 
+        // Push a fresh frame, run the module body, and ALWAYS pop the frame
+        // before propagating either outcome. If `exec_program` errors, the
+        // bare `?` from the previous form would skip the pop and leak the
+        // module's frame onto the call stack — corrupting every subsequent
+        // lookup.
         self.push_scope();
-        self.exec_program(&program, None, out)
-            .map_err(|e| -> RuntimeError {
-                ErrorKind::ModuleError {
-                    module: module_key.clone(),
-                    detail: e.to_string(),
-                }
-                .into()
-            })?;
+        let exec_result = self.exec_program(&program, None, out);
+        let frame = self.call_stack.pop().unwrap();
+        exec_result.map_err(|e| -> RuntimeError {
+            ErrorKind::ModuleError {
+                module: module_key.clone(),
+                detail: e.to_string(),
+            }
+            .into()
+        })?;
 
         // Collect the scope into a module. If a native module already exists
         // for this path (e.g., mem has native intrinsics), merge KS exports
         // into it rather than replacing it.
-        let frame = self.call_stack.pop().unwrap();
         let module_id = self
             .find_existing_module(&module_key)
             .unwrap_or_else(|| self.native_registry.create_module(&module_key));
@@ -214,5 +219,49 @@ impl Interpreter {
         let leaf_name = path[path.len() - 1];
         self.native_registry
             .add_submodule(current, leaf_name, leaf_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ks::ast::Spanned;
+
+    /// A failing module body (parsed and exec'd from a `std_modules` entry)
+    /// must not leak its scope frame onto the interpreter's call stack.
+    /// Pre-fix, `exec_program?` would propagate without popping, leaving
+    /// the module's frame on top of the call stack and corrupting every
+    /// subsequent variable lookup in the calling program.
+    #[test]
+    fn failing_import_does_not_leak_scope_frame() {
+        let mut interp = Interpreter::new();
+        // Inject a faulty embedded module: division by zero at top level.
+        interp
+            .std_modules
+            .insert("brokenmod".into(), "let _ = 1 / 0;");
+        let baseline = interp.call_stack.len();
+
+        let path = [Spanned::new("brokenmod".to_string(), (0, 9))];
+        let mut buf = Vec::new();
+        let result = interp.exec_import(&path, None, &mut buf);
+
+        // The import must surface as an error mentioning the module and
+        // the underlying cause. Detail wording (`DivisionByZero` Debug
+        // form vs. friendly text) is governed by `RuntimeError`'s Display
+        // impl, not this fix — assert only that both substrings are present.
+        assert!(result.is_err(), "expected import to fail");
+        let err_msg = result.unwrap_err().kind.format_with(&interp.types);
+        assert!(
+            err_msg.contains("brokenmod") && err_msg.contains("DivisionByZero"),
+            "expected ModuleError mentioning brokenmod and DivisionByZero, got: {err_msg}"
+        );
+
+        // And the call stack must be back where it was — no leaked frame.
+        assert_eq!(
+            interp.call_stack.len(),
+            baseline,
+            "scope frame leaked: call_stack grew from {baseline} to {} after failed import",
+            interp.call_stack.len(),
+        );
     }
 }

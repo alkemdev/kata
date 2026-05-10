@@ -1,0 +1,4 @@
+<native-fn print>
+<native-fn typeof>
+<native-fn panic>
+<module ops>

@@ -90,21 +90,6 @@ pub enum TypeDef {
     TupleInstance { type_args: Vec<TypeId> },
 }
 
-impl TypeDef {
-    pub fn name(&self) -> &str {
-        match self {
-            TypeDef::Prim { name } => name,
-            TypeDef::Enum { name, .. } => name,
-            TypeDef::Struct { name, .. } => name,
-            TypeDef::EnumInstance { .. }
-            | TypeDef::StructInstance { .. }
-            | TypeDef::InterfaceInstance { .. }
-            | TypeDef::TupleInstance { .. } => "", // use display_name instead
-            TypeDef::Interface { name, .. } => name,
-        }
-    }
-}
-
 /// A variant in a generic enum definition. Fields reference type params.
 #[derive(Debug, Clone)]
 pub struct VariantDef {
@@ -482,6 +467,10 @@ impl TypeRegistry {
     }
 
     /// Get the variant index and resolved def for an instantiated enum.
+    // Public API: variant lookup is part of the natural registry surface.
+    // Production callers currently use lower-level paths (variant_name,
+    // direct EnumInstance match), but tests rely on this convenience.
+    #[allow(dead_code)]
     pub fn get_variant(
         &self,
         type_id: TypeId,

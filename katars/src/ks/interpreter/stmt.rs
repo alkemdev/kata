@@ -345,18 +345,7 @@ impl Interpreter {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(val) => {
                     if is_expr && !matches!(val, Value::Nil) {
-                        let display = match &val {
-                            Value::Module(mid) => {
-                                let m = self.native_registry.get_module(*mid);
-                                format!("<module {}>", m.name)
-                            }
-                            Value::NativeFn(fid) => {
-                                let name = self.native_registry.fn_name(*fid);
-                                format!("<native-fn {name}>")
-                            }
-                            other => other.display(&self.types),
-                        };
-                        let _ = writeln!(out, "{display}");
+                        let _ = writeln!(out, "{}", val.display_with(&self.fmt_ctx()));
                     }
                 }
                 Flow::Return { span, .. } => {

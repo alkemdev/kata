@@ -127,23 +127,6 @@ impl Interpreter {
         }
     }
 
-    /// Call a method on a value by name (no copy-out — caller handles that).
-    pub(super) fn call_method(
-        &mut self,
-        receiver: &Value,
-        name: &str,
-        args: &[Value],
-        out: &mut impl Write,
-    ) -> Result<Value, RuntimeError> {
-        let bound = self.resolve_method(receiver, name)?;
-        match self.eval_call(bound, args, &[], out)? {
-            Flow::Next(v) | Flow::Return { value: v, .. } | Flow::Propagate { value: v, .. } => {
-                Ok(v)
-            }
-            _ => Err(ErrorKind::InternalError("method returned abnormal flow").into()),
-        }
-    }
-
     // ── Call: a(b) ───────────────────────────────────────────────────────
 
     pub(super) fn eval_call(
@@ -291,8 +274,7 @@ impl Interpreter {
                     Ok(Flow::Next(result))
                 }
                 Value::NativeFn(fn_id) => {
-                    let entry = self.native_registry.get(fn_id);
-                    let handler = entry.handler;
+                    let handler = self.native_registry.get(fn_id).handler;
                     // Static native method (Type receiver): don't prepend self.
                     // Instance native method: prepend receiver as first arg.
                     let full_args = if matches!(*receiver, Value::Type(_)) {
@@ -308,6 +290,7 @@ impl Interpreter {
                         allocations: &mut self.allocations,
                         intern: &mut self.intern,
                         out,
+                        natives: &self.native_registry,
                         in_unsafe: self.in_unsafe,
                     };
                     let result = handler(&mut ctx, &full_args)?;
@@ -330,6 +313,7 @@ impl Interpreter {
                     allocations: &mut self.allocations,
                     intern: &mut self.intern,
                     out,
+                    natives: &self.native_registry,
                     in_unsafe: self.in_unsafe,
                 };
                 let result = handler(&mut ctx, args)?;
@@ -374,7 +358,7 @@ impl Interpreter {
                 let val: i64 = n
                     .as_ref()
                     .try_into()
-                    .map_err(|_| ErrorKind::IntegerOverflow)?;
+                    .map_err(|_| ErrorKind::IntegerOutOfRange)?;
                 if !(0..=255).contains(&val) {
                     return Err(ErrorKind::PrimOutOfRange {
                         type_name: "Byte",
@@ -395,7 +379,7 @@ impl Interpreter {
                 let val: u32 = n
                     .as_ref()
                     .try_into()
-                    .map_err(|_| ErrorKind::IntegerOverflow)?;
+                    .map_err(|_| ErrorKind::IntegerOutOfRange)?;
                 let ch = char::from_u32(val).ok_or_else(|| ErrorKind::PrimOutOfRange {
                     type_name: "Char",
                     detail: format!("invalid Unicode codepoint 0x{val:X}"),

@@ -49,10 +49,6 @@ pub enum ErrorKind {
     },
     DivisionByZero,
     NanComparison,
-    MethodDef {
-        method: String,
-        detail: MethodDefError,
-    },
     ConformanceFailure {
         type_name: String,
         iface_name: String,
@@ -101,8 +97,28 @@ pub enum ErrorKind {
         module: String,
         detail: String,
     },
-    /// Integer value out of representable range.
-    IntegerOverflow,
+    /// Integer arithmetic overflow — the result of an operation on a
+    /// fixed-width type cannot be represented in that type. Carries the
+    /// type, operation, and operand strings so error messages name the
+    /// surprising value rather than asking the user to guess.
+    ///
+    /// `op` is &'static because it's always one of the operator symbols
+    /// ("+", "-", "*", "/", "%", neg, "shl", "convert", …); the operand
+    /// strings are owned because they originate from formatted runtime
+    /// values.
+    ///
+    /// For conversion-style overflows without arithmetic context (e.g.,
+    /// BigInt → usize for indexing), see `IntegerOutOfRange`.
+    IntegerOverflow {
+        type_name: String,
+        op: &'static str,
+        lhs: String,
+        rhs: String,
+    },
+    /// Integer value out of representable range without specific arithmetic
+    /// context. Used for conversion-style overflows (e.g., a BigInt value too
+    /// large to fit in `usize` for indexing).
+    IntegerOutOfRange,
     /// `as` on a type that doesn't conform to the target interface.
     AsNonConforming {
         actual: TypeId,
@@ -190,10 +206,11 @@ pub enum ErrorKind {
 }
 
 /// Categorizes patterns for error reporting.
+///
+/// Only refutable patterns appear here — `Wildcard` and `Binding` are
+/// irrefutable (they never produce a pattern-mismatch error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternKind {
-    Wildcard,
-    Binding,
     Literal,
     Variant,
     Tuple,
@@ -202,8 +219,6 @@ pub enum PatternKind {
 impl PatternKind {
     pub fn name(self) -> &'static str {
         match self {
-            PatternKind::Wildcard => "wildcard",
-            PatternKind::Binding => "binding",
             PatternKind::Literal => "literal",
             PatternKind::Variant => "variant",
             PatternKind::Tuple => "tuple",
@@ -315,17 +330,6 @@ impl ErrorKind {
             }
             ErrorKind::DivisionByZero => "division by zero".to_string(),
             ErrorKind::NanComparison => "NaN comparison".to_string(),
-            ErrorKind::MethodDef { method, detail } => match detail {
-                MethodDefError::MissingSelf => {
-                    format!("method '{method}' must have 'self' as first parameter")
-                }
-                MethodDefError::NotAFunction { type_id } => {
-                    format!(
-                        "impl body for '{method}' is not a function, got {}",
-                        types.display_name(*type_id),
-                    )
-                }
-            },
             ErrorKind::ConformanceFailure {
                 type_name,
                 iface_name,
@@ -405,7 +409,21 @@ impl ErrorKind {
             ErrorKind::PrimOutOfRange { type_name, detail } => {
                 format!("{type_name} value out of range: {detail}")
             }
-            ErrorKind::IntegerOverflow => "integer out of representable range".to_string(),
+            ErrorKind::IntegerOutOfRange => "integer out of representable range".to_string(),
+            ErrorKind::IntegerOverflow {
+                type_name,
+                op,
+                lhs,
+                rhs,
+            } => {
+                if rhs.is_empty() {
+                    format!("integer overflow: {type_name} {op} {lhs} cannot be represented")
+                } else {
+                    format!(
+                        "integer overflow: {type_name} {lhs} {op} {rhs} cannot be represented"
+                    )
+                }
+            }
             ErrorKind::InternalError(msg) => format!("internal error: {msg}"),
             ErrorKind::PatternUnknownVariant {
                 type_id,
@@ -526,13 +544,6 @@ pub enum AccessKind {
     Field,
     Attr,
     Method,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum MethodDefError {
-    MissingSelf,
-    NotAFunction { type_id: TypeId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
