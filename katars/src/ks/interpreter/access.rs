@@ -30,14 +30,17 @@ impl Interpreter {
             return Err(ErrorKind::Unsupported("nested attr assignment not yet supported").into());
         };
 
+        let slot = self.get_slot(var_name).ok_or_else(|| -> RuntimeError {
+            ErrorKind::Undefined {
+                kind: NameKind::Variable,
+                name: var_name.clone(),
+            }
+            .into()
+        })?;
+
+        // Resolve type / field info from a snapshot of the current value.
         let (type_id, expected_tid) = {
-            let current = self.get(var_name).ok_or_else(|| -> RuntimeError {
-                ErrorKind::Undefined {
-                    kind: NameKind::Variable,
-                    name: var_name.clone(),
-                }
-                .into()
-            })?;
+            let current = slot.get();
             let Value::Rec { type_id, .. } = current else {
                 return Err(ErrorKind::NoAttr {
                     type_id: current.type_id(),
@@ -48,7 +51,7 @@ impl Interpreter {
             };
             let struct_fields = self
                 .types
-                .get_struct_fields(*type_id)
+                .get_struct_fields(type_id)
                 .map_err(RuntimeError::from)?;
             let expected_tid =
                 struct_fields
@@ -56,37 +59,32 @@ impl Interpreter {
                     .copied()
                     .ok_or_else(|| -> RuntimeError {
                         ErrorKind::NoAttr {
-                            type_id: *type_id,
+                            type_id,
                             attr: attr.to_string(),
                             access: AccessKind::Field,
                         }
                         .into()
                     })?;
-            (*type_id, expected_tid)
+            (type_id, expected_tid)
         };
 
         let val = self.check_type(val, expected_tid)?;
+        let field_idx = self.types.field_index(type_id, attr);
 
-        for frame in self.call_stack.iter_mut().rev() {
-            if let Some(entry) = frame.get_mut(var_name) {
-                if let Value::Rec {
-                    type_id: tid,
-                    fields,
-                } = entry
-                {
-                    debug_assert_eq!(*tid, type_id);
-                    if let Some(idx) = self.types.field_index(type_id, attr) {
-                        Arc::make_mut(fields)[idx] = val;
-                    }
-                    return Ok(Flow::Next(Value::Nil));
+        // Mutate the Rec's field in place through the shared slot.
+        slot.with_mut(|entry| {
+            if let Value::Rec {
+                type_id: tid,
+                fields,
+            } = entry
+            {
+                debug_assert_eq!(*tid, type_id);
+                if let Some(idx) = field_idx {
+                    Arc::make_mut(fields)[idx] = val;
                 }
             }
-        }
-        Err(ErrorKind::Undefined {
-            kind: NameKind::Variable,
-            name: var_name.clone(),
-        }
-        .into())
+        });
+        Ok(Flow::Next(Value::Nil))
     }
 
     pub(super) fn exec_item_assign(

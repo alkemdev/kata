@@ -109,7 +109,7 @@ impl Interpreter {
                 }
                 // All segments known but no embedded source. Check if it's
                 // already a native module in scope (e.g., `import ops`).
-                if let Some(Value::Module(mid)) = self.get(&module_key).cloned() {
+                if let Some(Value::Module(mid)) = self.get(&module_key) {
                     return Ok(mid);
                 }
                 return Err(RuntimeError::new(ErrorKind::ModuleError {
@@ -163,7 +163,7 @@ impl Interpreter {
     fn find_existing_module(&self, key: &str) -> Option<native::ModuleId> {
         let segments: Vec<&str> = key.split('.').collect();
         let mut current = match self.get(segments[0])? {
-            Value::Module(mid) => *mid,
+            Value::Module(mid) => mid,
             _ => return None,
         };
         for &seg in &segments[1..] {
@@ -182,7 +182,7 @@ impl Interpreter {
 
         // Get or create the root module in scope.
         let root_id = if let Some(Value::Module(mid)) = self.get(path[0]) {
-            *mid
+            mid
         } else {
             let mid = self.native_registry.create_module(path[0]);
             self.set(path[0].to_string(), Value::Module(mid));

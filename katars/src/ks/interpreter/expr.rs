@@ -160,7 +160,7 @@ impl Interpreter {
                 Ok(Flow::Next(self.intern_bin(result)))
             }
 
-            Expr::Name(name) => self.get(name).cloned().map(Flow::Next).ok_or_else(|| {
+            Expr::Name(name) => self.get(name).map(Flow::Next).ok_or_else(|| {
                 RuntimeError::new(ErrorKind::Undefined {
                     kind: NameKind::Variable,
                     name: name.clone(),
@@ -359,7 +359,7 @@ impl Interpreter {
                         // If the variable holds an AsType, re-wrap after copy-out.
                         let write_back =
                             if let Some(Value::AsType { interface_id, .. }) = self.get(&var_name) {
-                                let iface = *interface_id;
+                                let iface = interface_id;
                                 Value::AsType {
                                     inner: Box::new(mutated_self),
                                     interface_id: iface,
@@ -422,7 +422,7 @@ impl Interpreter {
                     if let Some(mutated_self) = self.last_method_self.take() {
                         let write_back =
                             if let Some(Value::AsType { interface_id, .. }) = self.get(&var_name) {
-                                let iface = *interface_id;
+                                let iface = interface_id;
                                 Value::AsType {
                                     inner: Box::new(mutated_self),
                                     interface_id: iface,

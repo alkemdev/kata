@@ -141,6 +141,17 @@ impl Interpreter {
                     })
                     .transpose()?;
 
+                // The enclosing block has already hoisted a placeholder
+                // slot for this function's name (see `hoist_funcs`), so
+                // every sibling `func` in the same block sees the slot
+                // when it captures its scope. We capture, build the real
+                // function, then write it through the existing slot —
+                // captured scopes see the update because the slot Arc is
+                // shared. (If for some reason hoisting hasn't run, also
+                // create the slot here as a fallback.)
+                if self.get_slot(&name.node).is_none() {
+                    self.set(name.node.clone(), Value::Nil);
+                }
                 let captured = self.capture_scope();
                 let func = Value::Func(Arc::new(FuncData {
                     params: func_params,
@@ -148,7 +159,8 @@ impl Interpreter {
                     body: body.clone(),
                     closure_scope: Some(captured),
                 }));
-                self.set(name.node.clone(), func);
+                self.update_in_scope(&name.node, func)
+                    .map_err(|e| e.at(stmt.span))?;
                 Ok(Flow::Next(Value::Nil))
             }
 
@@ -211,6 +223,7 @@ impl Interpreter {
         stmts: &[Spanned<Stmt>],
         out: &mut impl Write,
     ) -> Result<Flow, RuntimeError> {
+        self.hoist_funcs(stmts);
         let mut last_val = Value::Nil;
         for stmt in stmts {
             match self.exec_stmt(stmt, out)? {
@@ -222,6 +235,26 @@ impl Interpreter {
             }
         }
         Ok(Flow::Next(last_val))
+    }
+
+    /// Pre-bind every `func` in this block to a placeholder slot. Mutual
+    /// recursion and forward references work because by the time any body
+    /// captures the scope, every sibling `func`'s slot already exists —
+    /// the actual function value lands in the slot when its definition is
+    /// reached, and the captured scope sees the update through Arc-shared
+    /// slots. No-op for blocks without FuncDefs.
+    pub(super) fn hoist_funcs(&mut self, stmts: &[Spanned<Stmt>]) {
+        for stmt in stmts {
+            if let Stmt::FuncDef(FuncDef { name, .. }) = &stmt.node {
+                if !self
+                    .call_stack
+                    .last()
+                    .map_or(false, |f| f.contains(&name.node))
+                {
+                    self.set(name.node.clone(), Value::Nil);
+                }
+            }
+        }
     }
 
     // ── Shared helpers ──────────────────────────────────────────────────
@@ -262,6 +295,7 @@ impl Interpreter {
         stmts: &[Spanned<Stmt>],
         out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
+        self.hoist_funcs(stmts);
         for stmt in stmts {
             match self.exec_stmt(stmt, out)? {
                 Flow::Next(_) => {}
@@ -305,6 +339,7 @@ impl Interpreter {
         stmts: &[Spanned<Stmt>],
         out: &mut impl Write,
     ) -> Result<(), RuntimeError> {
+        self.hoist_funcs(stmts);
         for stmt in stmts {
             let is_expr = matches!(&stmt.node, Stmt::Expr(_));
             match self.exec_stmt(stmt, out)? {

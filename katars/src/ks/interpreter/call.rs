@@ -475,7 +475,7 @@ impl Interpreter {
 
         // Copy-out: stash mutated self before cleanup.
         if is_method {
-            self.last_method_self = self.get(SELF_PARAM).cloned();
+            self.last_method_self = self.get(SELF_PARAM);
             self.remove(SELF_PARAM);
         }
 

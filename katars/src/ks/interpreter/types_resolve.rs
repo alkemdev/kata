@@ -18,10 +18,8 @@ impl Interpreter {
     /// Resolve a type name string (from source code) to a TypeId.
     pub(super) fn resolve_type(&self, name: &str) -> Result<TypeId, RuntimeError> {
         // Check if it's a value in scope that holds a Type.
-        if let Some(val) = self.get(name) {
-            if let Value::Type(tid) = val {
-                return Ok(*tid);
-            }
+        if let Some(Value::Type(tid)) = self.get(name) {
+            return Ok(tid);
         }
         // Check the type registry directly.
         self.types.lookup(name).ok_or_else(|| {

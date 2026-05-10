@@ -263,7 +263,7 @@ impl Interpreter {
     /// Returns None for anything that could have side effects.
     fn eval_for_completion(&mut self, expr: &Expr) -> Option<Value> {
         match expr {
-            Expr::Name(n) => self.get(n).cloned(),
+            Expr::Name(n) => self.get(n),
             Expr::Attr { object, name, .. } => {
                 let obj = self.eval_for_completion(&object.node)?;
                 match self.eval_attr(&obj, name) {
@@ -368,17 +368,33 @@ impl Interpreter {
 
     // ── Scope ────────────────────────────────────────────────────────────
 
-    fn get(&self, name: &str) -> Option<&Value> {
-        // Walk mutable call stack (innermost first)
+    /// Read a variable's value. Walks the live call stack (innermost first)
+    /// then the frozen closure scope. Cloning is cheap — every heavy `Value`
+    /// variant (Str, Bin, Rec, Tup, Func, …) is already Arc-wrapped.
+    fn get(&self, name: &str) -> Option<Value> {
         for frame in self.call_stack.iter().rev() {
             if let Some(v) = frame.get(name) {
                 return Some(v);
             }
         }
-        // Walk frozen closure scope chain
         self.closure_scope.as_ref().and_then(|s| s.lookup(name))
     }
 
+    /// Get the slot itself (for sharing across scopes — used at function
+    /// definition to thread the function's name into its own captured scope).
+    fn get_slot(&self, name: &str) -> Option<super::scope::Slot> {
+        for frame in self.call_stack.iter().rev() {
+            if let Some(s) = frame.get_slot(name) {
+                return Some(s.clone());
+            }
+        }
+        self.closure_scope
+            .as_ref()
+            .and_then(|s| s.lookup_slot(name))
+            .cloned()
+    }
+
+    /// `let`-style binding: shadows any existing binding by creating a new slot.
     fn set(&mut self, name: String, value: Value) {
         self.call_stack
             .last_mut()
@@ -442,27 +458,22 @@ impl Interpreter {
         }
     }
 
-    /// Update an existing variable in the nearest enclosing scope that contains it.
-    /// Returns the old value (if any) for drop dispatch by the caller.
+    /// Update an existing variable in the nearest enclosing scope that
+    /// contains it. Walks the live call stack first, then the frozen
+    /// closure scope chain — slots are shared, so writing through a
+    /// closure scope's slot mutates the original binding too. Returns the
+    /// old value (if any) for drop dispatch by the caller.
     fn update_in_scope(&mut self, name: &str, value: Value) -> Result<Option<Value>, RuntimeError> {
-        // Update in the mutable call stack.
-        for frame in self.call_stack.iter_mut().rev() {
-            if frame.contains(name) {
-                let old = frame.set(name.to_string(), value);
-                return Ok(old);
+        for frame in self.call_stack.iter().rev() {
+            if let Some(old) = frame.write(name, value.clone()) {
+                return Ok(Some(old));
             }
         }
-        // If the variable exists in the frozen closure scope, the update is
-        // a no-op — closures capture values, not mutable references.
-        // This handles copy-out on captured variables (e.g., heap.grow()
-        // tries to write back to `heap` which lives in a closure).
-        if self
-            .closure_scope
-            .as_ref()
-            .and_then(|s| s.lookup(name))
-            .is_some()
-        {
-            return Ok(None);
+        if let Some(scope) = self.closure_scope.as_ref() {
+            if let Some(slot) = scope.lookup_slot(name) {
+                let old = slot.set(value);
+                return Ok(Some(old));
+            }
         }
         Err(ErrorKind::Undefined {
             kind: NameKind::Variable,
