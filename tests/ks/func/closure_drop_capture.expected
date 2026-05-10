@@ -1,0 +1,6 @@
+before make
+dropped 7
+after make
+inside: 7
+before reassign
+after reassign
