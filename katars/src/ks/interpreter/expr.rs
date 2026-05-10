@@ -214,6 +214,31 @@ impl Interpreter {
                 .eval_match(*keyword, subject, arms, out)
                 .map_err(|e: RuntimeError| e.at(expr.span)),
 
+            Expr::FuncExpr {
+                params,
+                ret_type,
+                body,
+            } => {
+                let func_params = self.resolve_params(params).map_err(|e| e.at(expr.span))?;
+                let ret_texpr = ret_type
+                    .as_ref()
+                    .map(|ann| -> Result<crate::ks::types::TypeExpr, RuntimeError> {
+                        let tid = self
+                            .resolve_type_expr(&ann.node)
+                            .map_err(|e| e.at(ann.span))?;
+                        Ok(crate::ks::types::TypeExpr::Concrete(tid))
+                    })
+                    .transpose()?;
+                let captured = self.capture_scope();
+                let func = Value::Func(Arc::new(crate::ks::value::FuncData {
+                    params: func_params,
+                    ret_type: ret_texpr,
+                    body: body.clone(),
+                    closure_scope: Some(captured),
+                }));
+                Ok(Flow::Next(func))
+            }
+
             Expr::Ques(inner) => {
                 let val = eval!(self, inner, out);
                 if let Value::Enum {

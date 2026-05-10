@@ -59,7 +59,8 @@ use super::lexer::{BinPart, StringPart, Token};
 //                                  -- postfix position (consecutive tuple indices).
 //   field_init = IDENT ':' expr
 //   expr_or_assign = expr ('=' expr)?           -- assignment if '=' follows
-//   atom       = ident | str | num | 'true' | 'false' | 'nil' | tup_or_group | arr_lit
+//   atom       = ident | str | num | 'true' | 'false' | 'nil' | tup_or_group | arr_lit | func_expr
+//   func_expr  = 'func' '(' params ')' (':' expr)? '{' stmt* '}'  -- anonymous closure
 //   tup_or_group = '(' ')' | '(' expr ')' | '(' expr ',' ')' | '(' expr (',' expr)+ ','? ')'
 //   arr_lit    = '[' (expr (',' expr)* ','?)? ']'
 //   str        = '"' (text | escape | '{' expr '}')* '"'
@@ -569,6 +570,41 @@ where
                     )
                 });
 
+            // Anonymous function expression: `func(params) (: ret)? { body }`
+            // Param parsing is inlined here; the statement-level func_def
+            // has its own param parser further down.
+            let func_expr_param_name = select! { Token::Ident(name) => name }
+                .or(just(Token::SelfValue).to("self".to_string()))
+                .map_with(|name, ex| Spanned::new(name, span(&ex.span())));
+            let func_expr_param = func_expr_param_name
+                .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
+                .map(|(name, type_ann)| Param { name, type_ann });
+            let func_expr = just(Token::Func)
+                .ignore_then(
+                    func_expr_param
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LParen), just(Token::RParen)),
+                )
+                .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
+                .then(
+                    stmt.clone()
+                        .repeated()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                )
+                .map_with(|((params, ret_type), body), ex| {
+                    Spanned::new(
+                        Expr::FuncExpr {
+                            params,
+                            ret_type: ret_type.map(Box::new),
+                            body,
+                        },
+                        span(&ex.span()),
+                    )
+                });
+
             let atom = str_lit
                 .or(bin_lit)
                 .or(num_lit)
@@ -583,7 +619,8 @@ where
                 .or(match_expr)
                 .or(if_expr)
                 .or(while_expr)
-                .or(for_expr);
+                .or(for_expr)
+                .or(func_expr);
 
             // ── postfix chain: .attr, [item], (call) ─────────────────
 

@@ -353,6 +353,15 @@ pub enum Expr {
         args: Vec<Spanned<Expr>>,
         args_span: Span, // span of `(...)` for arity error reporting
     },
+    /// Anonymous function expression: `func(params) (: ret)? { body }`.
+    /// A closure value with no bound name. Captures its surrounding scope
+    /// just like a named `Stmt::FuncDef` — the only difference is that no
+    /// name is hoisted, so anonymous funcs can't recurse by name.
+    FuncExpr {
+        params: Vec<Param>,
+        ret_type: Option<Box<Spanned<Expr>>>,
+        body: Vec<Spanned<Stmt>>,
+    },
     /// Binary operator: `a + b`, `a == b`, etc.
     BinOp {
         op: BinOp,
