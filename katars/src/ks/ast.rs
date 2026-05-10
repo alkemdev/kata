@@ -24,10 +24,13 @@ pub type Program = Vec<Spanned<Stmt>>;
 pub enum Stmt {
     /// A bare expression used as a statement.
     Expr(Spanned<Expr>),
-    /// `let <pattern> = <expr>` — variable binding with optional destructure.
-    /// Only irrefutable patterns are allowed (Binding, Wildcard, Tuple).
+    /// `let <pattern> (: <type>)? = <expr>` — variable binding with
+    /// optional type annotation and destructure. Only irrefutable patterns
+    /// are allowed (Binding, Wildcard, Tuple). The annotation, if present,
+    /// is checked against the value's type at runtime.
     Let {
         pattern: Spanned<Pattern>,
+        type_ann: Option<Spanned<Expr>>,
         value: Spanned<Expr>,
     },
     /// `func name(params) { body }` — function definition.

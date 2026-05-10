@@ -1162,11 +1162,19 @@ where
 
         let let_stmt = just(Token::Let)
             .ignore_then(pattern.clone())
+            .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
             .then_ignore(just(Token::Eq))
             .then(expr.clone())
             .then_ignore(just(Token::Semicolon).or_not())
-            .map_with(|(pattern, value), ex| {
-                Spanned::new(Stmt::Let { pattern, value }, span(&ex.span()))
+            .map_with(|((pattern, type_ann), value), ex| {
+                Spanned::new(
+                    Stmt::Let {
+                        pattern,
+                        type_ann,
+                        value,
+                    },
+                    span(&ex.span()),
+                )
             });
 
         let bail_stmt = just(Token::Bail)
@@ -1474,6 +1482,7 @@ mod tests {
         let Stmt::Let {
             ref pattern,
             ref value,
+            ..
         } = prog[0].node
         else {
             panic!("expected Let, got {:?}", prog[0].node)

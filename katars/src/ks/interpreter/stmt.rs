@@ -164,8 +164,21 @@ impl Interpreter {
                 Ok(Flow::Next(Value::Nil))
             }
 
-            Stmt::Let { pattern, value } => match self.eval_expr(value, out)? {
+            Stmt::Let {
+                pattern,
+                type_ann,
+                value,
+            } => match self.eval_expr(value, out)? {
                 Flow::Next(val) => {
+                    let val = if let Some(ann) = type_ann {
+                        let expected = self
+                            .resolve_type_expr(&ann.node)
+                            .map_err(|e| e.at(ann.span))?;
+                        self.check_type(val, expected)
+                            .map_err(|e| e.at(ann.span))?
+                    } else {
+                        val
+                    };
                     self.check_unique_bindings(pattern)?;
                     let bindings = self.destructure_irrefutable(pattern, &val)?;
                     for (name, v) in bindings {
