@@ -1066,6 +1066,18 @@ fn str_to_bin(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError
     Ok(ctx.intern_bin(s.as_bytes().to_vec()))
 }
 
+fn str_chars(ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
+    // Eagerly collect codepoints. The returned Arr[Char] satisfies the
+    // Iter[Char] surface via Arr's ToIter conformance — a `for c in
+    // s.chars() { ... }` loop works without a separate StrChars iterator
+    // type. Lazy iteration would need its own kind in std/.
+    let chars: Vec<Value> = {
+        let s = expect_str(args, 0)?;
+        s.chars().map(Value::Char).collect()
+    };
+    ctx.build_arr(prim::CHAR, chars)
+}
+
 // ── Bin methods ─────────────────────────────────────────────────────
 
 fn bin_len(_ctx: &mut NativeCtx, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1371,6 +1383,7 @@ pub fn bootstrap() -> BootResult {
             ("to_int", str_to_int),
             ("to_float", str_to_float),
             ("to_bin", str_to_bin),
+            ("chars", str_chars),
             ("hash", native_value_hash),
         ] {
             let id = reg.register(name, false, handler);
